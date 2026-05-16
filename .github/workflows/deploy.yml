@@ -1,0 +1,67 @@
+# Build the static site and publish it to GitHub Pages on every push to main.
+#
+# How it works:
+#   1. checkout the repo
+#   2. install Node + dependencies
+#   3. run `npm run build` (tsc + vite) — outputs to dist/
+#   4. upload dist/ as a Pages artifact
+#   5. deploy that artifact to the Pages environment
+#
+# Result: the URL printed at the end of the "deploy" job is what your users
+# load in their browser. Source and runtime live at the exact same commit.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # Allow manual re-deploys from the Actions tab.
+  workflow_dispatch:
+
+# Pages-specific permissions for the official deploy action.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Avoid stomping on an in-flight deploy from a fresh push.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

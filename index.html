@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crucible — On-chain blends for blend.nefty</title>
+    <meta name="description" content="An open-source crucible for blend.nefty blends on WAX. The contract is still live on-chain — this page just builds the transaction and lets your wallet sign it." />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/ui/style.css" />
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <h1>
+          <span class="logo-glyph" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none">
+              <defs>
+                <radialGradient id="hdr-core" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%"  stop-color="#7dd3fc" stop-opacity="1"/>
+                  <stop offset="60%" stop-color="#38bdf8" stop-opacity="0.45"/>
+                  <stop offset="100%" stop-color="#0ea5e9" stop-opacity="0"/>
+                </radialGradient>
+              </defs>
+              <g stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" fill="currentColor">
+                <path d="M9 2 L11 6 L7 6 Z" opacity="0.85"/>
+                <path d="M16 1 L18.5 5.5 L13.5 5.5 Z"/>
+                <path d="M23 2 L25 6 L21 6 Z" opacity="0.85"/>
+                <path d="M9 7 L13 11 M16 6 L16 11 M23 7 L19 11"
+                      stroke-width="0.9" fill="none" opacity="0.55"/>
+                <path d="M16 11 L24.5 16 L24.5 25 L16 30 L7.5 25 L7.5 16 Z"
+                      stroke-width="1.8" fill="none"/>
+              </g>
+              <circle cx="16" cy="21" r="4" fill="url(#hdr-core)"/>
+              <circle class="logo-spark" cx="16" cy="21" r="1.5" fill="#7dd3fc"/>
+            </svg>
+          </span>
+          <span class="logo-text">CRUCIBLE</span>
+        </h1>
+        <p class="tagline">
+          An open-source crucible for <code>blend.nefty</code> blends on WAX.
+          The contract is still live on-chain — this page just builds the
+          transaction and lets your wallet sign it.
+        </p>
+      </header>
+      <section id="root"></section>
+      <footer>
+        zero backend · audit the source before signing ·
+        <a href="./README.md" target="_blank">user guide</a> ·
+        <a href="https://wax.bloks.io/account/blend.nefty" target="_blank">contract: blend.nefty</a>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

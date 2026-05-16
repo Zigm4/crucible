@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" role="img" aria-label="Crucible">
+  <title>Crucible</title>
+  <defs>
+    <radialGradient id="core" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#7dd3fc" stop-opacity="1"/>
+      <stop offset="60%" stop-color="#38bdf8" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#0ea5e9" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="0.6"/>
+    </filter>
+  </defs>
+  <g stroke="#38bdf8" stroke-linecap="round" stroke-linejoin="round" fill="#38bdf8">
+    <path d="M9 2 L11 6 L7 6 Z" opacity="0.85"/>
+    <path d="M16 1 L18.5 5.5 L13.5 5.5 Z"/>
+    <path d="M23 2 L25 6 L21 6 Z" opacity="0.85"/>
+    <path d="M9 7 L13 11 M16 6 L16 11 M23 7 L19 11"
+          stroke-width="0.9" fill="none" opacity="0.55"/>
+    <path d="M16 11 L24.5 16 L24.5 25 L16 30 L7.5 25 L7.5 16 Z"
+          stroke-width="1.8" fill="none" filter="url(#glow)"/>
+  </g>
+  <circle cx="16" cy="21" r="4" fill="url(#core)"/>
+  <circle cx="16" cy="21" r="1.4" fill="#7dd3fc">
+    <animate attributeName="r" values="1.2;1.8;1.2" dur="2.4s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.7;1;0.7" dur="2.4s" repeatCount="indefinite"/>
+  </circle>
+</svg>
