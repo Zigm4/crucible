@@ -1,3 +1,15 @@
+/**
+ * Local "Simulate" pre-flight.
+ *
+ * Given the same action array we'd hand to `session.transact()`, this module
+ * serializes each action through the contract's live ABI using WharfKit's
+ * `Action.from(...)` and returns the resulting hex per action. Nothing is
+ * broadcast; no signature is requested. The user gets a deterministic
+ * preview of exactly what their wallet would be asked to sign.
+ *
+ * We deliberately don't use the chain's /v1/chain/abi_json_to_bin, that
+ * endpoint is disabled on most public WAX nodes since 2024.
+ */
 import { Action } from '@wharfkit/session';
 
 import { withFailover } from '../chain/rpc';
@@ -5,7 +17,7 @@ import { withFailover } from '../chain/rpc';
 /**
  * Locally serialises each action against the contract's live ABI via the
  * WharfKit `Action.from(..., abi)` helper. The hex output matches what the
- * chain's deprecated /v1/chain/abi_json_to_bin used to produce — but since
+ * chain's deprecated /v1/chain/abi_json_to_bin used to produce, but since
  * most public nodes have disabled that endpoint, we do it client-side.
  *
  * No transaction is sent. No signature is requested. We only validate the

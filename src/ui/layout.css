@@ -1,0 +1,200 @@
+/*!
+ * crucible / layout.css
+ * ─────────────────────────────────────────────────────────────
+ * Page-level structure. Holds the main column, header chrome,
+ * and footer. Cards (the box frame around every section) sit
+ * here too because their geometry is shared by both blends and
+ * drops views.
+ *
+ * Forks usually leave this file alone: tweaks here move things
+ * around physically, which is rarely what you want for a re-skin.
+ */
+
+
+main {
+  position: relative;
+  z-index: 1;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 40px 20px 100px;
+}
+
+/* ─── header ───────────────────────────────────────────────────────────── */
+header {
+  position: relative;
+  padding-bottom: 24px;
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--border-soft);
+}
+header::after {
+  content: '';
+  position: absolute;
+  left: 0; bottom: -1px;
+  width: 120px; height: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent);
+}
+header h1 {
+  margin: 0;
+  font-size: 32px;
+  letter-spacing: 6px;
+  font-weight: 700;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  position: relative;
+}
+header h1 .logo-text {
+  background: linear-gradient(90deg, var(--accent-hot), var(--accent), var(--accent-deep));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.55));
+}
+header h1 .logo-glyph {
+  display: inline-flex;
+  width: 42px;
+  height: 42px;
+  color: var(--accent);
+  filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.6));
+}
+header h1 .logo-glyph svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.logo-spark {
+  transform-origin: 16px 21px;
+  transform-box: fill-box;
+  animation: spark-pulse 2.4s ease-in-out infinite;
+}
+@keyframes spark-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(0.85); }
+  50%      { opacity: 1;   transform: scale(1.25); }
+}
+header .tagline {
+  margin: 12px 0 0;
+  color: var(--fg-dim);
+  font-size: 13px;
+  letter-spacing: 0.4px;
+  max-width: 720px;
+}
+header .tagline code {
+  color: var(--accent-hot);
+  background: rgba(56, 189, 248, 0.08);
+  padding: 1px 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+}
+
+/* ─── cards ────────────────────────────────────────────────────────────── */
+section, .card {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 18px 20px;
+  margin-bottom: 18px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  box-shadow:
+    inset 0 0 0 1px rgba(56, 189, 248, 0.04),
+    0 0 24px rgba(56, 189, 248, 0.04);
+  /*
+   * No "card-in" fade animation here. Each re-render rebuilds the DOM via
+   * innerHTML, which destroyed the previous .card elements and created new
+   * ones. Any animation on .card therefore restarted on every render and
+   * was the source of the visible flicker during a discovery scan
+   * (the cards spent most of their time at opacity 0).
+   * The cyberpunk look is preserved by the corner brackets + glow below.
+   */
+}
+.card::before,
+section::before {
+  content: '';
+  position: absolute;
+  top: -1px; left: -1px;
+  width: 14px; height: 14px;
+  border-top: 1px solid var(--accent);
+  border-left: 1px solid var(--accent);
+  filter: drop-shadow(0 0 4px var(--accent));
+}
+.card::after,
+section::after {
+  content: '';
+  position: absolute;
+  bottom: -1px; right: -1px;
+  width: 14px; height: 14px;
+  border-bottom: 1px solid var(--accent);
+  border-right: 1px solid var(--accent);
+  filter: drop-shadow(0 0 4px var(--accent));
+}
+h2 {
+  margin: 0 0 14px;
+  font-size: 13px;
+  letter-spacing: 3px;
+  color: var(--accent);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+h2::before {
+  content: '// ';
+  color: var(--fg-dim);
+  letter-spacing: 0;
+}
+h3 {
+  margin: 14px 0 6px;
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: var(--accent-hot);
+  text-transform: uppercase;
+}
+
+p { margin: 6px 0; }
+
+label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+/* ─── footer ───────────────────────────────────────────────────────────── */
+footer {
+  margin-top: 40px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+  letter-spacing: 1px;
+}
+footer p { margin: 4px 0; }
+footer .attribution {
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  opacity: 0.75;
+}
+footer a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--accent);
+}
+footer a:hover {
+  color: var(--accent-hot);
+  border-bottom-color: var(--accent-hot);
+  text-shadow: 0 0 6px var(--accent);
+}
+
+code {
+  background: rgba(56, 189, 248, 0.08);
+  padding: 1px 5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+  font-size: 0.92em;
+  color: var(--accent-hot);
+}

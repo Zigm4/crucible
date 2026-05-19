@@ -1,3 +1,13 @@
+/**
+ * Live ABI verifier for the blend.nefty contract.
+ *
+ * Called once at app start. We fetch the contract's published ABI from a
+ * WAX node and assert that the actions and structs we care about
+ * (`announcedepo`, `nosecfuse`, `blends` table) still exist and have the
+ * field names this code expects. If the ABI is ever upgraded in a
+ * breaking way, the app fails fast at boot with a clear message instead
+ * of silently building broken transactions.
+ */
 import { withFailover } from '../chain/rpc';
 
 /**
@@ -48,7 +58,7 @@ export async function loadBlendContractShape(): Promise<BlendContractShape> {
     const a = abi.actions.find((x) => x.name === name);
     if (!a) {
       throw new Error(
-        `blend.nefty ABI no longer exposes action '${name}' — contract may have been upgraded.`,
+        `blend.nefty ABI no longer exposes action '${name}', contract may have been upgraded.`,
       );
     }
     return a;

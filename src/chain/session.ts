@@ -1,3 +1,14 @@
+/**
+ * WharfKit SessionKit wiring.
+ *
+ * Exposes login() / logout() / restoreSession() / getCurrentSession() to
+ * the rest of the app. The kit is configured with two wallets:
+ *   - Anchor (desktop / mobile)
+ *   - WAX Cloud Wallet (in-browser)
+ *
+ * All cryptographic operations happen inside the wallet, this module
+ * never sees a private key.
+ */
 import { SessionKit, type Session } from '@wharfkit/session';
 import { WebRenderer } from '@wharfkit/web-renderer';
 import { WalletPluginAnchor } from '@wharfkit/wallet-plugin-anchor';

@@ -1,3 +1,21 @@
+/**
+ * Builds and broadcasts the blend transaction.
+ *
+ * Three-or-five actions, in the exact order the on-chain trace of a real
+ * Nefty blend uses:
+ *   1. blend.nefty::announcedepo            - announce N NFTs are coming
+ *   2. atomicassets::transfer  memo deposit - actually transfer the N NFTs
+ *   3. blend.nefty::nosecfuse               - burn them, mint the result
+ *
+ * For blends that also cost a fungible token (UPMAX, GUILD, ...), two more
+ * actions lead the sequence:
+ *   0a. blend.nefty::openbal      - reserve a balance slot for that symbol
+ *   0b. <token>::transfer         - pay the cost
+ * The openbal is auto-skipped when the user already has a balance row.
+ *
+ * The historical neftybrespay::paycpu action is intentionally omitted,
+ * that payer no longer signs.
+ */
 import type { Session } from '@wharfkit/session';
 
 import {
@@ -26,11 +44,11 @@ export interface BuiltAction {
  * token payment leg.
  *
  * Order (matches the on-chain trace of a real blend):
- *   1. openbal           — once per token symbol the user hasn't opened yet
- *   2. <token>::transfer — one per FT ingredient, memo "deposit"
- *   3. announcedepo      — count = number of NFTs being transferred (0 ok)
- *   4. atomicassets::transfer — only if asset_ids.length > 0
- *   5. nosecfuse         — claimer, blend_id, transferred_assets, own_assets
+ *   1. openbal          : once per token symbol the user hasn't opened yet
+ *   2. <token>::transfer, one per FT ingredient, memo "deposit"
+ *   3. announcedepo     : count = number of NFTs being transferred (0 ok)
+ *   4. atomicassets::transfer, only if asset_ids.length > 0
+ *   5. nosecfuse        : claimer, blend_id, transferred_assets, own_assets
  *
  * The Nefty-paid `neftybrespay::paycpu` action that used to lead the trace is
  * intentionally omitted: that payer no longer signs, so we'd just bake a
@@ -40,7 +58,7 @@ export async function buildBlendActions(args: PlanArgs): Promise<BuiltAction[]> 
   const auth = [{ actor: args.claimer, permission: 'active' }];
   const actions: BuiltAction[] = [];
 
-  // 1. openbal — only the first time a given (owner, symbol) pair is used,
+  // 1. openbal, only the first time a given (owner, symbol) pair is used,
   //    otherwise the inline RAM allocation would fail.
   for (const qty of args.ft_payments) {
     const symbol = symbolFromQuantity(qty);
@@ -62,7 +80,7 @@ export async function buildBlendActions(args: PlanArgs): Promise<BuiltAction[]> 
     }
   }
 
-  // 2. token transfers — one per FT requirement
+  // 2. token transfers, one per FT requirement
   for (const qty of args.ft_payments) {
     const contract = await resolveTokenContract(qty);
     actions.push({
@@ -86,7 +104,7 @@ export async function buildBlendActions(args: PlanArgs): Promise<BuiltAction[]> 
     data: { owner: args.claimer, count: args.asset_ids.length },
   });
 
-  // 4. NFT transfer (skip when no NFTs — FT-only blends are valid)
+  // 4. NFT transfer (skip when no NFTs, FT-only blends are valid)
   if (args.asset_ids.length > 0) {
     actions.push({
       account: 'atomicassets',

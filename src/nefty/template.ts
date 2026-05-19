@@ -1,3 +1,17 @@
+/**
+ * Template (NFT type) details lookup.
+ *
+ * Given a (collection, template_id), returns the template's display name,
+ * schema, issued/max supply, and the burnable/transferable flags.
+ *
+ * Two paths:
+ *   - AtomicAssets indexer (preferred): resolves immutable_data so we get
+ *     the human-readable name out of the box.
+ *   - On-chain fallback: reads atomicassets::templates directly. The
+ *     `immutable_serialized_data` is raw bytes, decoding it would need
+ *     the collection's schema ABI; we don't bother and leave `name`
+ *     undefined in that branch.
+ */
 import { atomicFetch, getTableRows } from '../chain/rpc';
 
 export interface TemplateInfo {
@@ -38,7 +52,7 @@ export async function loadTemplate(args: {
       return info;
     }
   } catch {
-    // indexer down — fall back below
+    // indexer down, fall back below
   }
 
   try {
@@ -48,7 +62,7 @@ export async function loadTemplate(args: {
       return info;
     }
   } catch {
-    // both paths failed — return undefined; UI shows template_id only
+    // both paths failed, return undefined; UI shows template_id only
   }
   return undefined;
 }
@@ -92,13 +106,13 @@ interface RawChainTemplate {
   burnable?: boolean | number;
   max_supply?: number | string;
   issued_supply?: number | string;
-  immutable_serialized_data?: number[]; // raw bytes — undecoded
+  immutable_serialized_data?: number[]; // raw bytes, undecoded
 }
 
 /**
  * On-chain fallback: reads atomicassets/templates with scope=collection,
  * key=template_id. We don't decode `immutable_serialized_data` (that needs
- * the schema ABI), so the name is unavailable here — the caller falls back
+ * the schema ABI), so the name is unavailable here, the caller falls back
  * to showing just the template_id.
  */
 async function fromChain(args: {

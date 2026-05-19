@@ -1,9 +1,10 @@
-# Crucible — user guide
+# Crucible · user guide
 
-Crucible lets you execute a NeftyBlocks blend (`blend.nefty`) on WAX
-**without going through the Nefty website** (which is shut down). The smart
-contract is still alive on-chain; this page just composes the transaction
-and asks your wallet to sign it.
+Crucible lets you execute NeftyBlocks **blends**, claim **drops**, and
+open **packs** on WAX, without going through the Nefty website (which is
+shut down). The smart contracts (`blend.nefty`, `neftyblocksd`,
+`atomicpacksx`) are still alive on-chain; this page just composes the
+right transactions and asks your wallet to sign them.
 
 ## Before you start
 
@@ -15,72 +16,115 @@ You need **Anchor** or **WAX Cloud Wallet**:
 
 ### 2. Stake some CPU
 
-Without Nefty subsidizing CPU (`neftybrespay`), you pay your own. Stake
-roughly **5–10 WAX in CPU** from your wallet. A typical blend transaction
-uses ~1.5 ms of CPU.
+Without Nefty subsidising CPU (`neftybrespay`), you pay your own. Stake
+roughly **5 to 10 WAX in CPU** from your wallet. A typical blend
+transaction uses ~1.5 ms of CPU; opening a pack uses two transactions
+totalling ~3 ms.
 
 > If you don't have enough CPU the transaction will fail with
 > `exceeded the account CPU limit`. Increase your stake and retry.
 
-### 3. Know your blend_id
+### 3. Pick what to do
 
-- On **AtomicHub**, open one of your old blends — the `blend_id` is in the
-  URL or in the blend details.
-- The collection is auto-detected from the on-chain blend row, you don't
-  need to know it.
+Three tabs at the top of the page:
 
-You can also inspect the contract directly:
-https://wax.bloks.io/account/blend.nefty?loadContract=true&tab=Tables
-(table `blends`, scope `blend.nefty`).
+- **Blend**: burn NFTs (and optionally pay tokens) to mint a fixed result.
+- **Claim**: pay (or not) to mint a drop. Whitelist, NFT-proof, and free
+  drops are supported.
+- **Unpack**: open packs you already own. Cross-collection, two
+  signatures (one to lock the pack, one to mint the resolved cards).
+
+For Blend and Claim, you don't need to know any ID in advance: click
+*Discover* and pick from the list. You can also paste a `blend_id` or
+`drop_id` manually if you have one in mind. For Unpack, Crucible scans
+the chain globally and only shows you the collections where you actually
+hold packs right now.
 
 ## How to use
 
+### Blend
+
 1. **Connect your wallet** (Initialize session).
-2. **Enter the `blend_id`** and click *Load blend*.
-3. The page reads the blend on-chain: ingredients, expected mint(s),
-   whitelist status, deterministic check.
-4. **Select the NFTs to burn** in the grid below each slot.
-   The grid is filtered to NFTs you actually own that match the slot.
-5. **Token-paying blends**: if a slot is `Pay X.YZ TICKER`, the page checks
-   your balance for that token. The eventual transaction will include the
-   `openbal` (once per token, only if you've never deposited it before) and
-   the token transfer automatically.
-6. Click **Simulate** to serialize the actions locally against the live
+2. Pick a collection, click **Discover blends**, and select one from
+   the list. Or paste a `blend_id` and click *Load blend*.
+3. The page reads the recipe on-chain: ingredients, expected mint(s),
+   whitelist status, token cost.
+4. **Select the NFTs to burn** in the grid under each slot. The grid is
+   filtered to NFTs you actually own that match the slot.
+5. **Token-paying blends**: if a slot is `Pay X.YZ TICKER`, the page
+   checks your balance and adds `openbal` (once per token, only if
+   you've never deposited that token before) and a `transfer` action
+   automatically.
+6. Click **Simulate** to serialise the actions locally against the live
    ABI without broadcasting anything.
-7. Click **Sign & broadcast**: your wallet asks you to confirm each action
-   then submits.
-8. A bloks.io link to the transaction is shown after broadcast.
+7. Click **Sign & broadcast**. Your wallet asks you to confirm each
+   action, then submits.
+8. A `waxblock.io` link to the transaction appears after broadcast.
+
+### Claim
+
+1. **Connect your wallet**.
+2. Pick a collection, click **Discover drops**, and select one. Or paste
+   a `drop_id` manually.
+3. The page resolves the auth flavour (public / whitelist / NFT proof),
+   checks your per-account claim limit, and pre-picks proof NFTs from
+   your wallet when needed.
+4. Choose the quantity you want to claim, simulate, then sign.
+
+### Unpack
+
+1. **Connect your wallet**.
+2. Click **Discover my packs**. Crucible scans `atomicpacksx` globally
+   and cross-references with your wallet. The cascade dropdowns light
+   up:
+   - **Collection**: only collections where you currently own a pack.
+   - **Pack type**: the pack designs in that collection that you own.
+   - **Which mint?**: optional, only when you own 2+ of the same design.
+3. Pick a pack. The info card shows the rolls and possible outcomes.
+4. Click **Sign step 1: send pack to atomicpacksx**. Your wallet signs
+   a `transfer` with memo `unbox`.
+5. The page polls the chain for the ORNG randomness callback (typically
+   5 to 30 seconds, with a visible countdown). When the oracle answers,
+   you're prompted for step 2.
+6. Click **Sign step 2: claim N cards**. Your wallet signs a
+   `claimunboxed`. The cards mint to your wallet.
+
+If something stalls between the two signatures, your pack is **still
+safe** in the `atomicpacksx` contract. Refresh the page, pick the same
+pack again, and the contract will let you complete the second
+transaction.
 
 ## What this page does (and does NOT do)
 
-✅ Handles **deterministic blends** (`nosecfuse` action — fixed result).
-✅ Handles **token-paying blends** (FT ingredients) — adds the `openbal` and
-   token `transfer` actions automatically.
-✅ Handles **drops/claims** on `neftyblocksd`:
-   - public drops (`claimdrop`)
-   - per-account whitelist drops (`claimdropwl`)
-   - NFT-ownership-proof drops (`claimwproof`) — the page auto-selects
-     matching NFTs from your wallet
-   - free drops (no `assertprice` / no token transfer needed)
-✅ Reads the live `blend.nefty` and `neftyblocksd` ABIs on boot, so it
-   survives any contract upgrade that doesn't change semantics.
-✅ Checks `secure.nefty` whitelists when a blend has `security_id ≠ 0`.
-✅ Zero backend. Zero telemetry. Pure static frontend.
-
-❌ **Does NOT** handle `secfuse` blends (random results with commit/reveal
-   via ORNG). That needs two transactions and reveal monitoring; it's not
-   built yet.
-❌ **Does NOT** handle `claimdropkey` (authkey-gated drops) — the drop
-   creator must pre-sign a per-user message and we have no way to obtain
-   it.
-❌ Does not store anything.
+```
+[*] deterministic blends (nosecfuse, fixed result)
+[*] token-paying blends (FT ingredients, auto openbal + transfer)
+[*] drops:
+    - public                (claimdrop)
+    - whitelist             (claimdropwl)
+    - NFT-ownership proof   (claimwproof, auto picks the matching NFTs)
+    - free drops            (no assertprice / no token transfer)
+[*] packs:
+    - cross-collection discovery from the global atomicpacksx table
+    - auto-wait between TX1 and TX2 (ORNG poll)
+    - full odds + resolved template names in the info card
+[*] live ABI read on boot, survives compatible contract upgrades
+[*] secure.nefty whitelist check when a blend has security_id != 0
+[*] zero backend, zero telemetry, zero stored secrets
+[x] random blends (secfuse, commit-reveal via ORNG): detected and
+    hidden. Adding them is on the roadmap, the pack flow already uses
+    the same primitive.
+[x] authkey drops (claimdropkey): the drop creator must pre-sign a
+    per-user message we cannot obtain.
+[x] persistent storage beyond your last-used collection name.
+```
 
 ## Transaction anatomy (reference)
 
-For audits or for manually reproducing via bloks.io, here is the exact
-structure for a deterministic blend.
+For audits, or for manually reproducing via waxblock.io, here are the
+exact action structures.
 
-**NFT-only blend** (3 actions):
+### NFT-only blend (3 actions)
 
 ```json
 {
@@ -97,7 +141,7 @@ structure for a deterministic blend.
 }
 ```
 
-**Blend with a token cost** (adds 2 actions, first time per token):
+### Blend with a token cost (adds 2 actions, first time per token)
 
 ```json
 {
@@ -114,13 +158,41 @@ structure for a deterministic blend.
 }
 ```
 
-The `neftybrespay::paycpu` action that used to lead the trace is gone:
-Nefty no longer signs for you. You pay your own CPU. Everything else is
-identical.
+### Pack unbox (two separate transactions)
 
-The token contract is resolved from `blend.nefty/config/supported_tokens`
-(a registry of `extended_symbol` entries mapping token symbol to
-contract). 159 tokens are registered at the time of writing.
+```json
+// TX1: announce
+{
+  "actions": [
+    { "account": "atomicassets", "name": "transfer",
+      "data": { "from": "<you>", "to": "atomicpacksx",
+                "asset_ids": ["<pack_asset_id>"], "memo": "unbox" } }
+  ]
+}
+```
+
+Then wait for the ORNG callback (the contract reads new rows into the
+`unboxassets` table scoped by `pack_asset_id`):
+
+```json
+// TX2: claim
+{
+  "actions": [
+    { "account": "atomicpacksx", "name": "claimunboxed",
+      "data": { "pack_asset_id": "<pack_asset_id>",
+                "origin_roll_ids": ["0", "1", "2", "..."] } }
+  ]
+}
+```
+
+The `neftybrespay::paycpu` action that used to lead every Nefty trace is
+gone. Nefty no longer signs for you. You pay your own CPU. Everything
+else is identical.
+
+The token contract for blends is resolved from
+`blend.nefty/config/supported_tokens`, a registry of `extended_symbol`
+entries mapping token symbol to contract. 159 tokens are registered at
+the time of writing.
 
 ## Hosting
 
@@ -143,8 +215,8 @@ No environment variables. No secrets.
 
 ## Public endpoints (automatic failover)
 
-- WAX RPC: `wax.eosphere.io` → `wax.greymass.com` → `api.wax.alohaeos.com`
-- AtomicAssets API: `aa.wax.atomichub.io` → `wax.api.atomicassets.io` →
+- WAX RPC: `wax.eosphere.io` -> `wax.greymass.com` -> `api.wax.alohaeos.com`
+- AtomicAssets API: `aa.wax.atomichub.io` -> `wax.api.atomicassets.io` ->
   `aa-wax-public1.neftyblocks.com`
 
 If one dies, the app falls back to the next.

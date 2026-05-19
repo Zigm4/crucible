@@ -1,3 +1,18 @@
+/**
+ * Maps a blend's ingredients to slots the UI can render.
+ *
+ * Each ingredient becomes an `IngredientSlot` with a normalized kind:
+ *   - TEMPLATE   : "N NFTs of template X" (most common)
+ *   - SCHEMA     : "N NFTs from schema X"
+ *   - ATTRIBUTE  : "N NFTs where attr in {...}"
+ *   - COLLECTION , "N NFTs from collection X"
+ *   - FT         : token payment ("105.00000000 UPMAX")
+ *   - UNSUPPORTED, variants this app cannot satisfy (CHEST_INGREDIENT etc.)
+ *
+ * For NFT slots: the matcher filters the user's owned assets to the
+ * ones that actually satisfy the rule (collection + template/schema +
+ * attribute predicate when applicable).
+ */
 import type { AtomicAsset } from './assets';
 import type {
   AttributeIngredient,
@@ -11,7 +26,7 @@ import type {
 /**
  * One ingredient slot the user must satisfy. NFT slots (`TEMPLATE`, `SCHEMA`,
  * `ATTRIBUTE`, `COLLECTION`) need the user to pick `amount` eligible asset_ids.
- * FT slots (`FT`) are token payments — no picker, just a balance check.
+ * FT slots (`FT`) are token payments, no picker, just a balance check.
  */
 export type IngredientSlot = NftSlot | FtSlot | UnsupportedSlot;
 
@@ -132,7 +147,7 @@ export function buildSlots(
 
 /**
  * Flat list of `asset_id`s for the NFT slots, in slot order. Throws if any
- * NFT slot isn't fully filled. FT slots are skipped here — token transfers
+ * NFT slot isn't fully filled. FT slots are skipped here, token transfers
  * are built separately in execute.ts.
  */
 export function flattenNftSelection(

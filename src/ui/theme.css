@@ -1,0 +1,76 @@
+/*!
+ * crucible / theme.css
+ * ─────────────────────────────────────────────────────────────
+ * The skin layer. EVERYTHING colour, font, glow, and ambient
+ * background lives in here. If you fork Crucible to give it
+ * your own look, this is the only file you should usually touch.
+ *
+ * Override any --variable below to retheme the entire app.
+ * Add your own font-family in :root, swap the radial gradients in
+ * body::before, change the scanline opacity in body::after, etc.
+ *
+ * Structure (layout.css) and widgets (components.css) only read
+ * from these tokens. They never hard-code colours.
+ */
+
+
+:root {
+  color-scheme: dark;
+  --bg: #04060a;
+  --bg-2: #07101c;
+  --panel: rgba(10, 22, 38, 0.78);
+  --panel-edge: #0f253f;
+  --grid: rgba(56, 189, 248, 0.06);
+  --fg: #cfe8ff;
+  --fg-dim: #6b88a6;
+  --muted: #4a6079;
+  --accent: #38bdf8;
+  --accent-hot: #7dd3fc;
+  --accent-deep: #0ea5e9;
+  --neon: #38bdf8;
+  --danger: #ff5577;
+  --ok: #2efaa6;
+  --warn: #ffce5c;
+  --border: rgba(56, 189, 248, 0.28);
+  --border-soft: rgba(56, 189, 248, 0.12);
+  font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  background: var(--bg);
+  color: var(--fg);
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+}
+
+/* ─── ambient layers ───────────────────────────────────────────────────── */
+body::before,
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+body::before {
+  background:
+    radial-gradient(ellipse at 20% -10%, rgba(56, 189, 248, 0.18), transparent 55%),
+    radial-gradient(ellipse at 110% 110%, rgba(14, 165, 233, 0.16), transparent 55%),
+    linear-gradient(180deg, #04060a 0%, #04060a 50%, #050a14 100%);
+}
+body::after {
+  background:
+    linear-gradient(transparent 50%, rgba(8, 145, 178, 0.04) 50%),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.012), transparent 30%, transparent 70%, rgba(56, 189, 248, 0.012));
+  background-size: 100% 3px, 100% 100%;
+  mix-blend-mode: screen;
+  animation: scanline-drift 12s linear infinite;
+  opacity: 0.55;
+}
+@keyframes scanline-drift {
+  0%   { background-position: 0 0, 0 0; }
+  100% { background-position: 0 100vh, 0 0; }
+}

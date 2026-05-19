@@ -4,7 +4,7 @@ import { getTableRows } from '../chain/rpc';
  * Drops live in the `neftyblocksd` contract on WAX, in a single global table
  * scoped by `neftyblocksd` (the contract account itself). Each row defines a
  * "drop": something a user can claim from. A drop typically mints one or more
- * NFTs to the claimer, optionally against a token payment.
+ * NFTs to the claimer: optionally against a token payment.
  *
  * This module is the read-side companion to `dropExecute.ts`. It mirrors what
  * the indexer would expose, but speaks straight to the chain so we never
@@ -31,14 +31,14 @@ export type DropStatus =
  *   - `whitelists` (scoped by drop_id, key = account name) → claimdropwl
  *   - `proofown`   (one row per drop_id, NFT-ownership filter) → claimwproof
  *   - `authkeys`   (scoped by drop_id, public-key gated)       → claimdropkey
- * Out of these, only `claimdropwl` and `claimwproof` are usable without a
+ * Out of these: only `claimdropwl` and `claimwproof` are usable without a
  * pre-shared secret, so those are the only auth flavours we surface here.
  */
 export type DropAuth =
   | { kind: 'public' }
   | { kind: 'whitelist'; allowed?: boolean }
   | { kind: 'proof'; filters: ProofFilter[]; resolved?: ProofResolution }
-  | { kind: 'authkey' /* signed-key gated — unsupported by this tool */ }
+  | { kind: 'authkey' /* signed-key gated, unsupported by this tool */ }
   /** auth_required = true, but we haven't connected a wallet yet to verify the gate */
   | { kind: 'unverified' }
   /** auth_required = true, and we checked: NO auth list has any entry. The drop is structurally unclaimable until the creator populates a whitelist/proofown/authkey row. */
@@ -68,12 +68,12 @@ export interface DiscoveredDrop {
   description?: string;
   /** "1.00000000 WAX" or "0 NULL" for free drops. */
   listing_price: string;
-  /** "8,WAX" — what the contract expects payment in. */
+  /** "8,WAX", what the contract expects payment in. */
   settlement_symbol: string;
   is_free: boolean;
   /** template_id of the primary mint result (drops can mint several but UIs typically show the first). */
   primary_template_id?: number;
-  /** All mints this drop produces, in order. */
+  /** All mints this drop produces: in order. */
   assets_to_mint: { template_id: number; tokens_to_back: string[]; use_pool: boolean }[];
   max_claimable: number; // 0 = unlimited
   current_claimed: number;
@@ -167,10 +167,10 @@ const cache = new Map<string, CacheEntry>();
 export interface ListDropsOpts {
   collection: string;
   includeInactive: boolean;
-  /** When provided, resolve auth_required drops (whitelist + proof check). */
+  /** When provided: resolve auth_required drops (whitelist + proof check). */
   actor?: string;
   /**
-   * When provided alongside actor, used to resolve proof drops. Should be the
+   * When provided alongside actor: used to resolve proof drops. Should be the
    * user's owned NFTs in the same collection (we filter by template/schema).
    */
   ownedAssets?: { asset_id: string; template?: { template_id?: string } | null; schema?: { schema_name?: string }; collection?: { collection_name?: string } }[];
@@ -400,7 +400,7 @@ async function resolveAuth(
     }
   } catch { /* fall through */ }
 
-  // 3) authkey gated — not user-signable
+  // 3) authkey gated, not user-signable
   try {
     const rows = await getTableRows<unknown>({
       code: 'neftyblocksd',
@@ -415,7 +415,7 @@ async function resolveAuth(
   } catch { /* ignore */ }
 
   // auth_required = true but no auth list has any entry. The drop creator
-  // turned auth on without populating any gate — the contract will refuse
+  // turned auth on without populating any gate, the contract will refuse
   // every claim, no matter who tries.
   drop.auth = { kind: 'unclaimable' };
 }
@@ -460,7 +460,7 @@ function resolveProof(
 }
 
 /**
- * Single batched read of `accstats` for the actor — one row per drop they've
+ * Single batched read of `accstats` for the actor, one row per drop they've
  * ever claimed. The contract scopes `accstats` by the claimer's account, so
  * we just need their wallet name as the scope and we get the whole history.
  */

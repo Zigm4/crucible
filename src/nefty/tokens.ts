@@ -1,3 +1,18 @@
+/**
+ * Token registry + balance utilities.
+ *
+ * `blend.nefty/config` carries a list of `extended_symbol` entries that
+ * map a `precision,TICKER` symbol to the contract that issues that token.
+ * 159 tokens are registered at the time of writing, including WAX (on
+ * eosio.token), NEFTY, GUILD, UPMAX, ...
+ *
+ * Exposes:
+ *   - resolveTokenContract(quantity)  - "105.00000000 UPMAX" -> "underpunks55"
+ *   - readTokenBalance({ owner, contract, symbolCode })
+ *   - hasOpenBalance({ owner, symbol }) - used to decide whether to inject
+ *     an `openbal` action before paying with a never-deposited token
+ *   - tickerFromQuantity / symbolFromQuantity / parseAssetAmount helpers
+ */
 import { getTableRows } from '../chain/rpc';
 
 export interface ExtendedSymbol {
@@ -51,7 +66,7 @@ export async function resolveTokenContract(quantity: string): Promise<string> {
   const found = cfg.supported_tokens.find((t) => t.sym === wantSym);
   if (!found) {
     throw new Error(
-      `Token ${wantSym} is not in blend.nefty's supported_tokens registry. Blend creator likely used an unregistered token — manual fallback required.`,
+      `Token ${wantSym} is not in blend.nefty's supported_tokens registry. Blend creator likely used an unregistered token, manual fallback required.`,
     );
   }
   return found.contract;
@@ -64,7 +79,7 @@ interface ExtBalanceRow {
 
 /**
  * Checks if `owner` has already called openbal for `symbol` ("8,UPMAX").
- * If yes, calling openbal again would fail (RAM already allocated). We use
+ * If yes: calling openbal again would fail (RAM already allocated). We use
  * this to conditionally inject openbal only when needed.
  */
 export async function hasOpenBalance(args: {
@@ -90,7 +105,7 @@ export async function hasOpenBalance(args: {
  * standard eosio.token `accounts` table. Scope = owner; the primary key is a
  * `symbol_code` (NOT a `name`), so encoding "UPMAX" as a name silently misses.
  * We sidestep the encoding entirely: list all balance rows for this scope
- * (always tiny — one row per token the account ever held) and pick the match.
+ * (always tiny, one row per token the account ever held) and pick the match.
  * Returns the amount as a number in human units (e.g. 13378.2).
  */
 export async function readTokenBalance(args: {

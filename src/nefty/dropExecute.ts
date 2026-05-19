@@ -1,3 +1,23 @@
+/**
+ * Builds and broadcasts the drop-claim transaction (neftyblocksd).
+ *
+ * The sequence is the same one Nefty's UI signed historically:
+ *   1. neftyblocksd::assertprice           - locks the listing price
+ *   2. <token>::transfer  memo deposit     - pays the cost
+ *   3. neftyblocksd::<claim variant>       - actual claim:
+ *        - public      -> claimdrop
+ *        - whitelist   -> claimdropwl
+ *        - NFT proof   -> claimwproof (adds asset_ids of the proof NFTs)
+ *        - authkey     -> claimdropkey (NOT supported, requires a
+ *                         per-user message pre-signed by the creator)
+ *
+ * Steps 1 and 2 are skipped for free drops (listing_price = "0 NULL").
+ *
+ * Pre-flight checks block the build BEFORE we ask the wallet to sign when
+ * the user has hit their `account_limit`, the contract would reject
+ * with "you can only claim the drop 0 more times" anyway, and we don't
+ * want to burn CPU on a doomed transaction.
+ */
 import type { Session } from '@wharfkit/session';
 
 import { resolveTokenContract, symbolFromQuantity } from './tokens';
@@ -44,9 +64,9 @@ export interface BuiltAction {
  * Builds the on-chain action sequence for a Nefty drop claim.
  *
  * Sequence (matches the live trace of any historical Nefty claim):
- *   1. neftyblocksd::assertprice    — price lock; skipped for free drops
- *   2. <token>::transfer            — pays the cost; skipped for free drops
- *   3. neftyblocksd::<claim action> — actual claim:
+ *   1. neftyblocksd::assertprice   : price lock; skipped for free drops
+ *   2. <token>::transfer           : pays the cost; skipped for free drops
+ *   3. neftyblocksd::<claim action>, actual claim:
  *        - public:        claimdrop
  *        - whitelist:     claimdropwl
  *        - proof:         claimwproof (adds asset_ids)
@@ -54,7 +74,7 @@ export interface BuiltAction {
  *                         drop creator; impossible without the secret).
  *
  * The historical `neftybrespay::paycpu` leading the trace is intentionally
- * omitted — that payer no longer signs.
+ * omitted, that payer no longer signs.
  */
 export async function buildClaimActions(args: ClaimArgs): Promise<BuiltAction[]> {
   const d = args.drop;
@@ -64,7 +84,7 @@ export async function buildClaimActions(args: ClaimArgs): Promise<BuiltAction[]>
 
   // Pre-flight: catch the per-account limit BEFORE we ask the wallet to
   // sign anything. The contract throws "You can only claim the drop X more
-  // times" — we want to surface that earlier with a friendlier message.
+  // times", we want to surface that earlier with a friendlier message.
   if (typeof d.account_remaining === 'number' && d.account_remaining < args.amount) {
     if (d.account_remaining === 0 && d.cooldown_resets_at && d.cooldown_resets_at > Math.floor(Date.now() / 1000)) {
       const waitS = d.cooldown_resets_at - Math.floor(Date.now() / 1000);
@@ -95,7 +115,7 @@ export async function buildClaimActions(args: ClaimArgs): Promise<BuiltAction[]>
     // The settlement_symbol carries the precision and ticker we need to find
     // the token contract via the same `supported_tokens` registry used for
     // blends (loaded from `blend.nefty/config`). For drops priced in tokens
-    // NeftyBlocks doesn't register, this will throw — at that point the user
+    // NeftyBlocks doesn't register, this will throw, at that point the user
     // would need a manual fallback (out of scope here).
     const contract = await resolveTokenContractForDrop(d.listing_price, d.settlement_symbol);
     actions.push({
@@ -111,7 +131,7 @@ export async function buildClaimActions(args: ClaimArgs): Promise<BuiltAction[]>
     });
   }
 
-  // 3. claim — variant depends on auth flavour.
+  // 3. claim, variant depends on auth flavour.
   const currency = d.is_free ? d.settlement_symbol || '8,WAX' : d.settlement_symbol;
   const commonClaim = {
     claimer: args.claimer,
@@ -146,7 +166,7 @@ export async function buildClaimActions(args: ClaimArgs): Promise<BuiltAction[]>
       if (ids.length === 0) {
         throw new Error('This drop requires NFT-ownership proof, but no eligible asset_ids were provided.');
       }
-      // claimwproof has the same fields as claimdrop *plus* `asset_ids` —
+      // claimwproof has the same fields as claimdrop *plus* `asset_ids`,
       // the contract's ABI puts it between `referrer` and `country`.
       actions.push({
         account: 'neftyblocksd',
@@ -168,18 +188,18 @@ export async function buildClaimActions(args: ClaimArgs): Promise<BuiltAction[]>
     }
     case 'authkey':
       throw new Error(
-        'This drop is gated by a cryptographic authkey (claimdropkey). The drop creator must sign a per-user message to allow claims — not supported by this tool.',
+        'This drop is gated by a cryptographic authkey (claimdropkey). The drop creator must sign a per-user message to allow claims, not supported by this tool.',
       );
     case 'unverified':
       throw new Error(
-        'This drop is gated — connect your wallet so the page can verify your access (whitelist / NFT proof) before signing.',
+        'This drop is gated, connect your wallet so the page can verify your access (whitelist / NFT proof) before signing.',
       );
     case 'unclaimable':
       throw new Error(
         "This drop has auth_required = true but no auth list is populated on-chain. The contract will refuse every claim until the creator fixes the config.",
       );
     default:
-      throw new Error('Unknown drop auth flavour — cannot build claim.');
+      throw new Error('Unknown drop auth flavour, cannot build claim.');
   }
 
   return actions;
@@ -206,12 +226,12 @@ export async function executeClaim(
 /**
  * Find the token contract for a drop's listing price. NeftyBlocks drops use
  * their *own* supported_tokens list (separate from blend.nefty's), but the
- * data lives in `neftyblocksd/config`. WAX is a special case — eosio.token.
+ * data lives in `neftyblocksd/config`. WAX is a special case, eosio.token.
  */
 async function resolveTokenContractForDrop(quantity: string, _symbol: string): Promise<string> {
   const sym = symbolFromQuantity(quantity);
   if (sym === '8,WAX') return 'eosio.token';
-  // Try the blend.nefty registry first — it's the larger of the two and
+  // Try the blend.nefty registry first, it's the larger of the two and
   // mostly a superset.
   try {
     return await resolveTokenContract(quantity);

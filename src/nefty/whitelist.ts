@@ -1,3 +1,12 @@
+/**
+ * Single-blend whitelist check (secure.nefty).
+ *
+ * Used by the BLEND view after a blend with security_id != 0 is loaded.
+ * If the blend's `security_id` is 0 the function short-circuits and
+ * returns `{ required: false }`. Otherwise it queries the
+ * `secure.nefty/whitelists` table scoped by that security_id and reports
+ * whether the actor is in the list.
+ */
 import { getTableRows } from '../chain/rpc';
 
 interface WhitelistRow {
@@ -16,7 +25,7 @@ export interface WhitelistStatus {
  * If the blend declares a security_id > 0, the blend.nefty contract delegates
  * an access check to secure.nefty. The typical flavor stores a per-account
  * whitelist scoped by security_id. We accept several plausible row shapes
- * because the contract's secure.nefty schema isn't versioned here — we only
+ * because the contract's secure.nefty schema isn't versioned here, we only
  * need to know "is `actor` listed somewhere in this whitelist?".
  */
 export async function checkWhitelist(args: {

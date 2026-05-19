@@ -1,3 +1,15 @@
+/**
+ * Single-blend reader for blend.nefty.
+ *
+ * Exposes:
+ *   - loadBlend({blend_id})        - read one row from the global `blends` table
+ *   - isDeterministic(row)         - predicate: can this be claimed with `nosecfuse`?
+ *   - deterministicResults(row)    - list the ON_DEMAND_NFT mints the row produces
+ *   - all the typed shapes (BlendRow, IngredientVariant, ResultVariant, ...)
+ *
+ * The `blends` table is scoped by `blend.nefty` (the contract itself), NOT
+ * by collection. Each row carries its own `collection_name` field.
+ */
 import { getTableRows } from '../chain/rpc';
 
 /**
@@ -105,8 +117,8 @@ export async function loadBlend(args: {
   });
   if (rows.length === 0) {
     throw new Error(
-      `Blend ${args.blend_id} introuvable dans le contrat blend.nefty. ` +
-        `Vérifiez l'ID (visible sur AtomicHub ou bloks.io).`,
+      `Blend ${args.blend_id} not found in the blend.nefty contract. ` +
+        `Double-check the ID (visible on AtomicHub or waxblock.io).`,
     );
   }
   return rows[0];
@@ -130,7 +142,7 @@ export function isDeterministic(blend: BlendRow): {
     if (r.outcomes.length !== 1) {
       return {
         ok: false,
-        reason: `Roll #${i} a ${r.outcomes.length} issues possibles (blend aléatoire — utilisez secfuse, non supporté).`,
+        reason: `Roll #${i} a ${r.outcomes.length} issues possibles (blend aléatoire, utilisez secfuse, non supporté).`,
       };
     }
     if (r.outcomes[0].odds !== r.total_odds) {
@@ -139,12 +151,12 @@ export function isDeterministic(blend: BlendRow): {
         reason: `Roll #${i} : odds=${r.outcomes[0].odds} != total_odds=${r.total_odds} (résultat non garanti).`,
       };
     }
-    // Reject pool draws — by definition non-deterministic for the claimer
+    // Reject pool draws, by definition non-deterministic for the claimer
     for (const res of r.outcomes[0].results) {
       if (res[0] === 'POOL_NFT_RESULT') {
         return {
           ok: false,
-          reason: `Roll #${i} tire dans un POOL_NFT — résultat aléatoire, non supporté.`,
+          reason: `Roll #${i} tire dans un POOL_NFT, résultat aléatoire, non supporté.`,
         };
       }
     }

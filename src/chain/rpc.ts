@@ -1,3 +1,17 @@
+/**
+ * WAX chain client with multi-host failover.
+ *
+ * Every read in the app goes through `withFailover()` (or its sugar
+ * `getTableRows()`), which walks the list of public RPC endpoints in
+ * order until one answers. Same idea for `atomicFetch()` against the
+ * AtomicAssets API hosts.
+ *
+ * The cached client is hot-swapped to the last-known-good endpoint, so
+ * subsequent calls don't waste time on the dead host.
+ *
+ * Forks can add or reorder endpoints below; the list is the only thing
+ * tying the app to a particular infrastructure provider.
+ */
 import { APIClient } from '@wharfkit/session';
 
 export const WAX_CHAIN_ID =

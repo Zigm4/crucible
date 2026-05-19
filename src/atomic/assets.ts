@@ -1,3 +1,14 @@
+/**
+ * AtomicAssets NFT inventory reader.
+ *
+ * Lists the NFTs owned by an account: optionally filtered by collection.
+ * Used by the blend matcher to figure out which of a user's NFTs satisfy
+ * each ingredient slot, and by the drop discovery to find candidate
+ * "proof of ownership" NFTs for `claimwproof` drops.
+ *
+ * Reads through the public AtomicAssets API; ~20K NFT safety cap per
+ * scan to avoid runaway pagination on whales.
+ */
 import { atomicFetch } from '../chain/rpc';
 
 export interface AtomicAsset {

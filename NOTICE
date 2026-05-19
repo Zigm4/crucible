@@ -1,0 +1,47 @@
+Crucible
+Copyright (c) 2026 Zigm4 and contributors
+
+This software is licensed under the MIT License (see LICENSE).
+
+──────────────────────────────────────────────────────────────────────
+Attribution
+──────────────────────────────────────────────────────────────────────
+
+The MIT License already requires you to keep the copyright notice and
+the LICENSE file when you redistribute this code (with or without
+modifications). In addition, when you deploy a fork of Crucible
+publicly or under a different name, we kindly request that you keep a
+visible attribution link to the original project in the deployed UI.
+
+The default footer already includes such a link:
+
+    "Powered by Crucible -- github.com/Zigm4/crucible"
+
+If you keep that line (or move it elsewhere in your UI but keep it
+visible), you're already done.
+
+If you remove or hide it: nothing in the MIT License legally forbids
+that, but it goes against the spirit of why this code exists. Crucible
+was built specifically so that smart-contract communities are NEVER
+locked to a single client again. Stripping attribution off a fork
+breaks that chain in a small but real way.
+
+──────────────────────────────────────────────────────────────────────
+Third-party acknowledgements
+──────────────────────────────────────────────────────────────────────
+
+This project would not be possible without the following projects,
+which are bundled or referenced at runtime under their own licenses:
+
+  - @wharfkit/session, @wharfkit/web-renderer,
+    @wharfkit/wallet-plugin-anchor, @wharfkit/wallet-plugin-cloudwallet
+      Greymass -- https://wharfkit.com  (MIT)
+
+  - The WAX blockchain and its public RPC nodes
+      WAX validators -- https://wax.io
+
+  - AtomicAssets standard and AtomicHub public API
+      Pink.gg -- https://pink.gg
+
+  - blend.nefty + neftyblocksd smart contracts (the actual workhorses)
+      NeftyBlocks -- https://neftyblocks.com

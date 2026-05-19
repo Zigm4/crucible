@@ -1,3 +1,31 @@
+/**
+ * Crucible UI shell.
+ *
+ * This module owns the single mutable `state` object, the top-level render
+ * loop, and every event handler the page wires up. There is no framework
+ * underneath: state mutates, render() rebuilds the DOM, captureRenderSnapshot
+ * preserves scroll + focus + caret position so the user doesn't feel the
+ * re-render.
+ *
+ * Two views share the same shell:
+ *   - 'blends' , pick a blend, choose ingredients, sign nosecfuse.
+ *   - 'drops'  , pick a drop, claim against neftyblocksd.
+ *
+ * Discovery (listing what's available per collection) is *on-demand*: the
+ * user clicks "Refresh" on the picker card. No automatic fetch on mount,
+ * tab switch, or login. The page never spams RPC calls.
+ *
+ * Sub-modules:
+ *   - nefty/discover , on-chain blend list
+ *   - nefty/blend    : single-blend reader + isDeterministic check
+ *   - nefty/execute  : builds the blend transaction
+ *   - nefty/drops    : on-chain drop list + auth resolution
+ *   - nefty/dropExecute, builds the claim transaction
+ *   - atomic/assets  : user's NFTs (via AtomicAssets API)
+ *   - atomic/matcher , maps blend ingredients to owned NFTs
+ *   - ui/about       : collapsible inline guide panels
+ *   - ui/dryrun      : local ABI serialization (Simulate button)
+ */
 import {
   getCurrentSession,
   login,
@@ -39,23 +67,78 @@ import {
 import { loadTemplate, type TemplateInfo } from '../nefty/template';
 import { listDrops, type DiscoveredDrop, type DropStatus } from '../nefty/drops';
 import { buildClaimActions, executeClaim } from '../nefty/dropExecute';
+import {
+  listPackDesigns,
+  pickOwnedPacks,
+  loadPackRolls,
+  fetchTemplateName,
+  type OwnedPack,
+  type PackRoll,
+} from '../nefty/packs';
+import {
+  executeUnboxAnnounce,
+  executeUnboxClaim,
+} from '../nefty/packExecute';
+import { waitForUnboxAssets, type UnboxAssetRow } from '../nefty/packWait';
 import { dryRunActions } from './dryrun';
 import { renderAboutPanels } from './about';
 
-type AppView = 'blends' | 'drops';
+type AppView = 'blends' | 'drops' | 'packs';
+
+/**
+ * Multi-phase state machine for the auto-wait pack unbox flow.
+ *   - idle:      no pack selected
+ *   - selected:  user picked a pack, no transaction signed yet
+ *   - announcing:tx1 sent to the wallet, awaiting signature/broadcast
+ *   - waiting:   tx1 confirmed, polling unboxassets for ORNG callback
+ *   - ready:     ORNG arrived, awaiting user click on "Sign claim"
+ *   - claiming:  tx2 sent to the wallet, awaiting signature/broadcast
+ *   - done:      tx2 broadcast; trx_id available for the success link
+ *   - error:     irrecoverable failure; show message + retry options
+ */
+type PackPhase =
+  | 'idle'
+  | 'selected'
+  | 'announcing'
+  | 'waiting'
+  | 'ready'
+  | 'claiming'
+  | 'done'
+  | 'error';
 
 const COLLECTION_STORAGE_KEY = 'crucible.collection';
-const DEFAULT_COLLECTION = 'underpunks55';
+/**
+ * No default collection: the input starts empty and the user picks
+ * one (either by typing a name or clicking one of the suggestion chips).
+ * We still remember whatever they used last via localStorage.
+ */
+const DEFAULT_COLLECTION = '';
 
+/**
+ * Reads the user's last-used collection from localStorage, with no
+ * whitelist. The five SUPPORTED_COLLECTIONS are presented as autocomplete
+ * suggestions, but the user can target any WAX collection by typing its
+ * name. The on-chain scan and indexer paths work for any collection name.
+ */
 function loadStoredCollection(): string {
   try {
     const v = localStorage.getItem(COLLECTION_STORAGE_KEY);
-    if (v && (SUPPORTED_COLLECTIONS as readonly string[]).includes(v)) return v;
+    if (v && isValidWaxName(v)) return v;
   } catch {/* localStorage unavailable */}
   return DEFAULT_COLLECTION;
 }
 function persistCollection(v: string) {
   try { localStorage.setItem(COLLECTION_STORAGE_KEY, v); } catch {/* ignore */}
+}
+
+/**
+ * WAX account names are 1..12 chars, [a-z1-5.], no leading/trailing dot,
+ * no consecutive dots. We're lenient: we accept anything that COULD be a
+ * valid account, since we'll let the on-chain query be the final judge.
+ */
+function isValidWaxName(s: string): boolean {
+  if (!s || s.length > 12) return false;
+  return /^[a-z1-5]([a-z1-5.]*[a-z1-5])?$/.test(s);
 }
 
 interface FtStatus {
@@ -88,7 +171,16 @@ interface AppState {
   discoveryError?: string;
   discoverySource?: DiscoveryFlavour;
   discoveryProgress?: { pct: number; message: string };
+  /**
+   * Snapshot of the user's NFT inventory for the discovery collection,
+   * fetched in parallel with the blend list when a wallet is connected.
+   * Used by the "only show blends I can do" filter to skip rows whose
+   * ingredient slots cannot all be satisfied from the wallet.
+   */
+  discoveryOwnedAssets: AtomicAsset[];
   showInactive: boolean;
+  /** When true, the picker hides blends the wallet cannot satisfy. */
+  onlyExecutable: boolean;
   pickerOpen: boolean;
   // ── drops view ──
   view: AppView;
@@ -106,6 +198,45 @@ interface AppState {
   dropLastDryRun?: unknown;
   dropLastTrxId?: string;
   dropShowInactive: boolean;
+  /** When true, hides drops the wallet cannot currently claim. */
+  dropOnlyEligible: boolean;
+
+  // ── packs view ──
+  /**
+   * Every pack design registered on `atomicpacksx`, across every
+   * collection. The unpack flow doesn't care about a "current
+   * collection" -- it works off the user's full pack inventory and lets
+   * them filter by collection in a cascading dropdown.
+   */
+  packDesigns: ReturnType<typeof Array.prototype.slice> extends never ? never : import('../nefty/packs').PackDesign[];
+  /** Every pack NFT the wallet currently holds, across all collections. */
+  ownedPacks: OwnedPack[];
+  /** Currently picked collection in the cascading dropdown (step 1). */
+  packPickCollection?: string;
+  /** Currently picked pack design id within that collection (step 2). */
+  packPickDesignId?: string;
+  packsLoading: boolean;
+  packsError?: string;
+  packsProgress?: string;
+  /** Selected pack (the user's specific NFT instance), if any. */
+  selectedPack?: OwnedPack;
+  /** Roll definitions of the selected pack's design, fetched on pick. */
+  packRolls: PackRoll[];
+  /** Resolved template names for the rolls' outcomes (best-effort, async). */
+  packRollNames: Map<number, string>;
+  /** State machine for the auto-wait flow. */
+  packPhase: PackPhase;
+  /** Status message for the current phase (visible in the action card). */
+  packPhaseMessage?: string;
+  /** Elapsed ms in 'waiting' phase, for the countdown display. */
+  packWaitElapsedMs: number;
+  /** Resolved outcomes from ORNG (populated once 'waiting' completes). */
+  packUnboxAssets: UnboxAssetRow[];
+  /** Broadcast trx_ids for the two-step flow. */
+  packTx1Id?: string;
+  packTx2Id?: string;
+  /** Abort signal source for the polling wait (lets the user cancel). */
+  packAbort?: AbortController;
 }
 
 const state: AppState = {
@@ -123,8 +254,10 @@ const state: AppState = {
   blendLoading: false,
   discovered: [],
   discoveryCollection: loadStoredCollection(),
-  discoveryLoading: true,
+  discoveryLoading: false,
+  discoveryOwnedAssets: [],
   showInactive: false,
+  onlyExecutable: false,
   pickerOpen: false,
   view: 'blends',
   drops: [],
@@ -135,6 +268,15 @@ const state: AppState = {
   dropTemplateLoading: false,
   dropLoading: false,
   dropShowInactive: false,
+  dropOnlyEligible: false,
+  packDesigns: [],
+  ownedPacks: [],
+  packsLoading: false,
+  packRolls: [],
+  packRollNames: new Map(),
+  packPhase: 'idle',
+  packWaitElapsedMs: 0,
+  packUnboxAssets: [],
 };
 
 function setStatus(msg: string, kind: AppState['statusKind'] = 'info') {
@@ -226,6 +368,52 @@ async function refreshAssets() {
   }
 }
 
+/**
+ * Returns true if the user's wallet can satisfy every NFT ingredient slot
+ * of `blend`. Token (FT) slots are ignored: their balance is shown in the
+ * detail card after a blend is selected, so we don't pre-gate on cash.
+ *
+ * When `ingredients` is missing (e.g. indexer dropped them), we err on the
+ * side of "executable" so the row stays visible rather than vanishing.
+ */
+function isBlendExecutable(blend: DiscoveredBlend, ownedAssets: AtomicAsset[]): boolean {
+  if (!blend.ingredients || blend.ingredients.length === 0) return true;
+  const slots = buildSlots(blend.ingredients, ownedAssets);
+  for (const slot of slots) {
+    if (slot.kind === 'FT' || slot.kind === 'UNSUPPORTED') continue;
+    if (slot.eligible.length < slot.amount) return false;
+  }
+  return true;
+}
+
+/**
+ * Returns true when the wallet currently appears able to claim `drop`:
+ *   - public drops are always eligible
+ *   - whitelist drops require allowed === true
+ *   - proof drops require the proof rule to be satisfiable from the wallet
+ *   - authkey + unclaimable + structurally-broken drops are never eligible
+ *   - the per-account limit must allow at least one more claim
+ * The "active status" check is left to the existing showInactive toggle so
+ * the two toggles compose cleanly.
+ */
+function isDropClaimable(drop: DiscoveredDrop): boolean {
+  if (drop.account_remaining === 0) return false;
+  switch (drop.auth.kind) {
+    case 'public':      return true;
+    case 'whitelist':   return drop.auth.allowed === true;
+    case 'proof':       return !!drop.auth.resolved?.satisfied;
+    case 'authkey':     return false;
+    case 'unclaimable': return false;
+    case 'unverified':  return false; // no session, can't tell
+  }
+}
+
+/**
+ * Refreshes the blend list for the current collection. When a wallet is
+ * connected, the user's NFT inventory for that collection is fetched in
+ * parallel so the "only show blends I can do" filter has data to work
+ * with the moment the discovery returns.
+ */
 async function loadDiscovered() {
   state.discoveryLoading = true;
   state.discoveryError = undefined;
@@ -234,21 +422,32 @@ async function loadDiscovered() {
   render();
   try {
     const session = getCurrentSession();
-    const { blends, source } = await listBlends({
+    const actor = session ? String(session.actor) : undefined;
+    const blendsP = listBlends({
       collection: state.discoveryCollection,
       includeInactive: state.showInactive,
-      actor: session ? String(session.actor) : undefined,
+      actor,
       onProgress: (p) => {
         state.discoverySource = p.source;
         state.discoveryProgress = { pct: p.progress, message: p.message };
         render();
       },
     });
+    // Fire the inventory fetch in parallel. We only need it for the
+    // executable-only filter, so failures are silently swallowed: the
+    // filter just renders fewer (or no) rows in the worst case.
+    const inventoryP = actor
+      ? listAssetsForOwner({ owner: actor, collection_name: state.discoveryCollection })
+          .catch(() => [] as AtomicAsset[])
+      : Promise.resolve([] as AtomicAsset[]);
+    const [{ blends, source }, owned] = await Promise.all([blendsP, inventoryP]);
     state.discovered = blends;
     state.discoverySource = source;
+    state.discoveryOwnedAssets = owned;
   } catch (err) {
     state.discoveryError = (err as Error).message;
     state.discovered = [];
+    state.discoveryOwnedAssets = [];
   } finally {
     state.discoveryLoading = false;
     state.discoveryProgress = undefined;
@@ -256,16 +455,41 @@ async function loadDiscovered() {
   }
 }
 
+/**
+ * Toggling "include inactive" purges the stale list (because we cache by
+ * (collection, includeInactive, actor)) but does NOT auto-refetch, the
+ * user clicks Refresh when ready. On-demand by design.
+ */
 function onToggleShowInactive(checked: boolean) {
   state.showInactive = checked;
-  loadDiscovered();
+  state.discovered = [];
+  state.discoveryError = undefined;
+  state.discoverySource = undefined;
+  render();
 }
 
+/**
+ * Toggling the "only show executable" filter doesn't re-fetch anything,
+ * it just changes how the existing list is rendered. The user's NFT
+ * inventory was already fetched alongside the blend list in
+ * loadDiscovered().
+ */
+function onToggleOnlyExecutable(checked: boolean) {
+  state.onlyExecutable = checked;
+  render();
+}
+
+/**
+ * Switches the active collection. Discards anything tied to the previous
+ * collection (loaded blend/drop, owned NFTs, whitelist results, dry-run
+ * output) and clears the discovery lists. Does NOT trigger a fetch,
+ * discovery is on-demand; the user picks the moment.
+ */
 function onChangeCollection(name: string) {
   if (state.discoveryCollection === name) return;
   state.discoveryCollection = name;
   persistCollection(name);
-  // Clear loaded blend & drop — they're tied to the previous collection.
+  // Per-collection state, gone.
   state.blend = undefined;
   state.template = undefined;
   state.slots = [];
@@ -279,9 +503,13 @@ function onChangeCollection(name: string) {
   state.dropTemplate = undefined;
   state.dropLastDryRun = undefined;
   state.dropLastTrxId = undefined;
+  // Per-collection LISTS, gone too. User triggers refetch explicitly.
+  state.discovered = [];
+  state.discoveryError = undefined;
+  state.discoverySource = undefined;
   state.drops = [];
-  loadDiscovered();
-  if (state.view === 'drops') loadDropsList();
+  state.dropsError = undefined;
+  render();
 }
 
 function onPickDiscovered(blendId: string) {
@@ -314,13 +542,277 @@ function onPickerOutsideClick(ev: MouseEvent) {
 
 // ─── drops view handlers ──────────────────────────────────────────────── //
 
+/**
+ * Switches between BLEND and CLAIM tabs. The new tab's list stays empty
+ * until the user explicitly hits Refresh, on-demand fetching everywhere.
+ */
 function onSwitchView(v: AppView) {
   if (state.view === v) return;
-  state.view = v;
-  // Lazy-load drops the first time the user switches.
-  if (v === 'drops' && state.drops.length === 0 && !state.dropsLoading && !state.dropsError) {
-    loadDropsList();
+  // Switching away from the packs tab mid-wait must NOT silently keep
+  // polling in the background -- cancel the abort controller so the
+  // user can leave cleanly.
+  if (state.view === 'packs' && state.packAbort) {
+    state.packAbort.abort();
+    state.packAbort = undefined;
   }
+  state.view = v;
+  render();
+}
+
+// ─── packs view: discovery + auto-wait state machine ─────────────────── //
+
+/**
+ * Scans the global atomicpacksx::packs table for EVERY known pack design
+ * and cross-references with the wallet's full inventory (no collection
+ * filter). This makes the cascading dropdown self-populating: only the
+ * collections where the user actually owns at least one pack appear in
+ * step 1.
+ *
+ * The scan is heavy (chunked walk of the global table + full-wallet
+ * indexer call) but cached for 5 minutes inside `listPackDesigns`, so
+ * a "Refresh" click after the first run is mostly free.
+ */
+async function loadPacks() {
+  state.packsLoading = true;
+  state.packsError = undefined;
+  state.packsProgress = 'Scanning every pack design on atomicpacksx…';
+  render();
+  try {
+    const session = getCurrentSession();
+    const actor = session ? String(session.actor) : undefined;
+    // No collection filter on either side: we want the complete picture.
+    // Force-refresh the wallet inventory so a freshly-burned pack drops
+    // out of the cached snapshot after every unbox.
+    const designsP = listPackDesigns();
+    const inventoryP = actor
+      ? listAssetsForOwner({ owner: actor, force: true })
+          .catch(() => [] as AtomicAsset[])
+      : Promise.resolve([] as AtomicAsset[]);
+    const [designs, owned] = await Promise.all([designsP, inventoryP]);
+    state.packDesigns = designs;
+    state.ownedPacks = pickOwnedPacks(owned, designs);
+
+    // If the previously picked collection no longer has any owned pack
+    // (e.g. the user just opened the last one), drop the selection so
+    // the dropdown defaults back to the placeholder. Same logic for the
+    // design pick.
+    const collections = new Set(state.ownedPacks.map((p) => p.pack.collection_name));
+    if (state.packPickCollection && !collections.has(state.packPickCollection)) {
+      state.packPickCollection = undefined;
+      state.packPickDesignId = undefined;
+    }
+    if (state.packPickDesignId) {
+      const stillThere = state.ownedPacks.some(
+        (p) => p.pack.pack_id === state.packPickDesignId,
+      );
+      if (!stillThere) state.packPickDesignId = undefined;
+    }
+  } catch (err) {
+    state.packsError = (err as Error).message;
+    state.packDesigns = [];
+    state.ownedPacks = [];
+  } finally {
+    state.packsLoading = false;
+    state.packsProgress = undefined;
+    render();
+  }
+}
+
+/**
+ * Step 1 of the cascading dropdown: user picked a collection. Resets
+ * the downstream picks and the unbox state machine (since any prior
+ * selection belonged to the previous collection).
+ */
+function onPackPickCollection(collection: string) {
+  if (state.packPickCollection === collection) return;
+  state.packPickCollection = collection || undefined;
+  state.packPickDesignId = undefined;
+  onPackReset();
+}
+
+/**
+ * Step 2 of the cascading dropdown: user picked a pack DESIGN within
+ * the currently selected collection. If the wallet only owns one mint
+ * of that design we auto-pick it; otherwise step 3 shows a mint
+ * dropdown for them to disambiguate.
+ */
+function onPackPickDesign(designId: string) {
+  if (state.packPickDesignId === designId) return;
+  state.packPickDesignId = designId || undefined;
+  // Discard any previous pack selection -- a different design needs a
+  // fresh unbox cycle, regardless of which mint the user eventually
+  // picks within the new design.
+  if (state.selectedPack && state.selectedPack.pack.pack_id !== designId) {
+    onPackReset();
+  }
+  if (!designId) {
+    render();
+    return;
+  }
+  const owned = state.ownedPacks.filter(
+    (p) => p.pack.collection_name === state.packPickCollection && p.pack.pack_id === designId,
+  );
+  if (owned.length === 1) {
+    onPickPack(owned[0].asset_id);
+  } else {
+    render();
+  }
+}
+
+/**
+ * Called when the user picks one of their owned packs to open. Resets
+ * the state machine and pre-fetches the roll definitions + result
+ * template names for the info card.
+ */
+async function onPickPack(asset_id: string) {
+  const pack = state.ownedPacks.find((p) => p.asset_id === asset_id);
+  if (!pack) return;
+  // Any prior wait must be cancelled before we start a new flow.
+  if (state.packAbort) {
+    state.packAbort.abort();
+    state.packAbort = undefined;
+  }
+  state.selectedPack = pack;
+  state.packRolls = [];
+  state.packRollNames = new Map();
+  state.packUnboxAssets = [];
+  state.packTx1Id = undefined;
+  state.packTx2Id = undefined;
+  state.packPhase = 'selected';
+  state.packPhaseMessage = undefined;
+  render();
+
+  try {
+    const rolls = await loadPackRolls(pack.pack.pack_id);
+    state.packRolls = rolls;
+    render();
+    // Enrich the most-frequent template names asynchronously, best-effort.
+    const seen = new Set<number>();
+    for (const roll of rolls) {
+      for (const o of roll.outcomes.slice(0, 3)) {
+        if (seen.has(o.template_id)) continue;
+        seen.add(o.template_id);
+        fetchTemplateName(pack.pack.collection_name, o.template_id).then((name) => {
+          if (name) {
+            state.packRollNames.set(o.template_id, name);
+            render();
+          }
+        });
+      }
+    }
+  } catch (err) {
+    state.packPhase = 'error';
+    state.packPhaseMessage = `Failed to read pack rolls: ${(err as Error).message}`;
+    render();
+  }
+}
+
+/**
+ * Step 1 of the unbox flow: ask the wallet to sign the transfer-with-
+ * memo-"unbox". On broadcast, immediately enter the 'waiting' phase
+ * and start polling unboxassets for ORNG callback.
+ */
+async function onPackAnnounce() {
+  const session = getCurrentSession();
+  const pack = state.selectedPack;
+  if (!session || !pack) return;
+  state.packPhase = 'announcing';
+  state.packPhaseMessage = 'Awaiting wallet signature for step 1 (send pack to atomicpacksx)…';
+  render();
+  try {
+    const result = await executeUnboxAnnounce(session, pack.asset_id);
+    state.packTx1Id =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    state.packPhase = 'waiting';
+    state.packPhaseMessage = 'TX1 broadcast. Waiting for ORNG randomness…';
+    state.packWaitElapsedMs = 0;
+    state.packAbort = new AbortController();
+    render();
+
+    const rows = await waitForUnboxAssets({
+      pack_asset_id: pack.asset_id,
+      onTick: (elapsedMs) => {
+        state.packWaitElapsedMs = elapsedMs;
+        // re-render the elapsed time without trashing other state
+        if (state.view === 'packs') render();
+      },
+      signal: state.packAbort.signal,
+    });
+    state.packUnboxAssets = rows;
+    state.packPhase = 'ready';
+    state.packPhaseMessage = `ORNG arrived. ${rows.length} card${rows.length === 1 ? '' : 's'} ready to mint.`;
+    state.packAbort = undefined;
+    render();
+  } catch (err) {
+    state.packPhase = 'error';
+    state.packPhaseMessage = (err as Error).message;
+    state.packAbort = undefined;
+    render();
+  }
+}
+
+/**
+ * Step 2 of the unbox flow: claim the resolved outcomes. Builds
+ * claimunboxed with the roll IDs the ORNG callback wrote to chain.
+ */
+async function onPackClaim() {
+  const session = getCurrentSession();
+  const pack = state.selectedPack;
+  if (!session || !pack) return;
+  if (state.packUnboxAssets.length === 0) return;
+  state.packPhase = 'claiming';
+  state.packPhaseMessage = 'Awaiting wallet signature for step 2 (mint the cards)…';
+  render();
+  try {
+    const result = await executeUnboxClaim(session, {
+      pack_asset_id: pack.asset_id,
+      origin_roll_ids: state.packUnboxAssets.map((r) => r.origin_roll_id),
+    });
+    state.packTx2Id =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    state.packPhase = 'done';
+    state.packPhaseMessage = `Pack opened. ${state.packUnboxAssets.length} NFT(s) minted to your wallet.`;
+    render();
+    // The pack NFT is burned by the contract during claimunboxed: drop
+    // it from the cached inventory immediately so the cascade dropdowns
+    // can't offer it again. We don't await this: it's a fire-and-forget
+    // refresh that updates the lists for the user's next click.
+    void loadPacks();
+  } catch (err) {
+    state.packPhase = 'error';
+    state.packPhaseMessage = (err as Error).message;
+    render();
+  }
+}
+
+/** Cancels an in-progress 'waiting' phase. The on-chain unbox state is
+ *  preserved, the user can come back later and claim. */
+function onPackCancelWait() {
+  state.packAbort?.abort();
+  state.packAbort = undefined;
+  state.packPhase = 'error';
+  state.packPhaseMessage =
+    'You cancelled the wait. The pack is still in atomicpacksx; refresh and pick it again to resume.';
+  render();
+}
+
+/** Resets the state machine so the user can pick another pack. */
+function onPackReset() {
+  if (state.packAbort) {
+    state.packAbort.abort();
+    state.packAbort = undefined;
+  }
+  state.selectedPack = undefined;
+  state.packRolls = [];
+  state.packRollNames = new Map();
+  state.packUnboxAssets = [];
+  state.packPhase = 'idle';
+  state.packPhaseMessage = undefined;
+  state.packTx1Id = undefined;
+  state.packTx2Id = undefined;
+  state.packWaitElapsedMs = 0;
   render();
 }
 
@@ -354,7 +846,18 @@ async function loadDropsList() {
 
 function onToggleDropShowInactive(checked: boolean) {
   state.dropShowInactive = checked;
-  loadDropsList();
+  state.drops = [];
+  state.dropsError = undefined;
+  render();
+}
+
+/**
+ * Toggle for the "only show drops I can claim" filter. Pure client-side
+ * filter on the already-fetched list, no refetch.
+ */
+function onToggleDropOnlyEligible(checked: boolean) {
+  state.dropOnlyEligible = checked;
+  render();
 }
 
 function onToggleDropPicker() {
@@ -411,7 +914,7 @@ async function onLoadDropManual() {
     onPickDrop(state.dropId);
     return;
   }
-  // Otherwise fetch it ad-hoc — useful for drops from other collections or
+  // Otherwise fetch it ad-hoc, useful for drops from other collections or
   // drops the user knows by ID but that aren't in the active filter view.
   state.dropLoading = true;
   state.drop = undefined;
@@ -427,7 +930,7 @@ async function onLoadDropManual() {
       actor: session ? String(session.actor) : undefined,
       ownedAssets: state.ownedAssets,
     });
-    // Try to find by id — fall back to a direct chain read if absent.
+    // Try to find by id, fall back to a direct chain read if absent.
     const drop = drops.find((d) => d.drop_id === state.dropId);
     if (drop) {
       onPickDrop(state.dropId);
@@ -488,7 +991,7 @@ async function onDropDryRun() {
     state.dropLastDryRun = { actions, abi_serialization: out };
     const ok = out.every((r) => !r.error);
     setStatus(
-      ok ? `Simulation OK — ${actions.length} action(s) serialize cleanly.` : 'Simulation failed for at least one action.',
+      ok ? `Simulation OK, ${actions.length} action(s) serialize cleanly.` : 'Simulation failed for at least one action.',
       ok ? 'ok' : 'err',
     );
   } catch (err) {
@@ -567,7 +1070,7 @@ async function onLoadBlend() {
       });
     }
 
-    state.blendLoading = false; // header info is enough to show — keep skeletons for assets/template
+    state.blendLoading = false; // header info is enough to show, keep skeletons for assets/template
     render();
 
     // Kick off template enrichment + asset refresh in parallel.
@@ -663,7 +1166,7 @@ async function onDryRun() {
     const ok = out.every((r) => !r.error);
     setStatus(
       ok
-        ? `Simulation OK — ${actions.length} action(s) serialize cleanly.`
+        ? `Simulation OK, ${actions.length} action(s) serialize cleanly.`
         : 'Simulation failed for at least one action.',
       ok ? 'ok' : 'err',
     );
@@ -713,7 +1216,7 @@ function renderConnect(session: ReturnType<typeof getCurrentSession>): string {
     return `
       <div class="card">
         <h2>1 · Connect wallet</h2>
-        <p class="term">Anchor or WAX Cloud Wallet. No backend — your key stays in your wallet.</p>
+        <p class="term">Anchor or WAX Cloud Wallet. No backend, your key stays in your wallet.</p>
         <div class="row" style="margin-top:10px">
           <button class="primary" data-action="login">Initialize session</button>
         </div>
@@ -742,30 +1245,55 @@ function statusLabel(s: DiscoveredStatus): string {
   }
 }
 
+/**
+ * Free-form collection input. Starts empty. Any WAX account name can be
+ * typed. Underneath the input, SUPPORTED_COLLECTIONS are rendered as
+ * clickable chips: clicking one fills the input and commits the change
+ * (same effect as typing the name + pressing Enter).
+ */
 function renderCollectionSelector(): string {
-  const opts = SUPPORTED_COLLECTIONS.map((c) => {
-    const selected = state.discoveryCollection === c ? ' selected' : '';
-    return `<option value="${escapeHtml(c)}"${selected}>${escapeHtml(c)}</option>`;
-  }).join('');
-  return `<select id="collectionPick">${opts}</select>`;
+  const chips = SUPPORTED_COLLECTIONS
+    .map((c) => {
+      const active = state.discoveryCollection === c ? ' active' : '';
+      return `<button type="button" class="collection-chip${active}" data-action="pickCollection" data-collection="${escapeHtml(c)}">${escapeHtml(c)}</button>`;
+    })
+    .join('');
+  return `
+    <div class="collection-input">
+      <input
+        id="collectionPick"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        maxlength="12"
+        placeholder="type any WAX collection..."
+        value="${escapeHtml(state.discoveryCollection)}"
+      />
+      <div class="collection-chips">
+        <span class="collection-chips-label">suggestions:</span>
+        ${chips}
+      </div>
+    </div>`;
 }
 
 function renderPickerToggle(): string {
-  let label = 'Select a blend…';
-  if (state.blend) {
-    label = `[#${state.blend.blend_id}] ${state.blend.collection_name}`;
+  let label = 'Select a blend...';
+  const notLoadedYet = state.discovered.length === 0 && !state.discoveryLoading && !state.discoveryError;
+  if (notLoadedYet) {
+    label = `Click "Discover blends" to load ${state.discoveryCollection || 'a collection'}’s list`;
   } else if (state.discoveryLoading) {
-    label = state.discoveryProgress?.message ?? 'Loading blends…';
+    label = state.discoveryProgress?.message ?? 'Loading blends...';
   } else if (state.discoveryError) {
-    label = 'Discovery failed — use manual entry below';
-  } else if (state.discovered.length === 0) {
-    label = `No blends found for ${state.discoveryCollection}`;
+    label = 'Discovery failed, use manual entry below';
+  } else if (state.blend) {
+    label = `[#${state.blend.blend_id}] ${state.blend.collection_name}`;
   } else {
     const found = state.discovered.find((b) => b.blend_id === state.blendId);
     if (found) label = `[#${found.blend_id}] ${found.name}`;
   }
+  const disabled = state.discoveryLoading || state.discoveryError || notLoadedYet;
   return `
-    <button class="picker-toggle" data-action="togglePicker" ${state.discoveryLoading || state.discoveryError ? 'disabled' : ''}>
+    <button class="picker-toggle" data-action="togglePicker" ${disabled ? 'disabled' : ''}>
       <span class="picker-current">${escapeHtml(label)}</span>
       <span class="picker-caret">${state.pickerOpen ? '▴' : '▾'}</span>
     </button>`;
@@ -773,10 +1301,17 @@ function renderPickerToggle(): string {
 
 function renderPickerPanel(): string {
   if (!state.pickerOpen || state.discoveryLoading || state.discoveryError) return '';
-  if (state.discovered.length === 0) {
-    return `<div class="picker-panel"><div class="picker-empty">No blends found.</div></div>`;
+  // Apply the "only show executable" filter when the user enabled it.
+  const visible = state.onlyExecutable
+    ? state.discovered.filter((b) => isBlendExecutable(b, state.discoveryOwnedAssets))
+    : state.discovered;
+  if (visible.length === 0) {
+    const msg = state.onlyExecutable && state.discovered.length > 0
+      ? `No blends your wallet can satisfy right now. Untick "only show what I can blend" to see all ${state.discovered.length}.`
+      : 'No blends found.';
+    return `<div class="picker-panel"><div class="picker-empty">${escapeHtml(msg)}</div></div>`;
   }
-  const rows = state.discovered
+  const rows = visible
     .map((b) => {
       const wlDenied = b.whitelist_required && b.whitelist_allowed === false;
       const wlPending = b.whitelist_required && b.whitelist_allowed === undefined;
@@ -798,6 +1333,20 @@ function renderPickerPanel(): string {
     })
     .join('');
   return `<div class="picker-panel"><div class="picker-rows">${rows}</div></div>`;
+}
+
+/**
+ * Inline notice that appears under the toggles when the "only show
+ * what I can blend" filter is active and the wallet cannot satisfy any
+ * blend in the loaded list. Without this, the user just sees an empty
+ * dropdown and might think the filter is broken.
+ */
+function noBlendsEligibleNotice(): string {
+  if (!state.onlyExecutable) return '';
+  if (state.discovered.length === 0) return '';
+  const eligible = state.discovered.filter((b) => isBlendExecutable(b, state.discoveryOwnedAssets));
+  if (eligible.length > 0) return '';
+  return `<p class="status-line warn">Your wallet can't fully cover any of the ${state.discovered.length} blends in this list right now. Untick "only show what I can blend" to see them all, or change collection.</p>`;
 }
 
 function renderLegend(): string {
@@ -830,6 +1379,11 @@ function renderPickBlend(): string {
     ? `<div class="progress"><div class="progress-fill" style="width:${Math.round(state.discoveryProgress.pct * 100)}%"></div></div>`
     : '';
 
+  const refreshLabel = state.discoveryLoading
+    ? 'Refreshing...'
+    : state.discovered.length > 0
+      ? 'Refresh blends'
+      : 'Discover blends';
   return `
     <div class="card">
       <h2>2 · Pick a blend</h2>
@@ -845,17 +1399,25 @@ function renderPickBlend(): string {
             ${renderPickerPanel()}
           </div>
         </div>
+        <button class="primary" data-action="refreshBlends" ${state.discoveryLoading || !isValidWaxName(state.discoveryCollection) ? 'disabled' : ''}>
+          ${escapeHtml(refreshLabel)}
+        </button>
       </div>
       ${progressBar}
-      <div class="row" style="margin-top:10px; gap:14px; align-items:center">
+      <div class="row" style="margin-top:10px; gap:14px; align-items:center; flex-wrap:wrap">
         <label class="inline-toggle">
           <input id="showInactive" type="checkbox" data-action="toggleInactive" ${state.showInactive ? 'checked' : ''} />
           <span>show ended / upcoming / sold-out</span>
+        </label>
+        <label class="inline-toggle" title="${getCurrentSession() ? 'Filter the list to blends your wallet can satisfy right now (NFT slots).' : 'Connect your wallet first; we need to know which NFTs you own.'}">
+          <input id="onlyExecutable" type="checkbox" data-action="toggleOnlyExecutable" ${state.onlyExecutable ? 'checked' : ''} ${getCurrentSession() ? '' : 'disabled'} />
+          <span>only show what I can blend</span>
         </label>
         <div class="spacer"></div>
         ${sourceTag}
         <span class="term">${escapeHtml(counts)}</span>
       </div>
+      ${noBlendsEligibleNotice()}
       ${renderLegend()}
 
       <div class="divider"></div>
@@ -880,7 +1442,7 @@ function renderSkeleton(label: string): string {
       <div class="skeleton-bar shimmer" style="width: 60%"></div>
       <div class="skeleton-bar shimmer" style="width: 40%"></div>
       <div class="skeleton-bar shimmer" style="width: 75%"></div>
-      <p class="status-line">Reading the recipe from <code>blend.nefty</code> — this may take a few seconds, especially if the indexer is down and we're scanning the chain directly.</p>
+      <p class="status-line">Reading the recipe from <code>blend.nefty</code>: this may take a few seconds, especially if the indexer is down and we're scanning the chain directly.</p>
     </div>`;
 }
 
@@ -889,7 +1451,7 @@ function renderExpectedMint(): string {
   if (!b) return '';
   const results = deterministicResults(b);
   if (results.length === 0) {
-    return '<p class="status-line warn">No on-demand mint result — output may be empty or out of this app\'s scope.</p>';
+    return '<p class="status-line warn">No on-demand mint result, output may be empty or out of this app\'s scope.</p>';
   }
   const t = state.template;
   const loading = state.templateLoading;
@@ -903,7 +1465,7 @@ function renderExpectedMint(): string {
         <li><strong>Schema:</strong> <span class="shimmer skeleton-inline">loading…</span></li>
         <li><strong>Issued / max:</strong> <span class="shimmer skeleton-inline">loading…</span></li>`;
     }
-    const name = t?.name ?? '(unknown — indexer down, name not on-chain readable)';
+    const name = t?.name ?? '(unknown, indexer down, name not on-chain readable)';
     const max = t?.max_supply ? String(t.max_supply) : '∞';
     const issued = t?.issued_supply ?? '?';
     const remaining = t && t.max_supply > 0
@@ -921,7 +1483,7 @@ function renderExpectedMint(): string {
   })();
 
   const extras = results.length > 1
-    ? `<p class="term">+ ${results.length - 1} additional mint(s) — IDs: ${results.slice(1).map((r) => `<code>${r.template_id}</code>`).join(', ')}</p>`
+    ? `<p class="term">+ ${results.length - 1} additional mint(s), IDs: ${results.slice(1).map((r) => `<code>${r.template_id}</code>`).join(', ')}</p>`
     : '';
 
   return `
@@ -943,7 +1505,7 @@ function renderBlendInfo(): string {
     : `${b.use_count}/∞`;
   return `
     <div class="card">
-      <h2>3 · Blend #${escapeHtml(String(b.blend_id))} <span class="term">— ${escapeHtml(b.collection_name)}</span></h2>
+      <h2>3 · Blend #${escapeHtml(String(b.blend_id))} <span class="term">-- ${escapeHtml(b.collection_name)}</span></h2>
       <div class="row">
         ${det.ok ? '<span class="tag ok">deterministic</span>' : '<span class="tag err">non-deterministic</span>'}
         ${
@@ -1076,7 +1638,7 @@ function renderActions(): string {
       }
       ${
         state.lastTrxId
-          ? `<p class="status-line ok">Trx broadcast: <a target="_blank" href="https://wax.bloks.io/transaction/${escapeHtml(state.lastTrxId)}">${escapeHtml(state.lastTrxId)}</a></p>`
+          ? `<p class="status-line ok">Trx broadcast: <a target="_blank" href="https://waxblock.io/transaction/${escapeHtml(state.lastTrxId)}">${escapeHtml(state.lastTrxId)}</a></p>`
           : ''
       }
     </div>`;
@@ -1101,6 +1663,7 @@ function renderTabs(): string {
       <div class="tabs">
         ${tab('blends', 'Blend', 'burn NFTs → mint result')}
         ${tab('drops',  'Claim', 'pay (or not) → mint a drop')}
+        ${tab('packs',  'Unpack', 'open packs you own')}
       </div>
     </div>`;
 }
@@ -1118,13 +1681,20 @@ function dropStatusLabel(s: DropStatus): string {
 }
 
 function renderDropPickerToggle(): string {
-  let label = 'Select a drop…';
-  if (state.drop) label = `[#${state.drop.drop_id}] ${state.drop.name}`;
-  else if (state.dropsLoading) label = state.dropsProgress?.message ?? 'Scanning drops…';
-  else if (state.dropsError) label = 'Discovery failed';
-  else if (state.drops.length === 0) label = `No drops found for ${state.discoveryCollection}`;
+  let label = 'Select a drop...';
+  const notLoadedYet = state.drops.length === 0 && !state.dropsLoading && !state.dropsError;
+  if (notLoadedYet) {
+    label = `Click "Discover drops" to load ${state.discoveryCollection || 'a collection'}’s list`;
+  } else if (state.drop) {
+    label = `[#${state.drop.drop_id}] ${state.drop.name}`;
+  } else if (state.dropsLoading) {
+    label = state.dropsProgress?.message ?? 'Scanning drops...';
+  } else if (state.dropsError) {
+    label = 'Discovery failed';
+  }
+  const disabled = state.dropsLoading || state.dropsError || notLoadedYet;
   return `
-    <button class="picker-toggle" data-action="toggleDropPicker" ${state.dropsLoading || state.dropsError ? 'disabled' : ''}>
+    <button class="picker-toggle" data-action="toggleDropPicker" ${disabled ? 'disabled' : ''}>
       <span class="picker-current">${escapeHtml(label)}</span>
       <span class="picker-caret">${state.dropPickerOpen ? '▴' : '▾'}</span>
     </button>`;
@@ -1132,10 +1702,17 @@ function renderDropPickerToggle(): string {
 
 function renderDropPickerPanel(): string {
   if (!state.dropPickerOpen || state.dropsLoading || state.dropsError) return '';
-  if (state.drops.length === 0) {
-    return `<div class="picker-panel"><div class="picker-empty">No drops found.</div></div>`;
+  // Apply the "only eligible" filter when on.
+  const visible = state.dropOnlyEligible
+    ? state.drops.filter(isDropClaimable)
+    : state.drops;
+  if (visible.length === 0) {
+    const msg = state.dropOnlyEligible && state.drops.length > 0
+      ? `No drops your wallet can claim right now. Untick "only show what I can claim" to see all ${state.drops.length}.`
+      : 'No drops found.';
+    return `<div class="picker-panel"><div class="picker-empty">${escapeHtml(msg)}</div></div>`;
   }
-  const rows = state.drops
+  const rows = visible
     .map((d) => {
       const wlDenied = d.auth.kind === 'whitelist' && d.auth.allowed === false;
       const proofNotMet = d.auth.kind === 'proof' && d.auth.resolved && !d.auth.resolved.satisfied;
@@ -1179,6 +1756,19 @@ function renderDropPickerPanel(): string {
   return `<div class="picker-panel"><div class="picker-rows">${rows}</div></div>`;
 }
 
+/**
+ * Same idea as noBlendsEligibleNotice but for the drops view. Lists the
+ * possible blockers (whitelist, NFT proof, per-account limit, authkey)
+ * so the user understands WHY nothing showed up.
+ */
+function noDropsEligibleNotice(): string {
+  if (!state.dropOnlyEligible) return '';
+  if (state.drops.length === 0) return '';
+  const eligible = state.drops.filter(isDropClaimable);
+  if (eligible.length > 0) return '';
+  return `<p class="status-line warn">None of the ${state.drops.length} drops in this list are claimable by your wallet right now (whitelist, NFT proof, per-account limit, or auth-key gated). Untick "only show what I can claim" to see them all.</p>`;
+}
+
 function renderDropLegend(): string {
   return `
     <div class="legend">
@@ -1206,6 +1796,11 @@ function renderPickDrop(): string {
     ? `<div class="progress"><div class="progress-fill" style="width:${Math.round(state.dropsProgress.pct * 100)}%"></div></div>`
     : '';
 
+  const refreshLabel = state.dropsLoading
+    ? 'Refreshing...'
+    : state.drops.length > 0
+      ? 'Refresh drops'
+      : 'Discover drops';
   return `
     <div class="card">
       <h2>2 · Pick a drop</h2>
@@ -1221,17 +1816,25 @@ function renderPickDrop(): string {
             ${renderDropPickerPanel()}
           </div>
         </div>
+        <button class="primary" data-action="refreshDrops" ${state.dropsLoading || !isValidWaxName(state.discoveryCollection) ? 'disabled' : ''}>
+          ${escapeHtml(refreshLabel)}
+        </button>
       </div>
       ${progressBar}
-      <div class="row" style="margin-top:10px; gap:14px; align-items:center">
+      <div class="row" style="margin-top:10px; gap:14px; align-items:center; flex-wrap:wrap">
         <label class="inline-toggle">
           <input id="dropShowInactive" type="checkbox" data-action="toggleDropInactive" ${state.dropShowInactive ? 'checked' : ''} />
           <span>show ended / upcoming / sold-out</span>
+        </label>
+        <label class="inline-toggle" title="${getCurrentSession() ? 'Filter to drops you can actually claim right now (whitelist, NFT proof, per-account limit).' : 'Connect your wallet first; we need to check your eligibility.'}">
+          <input id="dropOnlyEligible" type="checkbox" data-action="toggleDropOnlyEligible" ${state.dropOnlyEligible ? 'checked' : ''} ${getCurrentSession() ? '' : 'disabled'} />
+          <span>only show what I can claim</span>
         </label>
         <div class="spacer"></div>
         ${sourceTag}
         <span class="term">${escapeHtml(counts)}</span>
       </div>
+      ${noDropsEligibleNotice()}
       ${renderDropLegend()}
 
       <div class="divider"></div>
@@ -1273,7 +1876,7 @@ function renderDropAuth(d: DiscoveredDrop): string {
 function renderDropAuthExplainer(d: DiscoveredDrop): string {
   switch (d.auth.kind) {
     case 'unclaimable':
-      return `<p class="status-line err">This drop has <code>auth_required = true</code> but every on-chain gate (whitelist, NFT proof, authkey) is empty. The contract will refuse every claim until the drop creator populates one. There is nothing you or this app can do — try reaching out to the collection.</p>`;
+      return `<p class="status-line err">This drop has <code>auth_required = true</code> but every on-chain gate (whitelist, NFT proof, authkey) is empty. The contract will refuse every claim until the drop creator populates one. There is nothing you or this app can do, try reaching out to the collection.</p>`;
     case 'authkey':
       return `<p class="status-line err">This drop is gated by <code>claimdropkey</code>: the creator pre-signs a per-user message off-chain. Without that signed message the contract refuses. Crucible can't fabricate it.</p>`;
     case 'unverified':
@@ -1341,11 +1944,11 @@ function renderDropInfo(): string {
   const cooldownNote = (() => {
     if (d.account_remaining !== 0) return '';
     if (!d.cooldown_resets_at) {
-      return '<p class="status-line err">You already hit this drop\'s per-account limit. There is no cooldown — you can\'t claim it again.</p>';
+      return '<p class="status-line err">You already hit this drop\'s per-account limit. There is no cooldown, you can\'t claim it again.</p>';
     }
     const wait = d.cooldown_resets_at - Math.floor(Date.now() / 1000);
     if (wait <= 0) {
-      return '<p class="status-line warn">Cooldown should have just expired — reload the list to re-check.</p>';
+      return '<p class="status-line warn">Cooldown should have just expired, reload the list to re-check.</p>';
     }
     return `<p class="status-line warn">You hit this drop's per-account limit. Cooldown resets in <strong>${escapeHtml(formatHumanDuration(wait))}</strong>.</p>`;
   })();
@@ -1354,7 +1957,7 @@ function renderDropInfo(): string {
     : '';
   return `
     <div class="card">
-      <h2>3 · Drop #${escapeHtml(d.drop_id)} <span class="term">— ${escapeHtml(d.collection_name)}</span></h2>
+      <h2>3 · Drop #${escapeHtml(d.drop_id)} <span class="term">-- ${escapeHtml(d.collection_name)}</span></h2>
       <div class="row">
         <span class="status-chip status-${escapeHtml(d.status)}">${escapeHtml(dropStatusLabel(d.status))}</span>
         ${d.is_free ? '<span class="tag ok">free</span>' : `<span class="tag">${escapeHtml(d.listing_price)}</span>`}
@@ -1397,9 +2000,281 @@ function renderDropActions(): string {
         ? `<h3>Dry-run output</h3><pre>${escapeHtml(JSON.stringify(state.dropLastDryRun, null, 2))}</pre>`
         : ''}
       ${state.dropLastTrxId
-        ? `<p class="status-line ok">Trx broadcast: <a target="_blank" href="https://wax.bloks.io/transaction/${escapeHtml(state.dropLastTrxId)}">${escapeHtml(state.dropLastTrxId)}</a></p>`
+        ? `<p class="status-line ok">Trx broadcast: <a target="_blank" href="https://waxblock.io/transaction/${escapeHtml(state.dropLastTrxId)}">${escapeHtml(state.dropLastTrxId)}</a></p>`
         : ''}
     </div>`;
+}
+
+// ─── packs view rendering ─────────────────────────────────────────────── //
+
+function renderPickPack(): string {
+  const session = getCurrentSession();
+  const scanned = state.packDesigns.length > 0 || state.packsError !== undefined;
+  const refreshLabel = state.packsLoading
+    ? 'Refreshing...'
+    : scanned
+      ? 'Refresh my packs'
+      : 'Discover my packs';
+
+  // Group the user's owned packs by (collection -> design -> mints).
+  // Cascading dropdown is built off this aggregate.
+  const byCollection = new Map<
+    string,
+    {
+      total: number;
+      designs: Map<string, { design: OwnedPack['pack']; mints: OwnedPack[] }>;
+    }
+  >();
+  for (const owned of state.ownedPacks) {
+    const cn = owned.pack.collection_name;
+    let coll = byCollection.get(cn);
+    if (!coll) {
+      coll = { total: 0, designs: new Map() };
+      byCollection.set(cn, coll);
+    }
+    coll.total += 1;
+    const k = owned.pack.pack_id;
+    let bucket = coll.designs.get(k);
+    if (!bucket) {
+      bucket = { design: owned.pack, mints: [] };
+      coll.designs.set(k, bucket);
+    }
+    bucket.mints.push(owned);
+  }
+
+  const collections = Array.from(byCollection.entries())
+    .map(([name, info]) => ({ name, total: info.total }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  // ── all three cascading dropdowns are ALWAYS rendered so the
+  // structure of the form is visible from the start. Downstream
+  // dropdowns are `disabled` (greyed and unclickable) until their
+  // prerequisite is picked, which makes the cascade obvious without
+  // requiring a click first.
+  const cascadeReady = !state.packsLoading && collections.length > 0;
+
+  // Step 1: collection
+  const collOptions = collections.map(({ name, total }) => {
+    const sel = state.packPickCollection === name ? ' selected' : '';
+    return `<option value="${escapeHtml(name)}"${sel}>${escapeHtml(name)} (${total} pack${total === 1 ? '' : 's'})</option>`;
+  }).join('');
+  const collDisabled = !cascadeReady ? ' disabled' : '';
+  const collPicker = `
+    <div style="flex:1; min-width: 220px">
+      <label>Collection</label>
+      <select class="pack-pick-collection pack-cascade"${collDisabled}>
+        <option value="" ${state.packPickCollection ? '' : 'selected'} disabled>Pick a collection...</option>
+        ${collOptions}
+      </select>
+    </div>`;
+
+  // Step 2: pack design. Disabled when no collection picked.
+  let designOptions = '';
+  if (cascadeReady && state.packPickCollection) {
+    const coll = byCollection.get(state.packPickCollection);
+    const designs = coll ? Array.from(coll.designs.values()) : [];
+    designs.sort((a, b) => Number(b.design.pack_id) - Number(a.design.pack_id));
+    designOptions = designs.map(({ design, mints }) => {
+      const sel = state.packPickDesignId === design.pack_id ? ' selected' : '';
+      const rolls = design.roll_counter;
+      return `<option value="${escapeHtml(design.pack_id)}"${sel}>${escapeHtml(design.name)} - ${mints.length}× owned (${rolls} card${rolls === 1 ? '' : 's'} per pack)</option>`;
+    }).join('');
+  }
+  const designDisabled = !cascadeReady || !state.packPickCollection ? ' disabled' : '';
+  const designPicker = `
+    <div style="flex:1; min-width: 260px">
+      <label>Pack type</label>
+      <select class="pack-pick-design pack-cascade"${designDisabled}>
+        <option value="" ${state.packPickDesignId ? '' : 'selected'} disabled>Pick a pack type...</option>
+        ${designOptions}
+      </select>
+    </div>`;
+
+  // Step 3: mint. Always rendered, but greyed out when no design picked
+  // OR when the picked design only has one owned mint (auto-selected,
+  // dropdown is decorative). Showing it always keeps the form layout
+  // stable as the user moves through the cascade.
+  let mintOptions = '';
+  let mintHasMultiple = false;
+  let singleAutoLabel = '';
+  if (cascadeReady && state.packPickCollection && state.packPickDesignId) {
+    const coll = byCollection.get(state.packPickCollection);
+    const bucket = coll?.designs.get(state.packPickDesignId);
+    if (bucket) {
+      mintHasMultiple = bucket.mints.length > 1;
+      if (mintHasMultiple) {
+        const sorted = [...bucket.mints].sort((a, b) => Number(b.asset_id) - Number(a.asset_id));
+        mintOptions = sorted.map((m) => {
+          const sel = state.selectedPack?.asset_id === m.asset_id ? ' selected' : '';
+          const mintLabel = m.mint ? ` · mint ${m.mint}` : '';
+          return `<option value="${escapeHtml(m.asset_id)}"${sel}>#${escapeHtml(m.asset_id)}${escapeHtml(mintLabel)}</option>`;
+        }).join('');
+      } else if (bucket.mints.length === 1) {
+        const only = bucket.mints[0];
+        const mintLabel = only.mint ? ` · mint ${only.mint}` : '';
+        singleAutoLabel = `#${only.asset_id}${mintLabel} (only one owned, auto-picked)`;
+      }
+    }
+  }
+  const mintDisabled = !mintHasMultiple ? ' disabled' : '';
+  const mintPickerInner = mintHasMultiple
+    ? `<option value="" ${state.selectedPack ? '' : 'selected'} disabled>Pick a specific mint...</option>${mintOptions}`
+    : `<option value="" selected disabled>${escapeHtml(singleAutoLabel || 'Pick a pack type first...')}</option>`;
+  const mintPicker = `
+    <div style="flex:1; min-width: 240px">
+      <label>Which mint?</label>
+      <select class="pack-mint-pick pack-cascade"${mintDisabled}>
+        ${mintPickerInner}
+      </select>
+    </div>`;
+
+  // ── status / empty messages, shown below the dropdowns. The dropdowns
+  // themselves are always present so the form structure is constant.
+  let statusLine = '';
+  if (state.packsError) {
+    statusLine = `<p class="status-line err">${escapeHtml(state.packsError)}</p>`;
+  } else if (state.packsLoading) {
+    statusLine = `<p class="status-line">${escapeHtml(state.packsProgress ?? 'Scanning...')}</p>`;
+  } else if (!session) {
+    statusLine = `<p class="status-line warn">Connect your wallet so Crucible can scan it for openable packs.</p>`;
+  } else if (!scanned) {
+    statusLine = `<p class="status-line">Click <strong>Discover my packs</strong> to scan the chain for every pack your wallet currently holds, across every collection.</p>`;
+  } else if (state.ownedPacks.length === 0) {
+    statusLine = `<p class="status-line warn">No openable packs in your wallet. ${state.packDesigns.length} pack design${state.packDesigns.length === 1 ? '' : 's'} exist on <code>atomicpacksx</code>, but none belong to you right now.</p>`;
+  }
+
+  const totalLine = state.ownedPacks.length > 0
+    ? `<span class="term">${state.ownedPacks.length} pack${state.ownedPacks.length === 1 ? '' : 's'} across ${collections.length} collection${collections.length === 1 ? '' : 's'}</span>`
+    : '';
+
+  // Layout mirrors blends/drops: pickers on the left, Discover button
+  // on the right of the same row, with wrap-to-bottom on narrow screens.
+  return `
+    <div class="card">
+      <h2>2 · Pick a pack to open</h2>
+      <p style="margin-top:0; color:var(--fg-dim); font-size:12px">
+        Opening a pack always takes <strong>two wallet signatures</strong> (one to send the pack to <code>atomicpacksx</code>, one to mint the resolved cards). This is how the contract works for every collection on WAX, not something specific to your wallet. Crucible scans the chain globally and only lists the collections where you currently hold at least one openable pack.
+      </p>
+      <div class="row" style="gap:14px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 10px">
+        ${collPicker}
+        ${designPicker}
+        ${mintPicker}
+        <button class="primary" data-action="refreshPacks" ${state.packsLoading || !session ? 'disabled' : ''}>
+          ${escapeHtml(refreshLabel)}
+        </button>
+      </div>
+      <div class="row" style="margin-top:10px; gap:14px; align-items:center; flex-wrap:wrap">
+        <div class="spacer"></div>
+        ${totalLine}
+      </div>
+      ${statusLine}
+    </div>`;
+}
+
+function renderPackInfo(): string {
+  const pack = state.selectedPack;
+  if (!pack) return '';
+  const d = pack.pack;
+  const unlocked = d.unlock_time === 0 || d.unlock_time * 1000 < Date.now();
+  return `
+    <div class="card">
+      <h2>3 · Pack #${escapeHtml(d.pack_id)} <span class="term">${escapeHtml(d.name)} (${escapeHtml(d.collection_name)})</span></h2>
+      <div class="row">
+        <span class="tag">asset <code>#${escapeHtml(pack.asset_id)}</code></span>
+        <span class="tag">${escapeHtml(String(d.roll_counter))} mint${d.roll_counter === 1 ? '' : 's'} per pack</span>
+        ${d.pack_template_id ? `<span class="tag">template <code>${escapeHtml(String(d.pack_template_id))}</code></span>` : ''}
+        ${unlocked ? '<span class="tag ok">unlocked</span>' : `<span class="tag err">unlocks at ${escapeHtml(new Date(d.unlock_time * 1000).toISOString().slice(0, 16).replace('T', ' '))} UTC</span>`}
+      </div>
+      ${state.packRolls.length > 0 ? renderPackRollsList() : '<p class="status-line">Loading roll definitions…</p>'}
+      ${d.description ? `<details style="margin-top:12px"><summary class="term" style="cursor:pointer">pack description</summary><p style="margin-top:8px; font-size:12px; color:var(--fg-dim)">${escapeHtml(d.description)}</p></details>` : ''}
+    </div>`;
+}
+
+function renderPackRollsList(): string {
+  // Compact roll display: for each roll, list its outcomes with odds and
+  // (when known) the template name. Truncates long outcome lists.
+  const blocks = state.packRolls.map((r) => {
+    const total = r.total_odds || r.outcomes.reduce((a, o) => a + o.odds, 0);
+    const items = r.outcomes.slice(0, 6).map((o) => {
+      const name = state.packRollNames.get(o.template_id);
+      const pct = total > 0 ? ((o.odds / total) * 100).toFixed(2) : '?';
+      return `<li><code>${escapeHtml(String(o.template_id))}</code> ${name ? `<strong>${escapeHtml(name)}</strong>` : ''} <span class="term">${pct}%</span></li>`;
+    });
+    const more = r.outcomes.length > 6 ? `<li class="term">+ ${r.outcomes.length - 6} more outcome${r.outcomes.length - 6 === 1 ? '' : 's'}…</li>` : '';
+    return `<details class="pack-roll" open><summary>Roll #${r.roll_id} · ${r.outcomes.length} possible outcome${r.outcomes.length === 1 ? '' : 's'}</summary><ul class="mint-info">${items.join('')}${more}</ul></details>`;
+  });
+  return `<h3>Possible mints</h3>${blocks.join('')}`;
+}
+
+function renderPackActions(): string {
+  const pack = state.selectedPack;
+  if (!pack) return '';
+  const phase = state.packPhase;
+  const cls = (kind: 'ok' | 'warn' | 'err' | 'info') =>
+    `status-line ${kind === 'info' ? '' : kind}`;
+  const txLink = (id?: string) =>
+    id
+      ? `<a target="_blank" href="https://waxblock.io/transaction/${escapeHtml(id)}">${escapeHtml(id.slice(0, 16))}…</a>`
+      : '';
+
+  let body = '';
+  if (phase === 'selected' || phase === 'idle') {
+    body = `
+      <p class="status-line">Ready when you are. Click step 1 to send the pack to <code>atomicpacksx</code>. Crucible will then poll the chain for the ORNG callback (typically 5 to 30 seconds) and prompt you for step 2 automatically.</p>
+      <div class="row">
+        <button class="primary" data-action="packAnnounce">Sign step 1: send pack to atomicpacksx</button>
+        <div class="spacer"></div>
+      </div>`;
+  } else if (phase === 'announcing') {
+    body = `
+      <p class="${cls('info')}">${escapeHtml(state.packPhaseMessage ?? 'Awaiting signature…')}</p>`;
+  } else if (phase === 'waiting') {
+    const sec = Math.floor(state.packWaitElapsedMs / 1000);
+    body = `
+      <p class="${cls('ok')}">TX1 broadcast: ${txLink(state.packTx1Id)}</p>
+      <p class="${cls('warn')}">Waiting for ORNG randomness... ${sec}s elapsed</p>
+      <div class="progress"><div class="progress-fill" style="width:${Math.min(100, (sec / 90) * 100)}%"></div></div>
+      <div class="row" style="margin-top:10px">
+        <button data-action="packCancelWait">Cancel wait (pack stays safe on-chain)</button>
+      </div>`;
+  } else if (phase === 'ready') {
+    body = `
+      <p class="${cls('ok')}">TX1 confirmed: ${txLink(state.packTx1Id)}</p>
+      <p class="${cls('ok')}">${escapeHtml(state.packPhaseMessage ?? 'Ready to claim.')}</p>
+      <div class="row">
+        <button class="primary" data-action="packClaim">Sign step 2: claim ${state.packUnboxAssets.length} card${state.packUnboxAssets.length === 1 ? '' : 's'}</button>
+        <div class="spacer"></div>
+      </div>`;
+  } else if (phase === 'claiming') {
+    body = `
+      <p class="${cls('ok')}">TX1: ${txLink(state.packTx1Id)}</p>
+      <p class="${cls('info')}">${escapeHtml(state.packPhaseMessage ?? 'Awaiting signature…')}</p>`;
+  } else if (phase === 'done') {
+    body = `
+      <p class="${cls('ok')}">TX1: ${txLink(state.packTx1Id)}</p>
+      <p class="${cls('ok')}">TX2: ${txLink(state.packTx2Id)}</p>
+      <p class="${cls('ok')}">${escapeHtml(state.packPhaseMessage ?? 'Done.')}</p>
+      <div class="row">
+        <button data-action="packReset">Open another pack</button>
+      </div>`;
+  } else if (phase === 'error') {
+    body = `
+      <p class="${cls('err')}">${escapeHtml(state.packPhaseMessage ?? 'Error.')}</p>
+      ${state.packTx1Id ? `<p class="status-line">TX1 (still valid on-chain): ${txLink(state.packTx1Id)}</p>` : ''}
+      <div class="row">
+        <button data-action="packReset">Reset and pick another pack</button>
+      </div>`;
+  }
+
+  return `
+    <div class="card">
+      <h2>4 · Unbox flow</h2>
+      ${body}
+    </div>`;
+}
+
+function renderPacksView(): string {
+  return renderPickPack() + renderPackInfo() + renderPackActions();
 }
 
 function renderBlendsView(): string {
@@ -1410,15 +2285,125 @@ function renderDropsView(): string {
   return renderPickDrop() + renderDropInfo() + renderDropActions();
 }
 
+/**
+ * Captures the window scroll position and the currently-focused input
+ * (with its cursor offset and selection range) so we can restore them
+ * after re-rendering. Without this, every state change would yank the
+ * page back to the top and steal focus mid-typing, which is the visual
+ * "the whole page is refreshing" effect we want to avoid.
+ */
+interface RenderSnapshot {
+  scrollY: number;
+  activeId: string | null;
+  selStart: number | null;
+  selEnd: number | null;
+}
+function captureRenderSnapshot(): RenderSnapshot {
+  const el = document.activeElement as HTMLInputElement | null;
+  const tag = el?.tagName;
+  const isInput = tag === 'INPUT' || tag === 'TEXTAREA';
+  return {
+    scrollY: window.scrollY,
+    activeId: el?.id ?? null,
+    selStart: isInput ? el!.selectionStart : null,
+    selEnd: isInput ? el!.selectionEnd : null,
+  };
+}
+function restoreRenderSnapshot(snap: RenderSnapshot) {
+  // Restore scroll first, doing it after focus would cause the browser
+  // to jump back to the focused element.
+  window.scrollTo({ top: snap.scrollY, behavior: 'instant' as ScrollBehavior });
+  if (snap.activeId) {
+    const el = document.getElementById(snap.activeId) as HTMLInputElement | null;
+    if (el) {
+      el.focus({ preventScroll: true });
+      if (snap.selStart !== null && snap.selEnd !== null && typeof el.setSelectionRange === 'function') {
+        try { el.setSelectionRange(snap.selStart, snap.selEnd); } catch { /* noop */ }
+      }
+    }
+  }
+}
+
+/**
+ * Walks every open picker panel and decides whether it should drop down
+ * below the toggle or flip up above it, then caps its inner scroll area
+ * to whatever vertical space is actually available in the viewport.
+ *
+ * Runs after each render(). The render() output positions the panel with
+ * a default "top: calc(100% + 4px)"; this function only overrides when
+ * there isn't enough room below, or to set the max-height so the panel
+ * never extends past the viewport edge (no more "stuck below the fold").
+ */
+function positionOpenPickers() {
+  const panels = document.querySelectorAll<HTMLElement>('.picker-panel');
+  for (const panel of panels) {
+    const picker = panel.closest<HTMLElement>('.picker');
+    const toggle = picker?.querySelector<HTMLElement>('.picker-toggle');
+    if (!toggle) continue;
+    const rect = toggle.getBoundingClientRect();
+    const viewportH = window.innerHeight;
+    const margin = 16;
+    const spaceBelow = viewportH - rect.bottom - margin;
+    const spaceAbove = rect.top - margin;
+    const minRoom = 200;
+
+    let placeAbove = false;
+    if (spaceBelow < minRoom && spaceAbove > spaceBelow) {
+      placeAbove = true;
+    }
+    panel.dataset.position = placeAbove ? 'above' : 'below';
+
+    const availableH = Math.max(120, placeAbove ? spaceAbove : spaceBelow);
+    const cap = Math.min(420, availableH);
+    panel.style.maxHeight = `${cap}px`;
+    const rows = panel.querySelector<HTMLElement>('.picker-rows');
+    if (rows) rows.style.maxHeight = `${cap}px`;
+  }
+}
+
+/**
+ * Public render() entry point. Coalesces multiple synchronous calls
+ * into a single DOM rebuild per animation frame via requestAnimationFrame.
+ *
+ * Why this matters: during a discovery scan, 16 parallel chunks each
+ * fire `onProgress` callbacks at different times. Without batching,
+ * each callback triggered a full innerHTML rebuild, restarting CSS
+ * animations and producing visible flicker. With rAF batching, at most
+ * one rebuild happens per frame (~60Hz), even if state mutates 100x
+ * within that 16ms.
+ *
+ * Callers don't need to think about this -- just call render() whenever
+ * state changes and trust the scheduler.
+ */
+let renderScheduled = false;
 function render() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  requestAnimationFrame(performRender);
+}
+
+/**
+ * The actual rebuild. Wrapped in a snapshot/restore so the user doesn't
+ * feel the page "refresh": scroll stays where it was, the input they
+ * were typing in keeps its focus and caret position.
+ */
+function performRender() {
+  renderScheduled = false;
+  const snap = captureRenderSnapshot();
   const session = getCurrentSession();
   rootEl().innerHTML =
     renderAboutPanels() +
     renderConnect(session) +
     renderStatus() +
     renderTabs() +
-    (state.view === 'blends' ? renderBlendsView() : renderDropsView());
+    (state.view === 'blends'
+      ? renderBlendsView()
+      : state.view === 'drops'
+        ? renderDropsView()
+        : renderPacksView());
   attachHandlers();
+  positionOpenPickers();
+  restoreRenderSnapshot(snap);
 }
 
 function attachHandlers() {
@@ -1432,18 +2417,56 @@ function attachHandlers() {
     });
   }
 
-  const collectionSel = document.getElementById('collectionPick') as HTMLSelectElement | null;
+  const collectionSel = document.getElementById('collectionPick') as HTMLInputElement | null;
   if (collectionSel) {
-    collectionSel.addEventListener('change', () => onChangeCollection(collectionSel.value));
+    // Track typing into state so the value survives re-renders, but don't
+    // trigger discovery on every keystroke, discovery is on-demand now.
+    collectionSel.addEventListener('input', (e) => {
+      const v = (e.target as HTMLInputElement).value.trim().toLowerCase();
+      state.discoveryCollection = v;
+    });
+    // Commit on blur (focus leaves the field) or Enter, standard UX for
+    // "I'm done editing this, now act on it".
+    collectionSel.addEventListener('change', () => onChangeCollection(collectionSel.value.trim().toLowerCase()));
+    collectionSel.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Enter') {
+        onChangeCollection(collectionSel.value.trim().toLowerCase());
+      }
+    });
   }
   const toggleInactive = document.getElementById('showInactive') as HTMLInputElement | null;
   if (toggleInactive) {
     toggleInactive.addEventListener('change', () => onToggleShowInactive(toggleInactive.checked));
   }
+  const toggleOnlyExecutable = document.getElementById('onlyExecutable') as HTMLInputElement | null;
+  if (toggleOnlyExecutable) {
+    toggleOnlyExecutable.addEventListener('change', () => onToggleOnlyExecutable(toggleOnlyExecutable.checked));
+  }
   const toggleDropInactive = document.getElementById('dropShowInactive') as HTMLInputElement | null;
   if (toggleDropInactive) {
     toggleDropInactive.addEventListener('change', () => onToggleDropShowInactive(toggleDropInactive.checked));
   }
+  const toggleDropOnlyEligible = document.getElementById('dropOnlyEligible') as HTMLInputElement | null;
+  if (toggleDropOnlyEligible) {
+    toggleDropOnlyEligible.addEventListener('change', () => onToggleDropOnlyEligible(toggleDropOnlyEligible.checked));
+  }
+  // Cascading dropdowns in the UNPACK tab: collection -> design -> mint.
+  // Each step narrows the choices, and selecting the final step kicks
+  // off the unbox flow for that specific asset_id. The design step
+  // auto-picks the only mint when a design has exactly one owned mint,
+  // skipping the mint dropdown entirely.
+  rootEl().querySelectorAll<HTMLSelectElement>('.pack-pick-collection').forEach((sel) => {
+    sel.addEventListener('change', () => onPackPickCollection(sel.value));
+  });
+  rootEl().querySelectorAll<HTMLSelectElement>('.pack-pick-design').forEach((sel) => {
+    sel.addEventListener('change', () => onPackPickDesign(sel.value));
+  });
+  rootEl().querySelectorAll<HTMLSelectElement>('.pack-mint-pick').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      const asset = sel.value;
+      if (asset) onPickPack(asset);
+    });
+  });
   const dropIdInput = document.getElementById('dropId') as HTMLInputElement | null;
   if (dropIdInput) {
     dropIdInput.addEventListener('input', (e) => {
@@ -1460,16 +2483,24 @@ function attachHandlers() {
 
   rootEl().querySelectorAll<HTMLElement>('[data-action]').forEach((el) => {
     const action = el.dataset.action;
-    if (action === 'toggleInactive') return; // handled via change listener above
+    // These actions are wired via 'change' listeners above, not click.
+    if (
+      action === 'toggleInactive' ||
+      action === 'toggleOnlyExecutable' ||
+      action === 'toggleDropInactive' ||
+      action === 'toggleDropOnlyEligible'
+    ) return;
     el.addEventListener('click', (ev) => {
       switch (action) {
         case 'login':
           login()
             .then(() => {
-              // Re-run both discoveries: blends pick up whitelist info,
-              // drops pick up per-account remaining counts.
-              loadDiscovered();
-              if (state.drops.length > 0 || state.view === 'drops') loadDropsList();
+              // On-demand discovery: don't auto-refetch. The lists we have
+              // (if any) become stale because they don't know the actor's
+              // whitelist/claim status yet, mark them empty so the user
+              // can hit Refresh when they want the per-account info.
+              if (state.discovered.length > 0) state.discovered = [];
+              if (state.drops.length > 0) state.drops = [];
               render();
             })
             .catch((e) => setStatus((e as Error).message, 'err'));
@@ -1486,8 +2517,8 @@ function attachHandlers() {
             state.drops = [];
             state.drop = undefined;
             state.dropTemplate = undefined;
-            loadDiscovered();
-            if (state.view === 'drops') loadDropsList();
+            state.discovered = [];
+            // On-demand: no auto-refetch after logout.
             render();
           });
           break;
@@ -1503,6 +2534,11 @@ function attachHandlers() {
         case 'togglePicker':
           onTogglePicker();
           break;
+        case 'pickCollection': {
+          const c = el.dataset.collection ?? '';
+          onChangeCollection(c);
+          break;
+        }
         case 'pickRow': {
           const blend = el.dataset.blend!;
           onPickDiscovered(blend);
@@ -1532,6 +2568,30 @@ function attachHandlers() {
         case 'dropExecute':
           onDropExecute();
           break;
+        case 'refreshBlends':
+          loadDiscovered();
+          break;
+        case 'refreshDrops':
+          loadDropsList();
+          break;
+        case 'refreshPacks':
+          loadPacks();
+          break;
+        case 'pickPack':
+          onPickPack(el.dataset.asset ?? '');
+          break;
+        case 'packAnnounce':
+          onPackAnnounce();
+          break;
+        case 'packClaim':
+          onPackClaim();
+          break;
+        case 'packCancelWait':
+          onPackCancelWait();
+          break;
+        case 'packReset':
+          onPackReset();
+          break;
       }
       ev.stopPropagation();
     });
@@ -1543,6 +2603,13 @@ let outsideClickAttached = false;
 export async function mount() {
   if (!outsideClickAttached) {
     document.addEventListener('click', onPickerOutsideClick);
+    // Reposition any open picker when the viewport changes (scroll, resize,
+    // mobile keyboard, dev-tools open, ...). Skip if no panel is open.
+    const reflow = () => {
+      if (state.pickerOpen || state.dropPickerOpen) positionOpenPickers();
+    };
+    window.addEventListener('scroll', reflow, { passive: true });
+    window.addEventListener('resize', reflow);
     outsideClickAttached = true;
   }
   setStatus('Verifying live blend.nefty ABI…', 'info');
@@ -1553,8 +2620,9 @@ export async function mount() {
     return;
   }
   await restoreSession();
-  setStatus('Ready.', 'ok');
+  setStatus('Ready. Pick a collection, then click Discover to load its blends or drops.', 'ok');
   render();
-  // Kick off discovery in the background — UI re-renders when it lands.
-  loadDiscovered();
+  // On-demand fetching: NO auto-discovery at mount. The user clicks
+  // Refresh on the picker card when they're ready, this avoids spinning
+  // up ~30 RPC calls before they've even decided what to look at.
 }

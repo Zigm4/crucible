@@ -1,3 +1,21 @@
+/**
+ * Blend discovery for a collection.
+ *
+ * Lists every active (and optionally inactive) deterministic blend a
+ * collection has on `blend.nefty`. Two data paths:
+ *   - Indexer (fast):  AtomicHub /neftyblocks/v1/blends, if reachable
+ *   - On-chain (slow but always-up): parallel walk of the global `blends`
+ *     table, filtered client-side by collection_name
+ *
+ * The on-chain path uses 16 parallel chunks of 25K blend_ids each. Total
+ * walk time is typically 5-10 seconds on a fast WAX node.
+ *
+ * Random (`secfuse`) blends are filtered out entirely because this tool
+ * cannot execute them yet. They reappear when we add commit-reveal flow.
+ *
+ * When `actor` is supplied, the result also resolves whitelist eligibility
+ * for blends with security_id != 0 by reading `secure.nefty/whitelists`.
+ */
 import { atomicFetch, getTableRows } from '../chain/rpc';
 
 const PAGE_LIMIT = 100;
@@ -9,11 +27,14 @@ const CHAIN_CHUNK_SIZE = 5_000n; // blend_id range per parallel worker
 const CHAIN_ROWS_PER_CALL = 1000;
 const CHAIN_MAX_CHUNKS = 16; // ≤ 80K blend_ids end-to-end safety cap
 
+/**
+ * The collections we surface as quick-pick suggestions in the UI.
+ * Free-form collection names are also supported -- this list is purely
+ * a convenience for the most-used communities.
+ */
 export const SUPPORTED_COLLECTIONS = [
   'underpunks55',
-  'shadowsquads',
   'cigalepixeld',
-  'punksmticorp',
   'northshireup',
 ] as const;
 export type SupportedCollection = (typeof SUPPORTED_COLLECTIONS)[number];
@@ -44,6 +65,12 @@ export interface DiscoveredBlend {
   whitelist_required: boolean;
   /** True/false once we've checked; undefined when no wallet or check failed. */
   whitelist_allowed?: boolean;
+  /**
+   * Raw ingredient list, kept around so the picker can offer an
+   * "only show blends I can do" filter without re-fetching each row.
+   * Same shape on-chain returns: `[VARIANT_TYPE, payload]` tuples.
+   */
+  ingredients?: import('./blend').IngredientVariant[];
 }
 
 // ─── raw indexer / on-chain shape ──────────────────────────────────────── //
@@ -96,7 +123,7 @@ const cache = new Map<string, CacheEntry>();
 export interface ListBlendsOpts {
   collection: string;
   includeInactive: boolean;
-  /** When provided, run whitelist checks in parallel for blends with security_id > 0. */
+  /** When provided: run whitelist checks in parallel for blends with security_id > 0. */
   actor?: string;
   onProgress?: ProgressCb;
 }
@@ -271,7 +298,7 @@ function normalizeChainBlend(b: RawBlend): RawBlend {
 function shapeAndFilter(raw: RawBlend[], includeInactive: boolean): DiscoveredBlend[] {
   const out: DiscoveredBlend[] = [];
   for (const b of raw) {
-    // Hide random / non-deterministic blends entirely — this tool can't
+    // Hide random / non-deterministic blends entirely, this tool can't
     // execute them, and "non-selectable" should be reserved for whitelist
     // denial to make the legend unambiguous.
     if (!isDeterministicRolls(b.rolls)) continue;
@@ -355,6 +382,7 @@ function toDiscovered(b: RawBlend): DiscoveredBlend | undefined {
     status: computeStatus(b),
     whitelist_required: security_id !== '0',
     // whitelist_allowed left undefined until enrichWhitelist runs
+    ingredients: b.ingredients as import('./blend').IngredientVariant[] | undefined,
   };
 }
 
@@ -374,7 +402,7 @@ async function enrichWhitelist(blends: DiscoveredBlend[], actor: string): Promis
   // discarded RawBlend objects, we'd have to re-query. Simpler: store
   // security_id on the discovered blend too. We do this by re-reading the
   // chain rows for these specific blend_ids in a single batched query.
-  // — N is typically small (a few whitelisted blends per collection).
+  //, N is typically small (a few whitelisted blends per collection).
   await Promise.all(
     targets.map(async (b) => {
       try {
