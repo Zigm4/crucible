@@ -155,6 +155,20 @@ wallet, and tracks per-account claim limits (`account_limit` and
 For free drops, steps 1 and 2 are skipped entirely, only the claim
 action is signed.
 
+```
+[*] drop names resolved from the primary mint template via the
+    AtomicAssets indexer when on-chain display_data is empty, so the
+    picker shows "Triglave Hero" instead of "Drop #237418"
+[*] paid drops: pre-flight balance check per settlement token. If
+    you're eligible but short on tokens, the action card shows the
+    exact top-up needed and disables Sign & claim until you fund
+    your wallet
+[*] NFT-proof drops: even when your wallet doesn't satisfy the rule,
+    the row stays selectable so you can see the requirement in plain
+    English ("hold 1 NFT from template 12345 + 2 NFTs from schema X")
+    and know exactly what to buy
+```
+
 ### UNPACK tab · `atomicpacksx`
 
 The third pillar. Opening a pack is a commit-reveal dance with the ORNG
