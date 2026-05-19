@@ -2239,7 +2239,12 @@ function renderDropPickerPanel(): string {
       const unclaimable = d.auth.kind === 'unclaimable';
       const unverified = d.auth.kind === 'unverified';
       const limitReached = d.account_remaining === 0;
-      const disabled = wlDenied || proofNotMet || authkey || unclaimable || limitReached;
+      // "Fixable" blockers (missing NFT proof, insufficient funds)
+      // keep the row clickable so the user can open the drop and see
+      // exactly what's missing in the action card below. Hard blockers
+      // (whitelist denial, key-gated, structurally unclaimable, hit
+      // their per-account limit) stay disabled.
+      const disabled = wlDenied || authkey || unclaimable || limitReached;
       const wlBadge = unclaimable
         ? '<span class="picker-wl-badge">no auth defined</span>'
         : unverified
@@ -2481,25 +2486,6 @@ function renderDropInfo(): string {
   const noSessionHint = !session && d.account_limit > 0
     ? '<p class="term">Connect your wallet to check how many claims you have left on this drop.</p>'
     : '';
-  // Insufficient-balance notice: the wallet IS eligible (whitelist /
-  // proof / public all check out) but doesn't hold enough of the drop's
-  // settlement token. We compute it on-the-fly here so it stays fresh
-  // even if the user opens a drop whose discover-time enrichment hadn't
-  // landed yet.
-  const ft = state.dropFtStatus.get(d.drop_id);
-  let insufficientNotice = '';
-  if (!d.is_free && ft && ft.balance >= 0 && ft.balance < ft.required) {
-    const missing = ft.required - ft.balance;
-    insufficientNotice = `
-      <p class="status-line warn">
-        <strong>Insufficient ${escapeHtml(ft.ticker)} balance.</strong>
-        You're eligible to claim this drop, but your wallet holds only
-        <code>${ft.balance.toFixed(4)} ${escapeHtml(ft.ticker)}</code>
-        and the drop costs <code>${escapeHtml(d.listing_price)}</code>.
-        Top up at least <code>${missing.toFixed(4)} ${escapeHtml(ft.ticker)}</code>
-        (an Alcor / TacoSwap / wallet transfer works) and the Sign &amp; claim button will unlock.
-      </p>`;
-  }
   return `
     <div class="card">
       <h2>3 · ${escapeHtml(displayDropName(d))} <span class="term">-- #${escapeHtml(d.drop_id)} · ${escapeHtml(d.collection_name)}</span></h2>
@@ -2510,13 +2496,12 @@ function renderDropInfo(): string {
         <span class="tag">claims ${escapeHtml(remaining)}</span>
         ${limitTag}
       </div>
-      ${insufficientNotice}
       ${renderDropAuthExplainer(d)}
       ${cooldownNote}
       ${noSessionHint}
       <h3>Expected mint</h3>
       ${renderDropMintInfo()}
-      ${d.auth.kind === 'proof' && d.auth.resolved
+      ${d.auth.kind === 'proof' && d.auth.resolved && d.auth.resolved.satisfied
         ? `<h3>Proof of ownership</h3>
            <p class="term">The contract will check that you hold ${d.auth.filters.length} specific NFT(s). The page auto-selected ${d.auth.resolved.asset_ids.length} matching asset(s) from your wallet:</p>
            <ul class="mint-info">${d.auth.resolved.asset_ids.map((id) => `<li><code>${escapeHtml(id)}</code></li>`).join('')}</ul>`
@@ -2526,13 +2511,90 @@ function renderDropInfo(): string {
     </div>`;
 }
 
+/**
+ * Plain-English description of a single ProofFilter. Used in the
+ * blocker notices when the wallet doesn't satisfy a drop's
+ * NFT-ownership rule.
+ */
+function describeProofFilter(f: import('../nefty/drops').ProofFilter): string {
+  const verb = f.amount === 1 ? '1 NFT' : `${f.amount} NFTs`;
+  switch (f.type) {
+    case 'TEMPLATE_HOLDINGS':
+      return `${verb} from template <code>${escapeHtml(String(f.template_id ?? '?'))}</code>` +
+        (f.collection_name ? ` (collection <code>${escapeHtml(f.collection_name)}</code>)` : '');
+    case 'SCHEMA_HOLDINGS':
+      return `${verb} from schema <code>${escapeHtml(f.schema_name ?? '?')}</code>` +
+        (f.collection_name ? ` in <code>${escapeHtml(f.collection_name)}</code>` : '');
+    case 'COLLECTION_HOLDINGS':
+      return `${verb} from collection <code>${escapeHtml(f.collection_name ?? '?')}</code>`;
+    case 'TOKEN_HOLDING':
+      return `a token-holding proof (amount ${f.amount})`;
+    default:
+      return `<span class="term">${escapeHtml(String(f.type))}</span>`;
+  }
+}
+
+/**
+ * Returns the HTML notices for the two "fixable" blockers that keep
+ * the Sign & claim button disabled:
+ *   - insufficient settlement-token balance (paid drop)
+ *   - missing NFT proof (proof-gated drop the wallet doesn't satisfy)
+ *
+ * Both are rendered prominently above the action row so users always
+ * see WHY their button is greyed out, with concrete remediation steps.
+ * Returns an empty string when nothing is blocking.
+ */
+function renderDropBlockerNotices(d: DiscoveredDrop): string {
+  const blocks: string[] = [];
+
+  // Missing NFT proof
+  if (d.auth.kind === 'proof' && d.auth.resolved && !d.auth.resolved.satisfied) {
+    const op = d.auth.resolved.logical_operator === 1 ? 'any one of' : 'all of';
+    const lines = d.auth.filters.map((f) => `<li>${describeProofFilter(f)}</li>`).join('');
+    blocks.push(`
+      <p class="status-line warn">
+        <strong>Missing NFT proof.</strong>
+        This drop requires you to hold ${escapeHtml(op)} the following in your wallet
+        before <code>claimwproof</code> can sign:
+      </p>
+      <ul class="mint-info" style="margin-top:-4px">${lines}</ul>
+      <p class="status-line term" style="margin-top:-4px">
+        Pick those NFTs up on a secondary market (AtomicHub, NeftyBlocks
+        marketplace), wait for the indexer to reflect your wallet, then come
+        back and the button will unlock.
+      </p>`);
+  }
+
+  // Insufficient settlement-token balance
+  const ft = state.dropFtStatus.get(d.drop_id);
+  if (!d.is_free && ft && ft.balance >= 0 && ft.balance < ft.required * state.dropAmount) {
+    const totalReq = ft.required * state.dropAmount;
+    const missing = totalReq - ft.balance;
+    const perClaim = state.dropAmount > 1
+      ? ` (${ft.required.toFixed(4)} × ${state.dropAmount} claims)`
+      : '';
+    blocks.push(`
+      <p class="status-line warn">
+        <strong>Insufficient ${escapeHtml(ft.ticker)} balance.</strong>
+        Your wallet holds <code>${ft.balance.toFixed(4)} ${escapeHtml(ft.ticker)}</code>
+        but the claim costs <code>${totalReq.toFixed(4)} ${escapeHtml(ft.ticker)}</code>${escapeHtml(perClaim)}.
+        Top up at least <code>${missing.toFixed(4)} ${escapeHtml(ft.ticker)}</code>
+        (Alcor, TacoSwap, or a wallet transfer all work) and the Sign &amp; claim
+        button will unlock automatically.
+      </p>`);
+  }
+  return blocks.join('');
+}
+
 function renderDropActions(): string {
   const d = state.drop;
   if (!d) return '';
   const ready = readyToClaim();
+  const blockers = renderDropBlockerNotices(d);
   return `
     <div class="card">
       <h2>4 · Verify &amp; claim</h2>
+      ${blockers}
       <div class="row" style="align-items:center">
         <label class="inline-toggle" style="text-transform:none; letter-spacing:0.5px">
           <span>amount</span>
