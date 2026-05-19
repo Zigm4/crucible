@@ -52,6 +52,17 @@ import {
 } from '../atomic/matcher';
 import { buildBlendActions, executeBlend, type BuiltAction } from '../nefty/execute';
 import {
+  buildFuseActions,
+  executeFuse,
+  executeClaim as executeRngClaim,
+  type SecurityCheck,
+} from '../nefty/rngExecute';
+import {
+  readKnownClaimIds,
+  waitForClaim,
+  type ClaimAssetsRow,
+} from '../nefty/rngWait';
+import {
   parseAssetAmount,
   readTokenBalance,
   resolveTokenContract,
@@ -106,29 +117,16 @@ type PackPhase =
   | 'done'
   | 'error';
 
-const COLLECTION_STORAGE_KEY = 'crucible.collection';
 /**
- * No default collection: the input starts empty and the user picks
- * one (either by typing a name or clicking one of the suggestion chips).
- * We still remember whatever they used last via localStorage.
+ * No default collection, no persistence. Every page load starts with
+ * the collection input empty. The user picks one explicitly each time
+ * (typing or clicking a suggestion chip). This keeps the threat model
+ * minimal (zero localStorage writes) and makes the discovery step a
+ * conscious decision rather than a silent auto-load of stale state.
  */
-const DEFAULT_COLLECTION = '';
-
-/**
- * Reads the user's last-used collection from localStorage, with no
- * whitelist. The five SUPPORTED_COLLECTIONS are presented as autocomplete
- * suggestions, but the user can target any WAX collection by typing its
- * name. The on-chain scan and indexer paths work for any collection name.
- */
-function loadStoredCollection(): string {
-  try {
-    const v = localStorage.getItem(COLLECTION_STORAGE_KEY);
-    if (v && isValidWaxName(v)) return v;
-  } catch {/* localStorage unavailable */}
-  return DEFAULT_COLLECTION;
-}
-function persistCollection(v: string) {
-  try { localStorage.setItem(COLLECTION_STORAGE_KEY, v); } catch {/* ignore */}
+function persistCollection(_v: string) {
+  // Intentionally a no-op. Kept as a hook in case a future build wants
+  // to opt back into "remember my last collection" behaviour.
 }
 
 /**
@@ -237,7 +235,35 @@ interface AppState {
   packTx2Id?: string;
   /** Abort signal source for the polling wait (lets the user cancel). */
   packAbort?: AbortController;
+
+  // ── RNG blend state machine (announce + fuse, wait, claim) ──
+  /**
+   * Phase tracker mirroring the pack-unbox flow. Idle for deterministic
+   * blends (the existing single-click execute path); meaningful only
+   * once a random blend has been picked and the user clicks Execute.
+   */
+  rngPhase: RngPhase;
+  rngPhaseMessage?: string;
+  /** Trx ID of the fuse transaction (TX1). */
+  rngTx1Id?: string;
+  /** Trx ID of the claim transaction (TX2). */
+  rngTx2Id?: string;
+  /** Polling countdown for the UI between TX1 and the claimassets row arriving. */
+  rngWaitElapsedMs: number;
+  /** The resolved claimassets row, populated once waitForClaim returns. */
+  rngClaim?: ClaimAssetsRow;
+  /** Cancel handle for the wait loop. */
+  rngAbort?: AbortController;
 }
+
+type RngPhase =
+  | 'idle'
+  | 'announcing'
+  | 'waiting'
+  | 'ready'
+  | 'claiming'
+  | 'done'
+  | 'error';
 
 const state: AppState = {
   blendId: '',
@@ -253,7 +279,7 @@ const state: AppState = {
   pending: false,
   blendLoading: false,
   discovered: [],
-  discoveryCollection: loadStoredCollection(),
+  discoveryCollection: '',
   discoveryLoading: false,
   discoveryOwnedAssets: [],
   showInactive: false,
@@ -277,6 +303,8 @@ const state: AppState = {
   packPhase: 'idle',
   packWaitElapsedMs: 0,
   packUnboxAssets: [],
+  rngPhase: 'idle',
+  rngWaitElapsedMs: 0,
 };
 
 function setStatus(msg: string, kind: AppState['statusKind'] = 'info') {
@@ -744,6 +772,22 @@ async function onPackAnnounce() {
     state.packPhaseMessage = `ORNG arrived. ${rows.length} card${rows.length === 1 ? '' : 's'} ready to mint.`;
     state.packAbort = undefined;
     render();
+    // Best-effort: fetch the name of each resolved template (the ones
+    // the oracle actually picked) so the outcome list shows readable
+    // names instead of bare template IDs. Already-cached names are
+    // skipped via the same Set we use during onPickPack.
+    const seen = new Set<number>(state.packRollNames.keys());
+    for (const row of rows) {
+      const tid = Number(row.template_id);
+      if (seen.has(tid)) continue;
+      seen.add(tid);
+      fetchTemplateName(pack.pack.collection_name, tid).then((name) => {
+        if (name) {
+          state.packRollNames.set(tid, name);
+          render();
+        }
+      });
+    }
   } catch (err) {
     state.packPhase = 'error';
     state.packPhaseMessage = (err as Error).message;
@@ -1055,9 +1099,25 @@ async function onLoadBlend() {
     setStatus(`Reading blend ${state.blendId}…`, 'info');
     state.blend = await loadBlend({ blend_id: state.blendId });
     state.collection = state.blend.collection_name;
+    // Reset any pending RNG state from a previous blend.
+    state.rngPhase = 'idle';
+    state.rngPhaseMessage = undefined;
+    state.rngTx1Id = undefined;
+    state.rngTx2Id = undefined;
+    state.rngClaim = undefined;
+    state.rngWaitElapsedMs = 0;
+    if (state.rngAbort) {
+      state.rngAbort.abort();
+      state.rngAbort = undefined;
+    }
 
+    // Both deterministic and random blends are loadable now. The
+    // execute button below routes to the right state machine based on
+    // isDeterministic(). The only thing that genuinely can't run is a
+    // pool-NFT result, which we still reject up-front because we can't
+    // even build the right action list.
     const det = isDeterministic(state.blend);
-    if (!det.ok) {
+    if (!det.ok && /POOL_NFT/.test(det.reason ?? '')) {
       setStatus(`Unsupported blend: ${det.reason}`, 'err');
       return;
     }
@@ -1149,6 +1209,18 @@ async function buildPlan(): Promise<BuiltAction[]> {
   if (!session || !state.blend) throw new Error('No session / blend loaded');
   const asset_ids = flattenNftSelection(state.slots, state.selection);
   const ft_payments = ftSlots(state.slots).map((s) => s.quantity);
+  if (!isDeterministic(state.blend).ok) {
+    // RNG blend: simulate the TX1 leg (announce + fuse). The TX2 leg
+    // can't be simulated up front because we don't yet have the
+    // claim_id the contract will assign.
+    return buildFuseActions({
+      claimer: String(session.actor),
+      blend_id: state.blend.blend_id,
+      asset_ids,
+      ft_payments,
+      security_check: defaultSecurityCheck(String(session.actor)),
+    });
+  }
   return buildBlendActions({
     claimer: String(session.actor),
     blend_id: state.blend.blend_id,
@@ -1179,6 +1251,13 @@ async function onDryRun() {
 async function onExecute() {
   const session = getCurrentSession();
   if (!session || !state.blend) return;
+  // Random blends take a different on-chain path (fuse + claim) and a
+  // different UI flow (state machine with auto-wait). Route to the RNG
+  // handler when the blend is not fully deterministic.
+  if (!isDeterministic(state.blend).ok) {
+    await onExecuteRng();
+    return;
+  }
   const actions = await buildPlan().catch((e) => {
     setStatus((e as Error).message, 'err');
     return null;
@@ -1206,6 +1285,143 @@ async function onExecute() {
   } catch (err) {
     setStatus(`Transaction failed: ${(err as Error).message}`, 'err');
   }
+  render();
+}
+
+// ─── RNG blend execution (fuse + wait + claim) ─────────────────────── //
+
+/**
+ * Picks the right `SECURITY_CHECK` payload for the current blend. For
+ * non-secured or whitelist-secured blends we send a no-op WHITELIST_CHECK
+ * with the user's own account, which is also exactly what every recent
+ * on-chain trace does for non-ownership-gated blends. Ownership-secured
+ * blends would need extra UI to pick proof NFTs and are out of scope
+ * for this first pass; we surface a friendly error in that case.
+ */
+function defaultSecurityCheck(claimer: string): SecurityCheck {
+  return { kind: 'whitelist', account_name: claimer };
+}
+
+/**
+ * Step 1 of the random-blend flow: announce, deposit, and request a
+ * fuse. On success, snapshot the user's existing `claimassets` rows
+ * (so we don't accidentally claim an older pending one), broadcast TX1,
+ * and immediately start polling for the new claimassets row.
+ */
+async function onExecuteRng() {
+  const session = getCurrentSession();
+  if (!session || !state.blend) return;
+  const claimer = String(session.actor);
+  // Confirm with the user (same UX as deterministic execute).
+  const security_check = defaultSecurityCheck(claimer);
+  const actions = await buildFuseActions({
+    claimer,
+    blend_id: state.blend.blend_id,
+    asset_ids: flattenNftSelection(state.slots, state.selection),
+    ft_payments: ftSlots(state.slots).map((s) => s.quantity),
+    security_check,
+  });
+  if (
+    !confirm(
+      `Sign ${actions.length} action(s)? Then a second signature will be required after the oracle resolves the result.\n\n` +
+        actions.map((a, i) => `${i + 1}. ${a.account}::${a.name}`).join('\n'),
+    )
+  ) {
+    return;
+  }
+  // Snapshot before broadcasting so we can spot the freshly created row.
+  const known = await readKnownClaimIds(claimer);
+  state.rngPhase = 'announcing';
+  state.rngPhaseMessage = 'Awaiting wallet signature for step 1 (announce + fuse)…';
+  render();
+  try {
+    const result = await executeFuse(session, {
+      blend_id: state.blend.blend_id,
+      asset_ids: flattenNftSelection(state.slots, state.selection),
+      ft_payments: ftSlots(state.slots).map((s) => s.quantity),
+      security_check,
+    });
+    state.rngTx1Id =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    state.rngPhase = 'waiting';
+    state.rngPhaseMessage = 'TX1 broadcast. Waiting for the contract to stage the result...';
+    state.rngWaitElapsedMs = 0;
+    state.rngAbort = new AbortController();
+    render();
+    const row = await waitForClaim({
+      claimer,
+      blend_id: state.blend.blend_id,
+      knownClaimIds: known,
+      onTick: (elapsedMs) => {
+        state.rngWaitElapsedMs = elapsedMs;
+        if (state.view === 'blends') render();
+      },
+      signal: state.rngAbort.signal,
+    });
+    state.rngClaim = row;
+    state.rngPhase = 'ready';
+    state.rngPhaseMessage = `Result staged. ${row.claims.length} card${row.claims.length === 1 ? '' : 's'} ready to mint.`;
+    state.rngAbort = undefined;
+    render();
+  } catch (err) {
+    state.rngPhase = 'error';
+    state.rngPhaseMessage = (err as Error).message;
+    state.rngAbort = undefined;
+    render();
+  }
+}
+
+/**
+ * Step 2: claim the staged outcome. `roll_count` matches the blend's
+ * roll count (one entry per roll in `roll_indexes`).
+ */
+async function onClaimRng() {
+  const session = getCurrentSession();
+  if (!session || !state.blend || !state.rngClaim) return;
+  state.rngPhase = 'claiming';
+  state.rngPhaseMessage = 'Awaiting wallet signature for step 2 (mint the cards)…';
+  render();
+  try {
+    const result = await executeRngClaim(session, {
+      claim_id: state.rngClaim.claim_id,
+      roll_count: state.blend.rolls?.length ?? 1,
+    });
+    state.rngTx2Id =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    state.rngPhase = 'done';
+    state.rngPhaseMessage = `Pack opened. ${state.rngClaim.claims.length} NFT(s) minted to your wallet.`;
+    render();
+  } catch (err) {
+    state.rngPhase = 'error';
+    state.rngPhaseMessage = (err as Error).message;
+    render();
+  }
+}
+
+/** Cancels an in-progress wait for the claimassets row. */
+function onCancelRngWait() {
+  state.rngAbort?.abort();
+  state.rngAbort = undefined;
+  state.rngPhase = 'error';
+  state.rngPhaseMessage =
+    'You cancelled the wait. Your deposit is still locked in blend.nefty; reload the blend to resume the claim.';
+  render();
+}
+
+/** Resets the RNG state machine so the user can try another blend. */
+function onResetRng() {
+  if (state.rngAbort) {
+    state.rngAbort.abort();
+    state.rngAbort = undefined;
+  }
+  state.rngPhase = 'idle';
+  state.rngPhaseMessage = undefined;
+  state.rngTx1Id = undefined;
+  state.rngTx2Id = undefined;
+  state.rngClaim = undefined;
+  state.rngWaitElapsedMs = 0;
   render();
 }
 
@@ -1323,10 +1539,14 @@ function renderPickerPanel(): string {
         : wlPending
           ? '<span class="picker-wl-badge pending">whitelist?</span>'
           : '';
+      const rngBadge = b.is_random
+        ? '<span class="picker-wl-badge pending" title="Random blend: 2 signatures (fuse + claim) instead of 1.">RNG</span>'
+        : '';
       return `
         <div class="${classes.join(' ')}" ${disabled ? '' : `data-action="pickRow" data-blend="${escapeHtml(b.blend_id)}"`}>
           <span class="picker-id">#${escapeHtml(b.blend_id)}</span>
           <span class="picker-name">${escapeHtml(b.name)}</span>
+          ${rngBadge}
           ${wlBadge}
           <span class="status-chip status-${escapeHtml(b.status)}">${escapeHtml(statusLabel(b.status))}</span>
         </div>`;
@@ -1507,7 +1727,9 @@ function renderBlendInfo(): string {
     <div class="card">
       <h2>3 · Blend #${escapeHtml(String(b.blend_id))} <span class="term">-- ${escapeHtml(b.collection_name)}</span></h2>
       <div class="row">
-        ${det.ok ? '<span class="tag ok">deterministic</span>' : '<span class="tag err">non-deterministic</span>'}
+        ${det.ok
+          ? '<span class="tag ok">deterministic · single output</span>'
+          : '<span class="tag warn">random · oracle picks one outcome per roll</span>'}
         ${
           wl?.required
             ? wl.allowed
@@ -1517,11 +1739,46 @@ function renderBlendInfo(): string {
         }
         <span class="tag">uses ${escapeHtml(remainingUses)}</span>
       </div>
-      <h3>Expected mint</h3>
-      ${renderExpectedMint()}
+      ${det.ok ? `<h3>Expected mint</h3>${renderExpectedMint()}` : renderRngOdds(b)}
       ${wl?.required && !wl.allowed ? `<p class="status-line err">${escapeHtml(wl.reason ?? '')}</p>` : ''}
     </div>
   `;
+}
+
+/**
+ * Renders the per-roll outcome table for a random blend, including the
+ * percentage chance of each outcome. Same `pack-roll` accordion CSS the
+ * UNPACK tab uses, for visual consistency.
+ */
+function renderRngOdds(b: BlendRow): string {
+  const rolls = b.rolls ?? [];
+  if (rolls.length === 0) return '<p class="status-line warn">No rolls declared on this blend.</p>';
+  const blocks = rolls.map((roll, i) => {
+    const total = roll.total_odds || roll.outcomes.reduce((a, o) => a + o.odds, 0);
+    const items = roll.outcomes.slice(0, 8).map((o) => {
+      const pct = total > 0 ? ((o.odds / total) * 100).toFixed(2) : '?';
+      const desc = (o.results ?? []).map((r) => {
+        const kind = r[0];
+        if (kind === 'ON_DEMAND_NFT_RESULT') {
+          return `<code>template ${escapeHtml(String((r[1] as { template_id?: number }).template_id))}</code>`;
+        }
+        if (kind === 'POOL_NFT_RESULT') {
+          return `<span class="term">pool draw</span>`;
+        }
+        if (kind === 'FT_RESULT') {
+          const amt = (r[1] as { amount?: { quantity?: string } })?.amount?.quantity;
+          return `<code>${escapeHtml(amt ?? 'token reward')}</code>`;
+        }
+        return `<span class="term">${escapeHtml(String(kind))}</span>`;
+      }).join(' + ') || '<span class="term">no result entry</span>';
+      return `<li>${desc} <span class="term">${pct}%</span></li>`;
+    });
+    const more = roll.outcomes.length > 8
+      ? `<li class="term">+ ${roll.outcomes.length - 8} more outcome${roll.outcomes.length - 8 === 1 ? '' : 's'}…</li>`
+      : '';
+    return `<details class="pack-roll" open><summary>Roll #${i} · ${roll.outcomes.length} possible outcome${roll.outcomes.length === 1 ? '' : 's'}</summary><ul class="mint-info">${items.join('')}${more}</ul></details>`;
+  });
+  return `<h3>Possible mints</h3><p class="status-line" style="margin-bottom:6px">This blend has multiple outcomes per roll. The on-chain contract will randomly pick one outcome per roll when you submit. Probabilities below are the in-roll odds.</p>${blocks.join('')}`;
 }
 
 function renderNftSlot(slot: IngredientSlot): string {
@@ -1622,6 +1879,10 @@ function renderActions(): string {
   const totalRequired = totalRequiredNfts(state.slots);
   const totalPicked = Array.from(state.selection.values()).reduce((n, ids) => n + ids.length, 0);
   const ready = readyToSubmit();
+  const isRandom = !isDeterministic(state.blend).ok;
+  // Random blends route through a 2-step state machine. The state of
+  // that machine drives a different button surface below.
+  if (isRandom) return renderRngActions(ready, totalPicked, totalRequired);
   return `
     <div class="card">
       <h2>5 · Verify &amp; execute</h2>
@@ -1642,6 +1903,127 @@ function renderActions(): string {
           : ''
       }
     </div>`;
+}
+
+/**
+ * Renders the action card for the random-blend flow. Mirrors the pack
+ * unbox state machine: idle -> announcing -> waiting -> ready ->
+ * claiming -> done (or error at any point with a Reset button).
+ */
+function renderRngActions(ready: boolean, totalPicked: number, totalRequired: number): string {
+  const phase = state.rngPhase;
+  const cls = (kind: 'ok' | 'warn' | 'err' | 'info') =>
+    `status-line ${kind === 'info' ? '' : kind}`;
+  const txLink = (id?: string) =>
+    id
+      ? `<a target="_blank" href="https://waxblock.io/transaction/${escapeHtml(id)}">${escapeHtml(id.slice(0, 16))}…</a>`
+      : '';
+
+  let body = '';
+  if (phase === 'idle') {
+    body = `
+      <p class="status-line">This blend has at least one roll with multiple possible outcomes. Crucible signs a first transaction (announce + fuse), waits for the contract to stage the result, then prompts you for a second signature (claim) that actually mints the cards.</p>
+      <div class="row">
+        <button data-action="dryrun" ${ready ? '' : 'disabled'}>Simulate (no signature)</button>
+        <button class="primary" data-action="execute" ${ready ? '' : 'disabled'}>Sign step 1: announce + fuse</button>
+        <div class="spacer"></div>
+        <span class="term">NFTs ${totalPicked}/${totalRequired}</span>
+      </div>
+      ${state.lastDryRun ? `<h3>Dry-run output</h3><pre>${escapeHtml(JSON.stringify(state.lastDryRun, null, 2))}</pre>` : ''}`;
+  } else if (phase === 'announcing') {
+    body = `<p class="${cls('info')}">${escapeHtml(state.rngPhaseMessage ?? 'Awaiting signature…')}</p>`;
+  } else if (phase === 'waiting') {
+    const sec = Math.floor(state.rngWaitElapsedMs / 1000);
+    body = `
+      <p class="${cls('ok')}">TX1 broadcast: ${txLink(state.rngTx1Id)}</p>
+      <p class="${cls('warn')}">Waiting for the contract to stage the result... ${sec}s elapsed</p>
+      <div class="progress"><div class="progress-fill" style="width:${Math.min(100, (sec / 90) * 100)}%"></div></div>
+      <div class="row" style="margin-top:10px">
+        <button data-action="rngCancelWait">Cancel wait (deposit stays locked, reload to resume)</button>
+      </div>`;
+  } else if (phase === 'ready') {
+    body = `
+      <p class="${cls('ok')}">TX1 confirmed: ${txLink(state.rngTx1Id)}</p>
+      <p class="${cls('ok')}">${escapeHtml(state.rngPhaseMessage ?? 'Ready to claim.')}</p>
+      ${renderRngOutcome(false)}
+      <div class="row">
+        <button class="primary" data-action="rngClaim">Sign step 2: claim ${state.rngClaim?.claims.length ?? 1} card${(state.rngClaim?.claims.length ?? 1) === 1 ? '' : 's'}</button>
+        <div class="spacer"></div>
+      </div>`;
+  } else if (phase === 'claiming') {
+    body = `
+      <p class="${cls('ok')}">TX1: ${txLink(state.rngTx1Id)}</p>
+      <p class="${cls('info')}">${escapeHtml(state.rngPhaseMessage ?? 'Awaiting signature…')}</p>
+      ${renderRngOutcome(false)}`;
+  } else if (phase === 'done') {
+    body = `
+      <p class="${cls('ok')}">TX1: ${txLink(state.rngTx1Id)}</p>
+      <p class="${cls('ok')}">TX2: ${txLink(state.rngTx2Id)}</p>
+      <p class="${cls('ok')}">${escapeHtml(state.rngPhaseMessage ?? 'Done.')}</p>
+      ${renderRngOutcome(true)}
+      <div class="row">
+        <button data-action="rngReset">Open another</button>
+      </div>`;
+  } else if (phase === 'error') {
+    body = `
+      <p class="${cls('err')}">${escapeHtml(state.rngPhaseMessage ?? 'Error.')}</p>
+      ${state.rngTx1Id ? `<p class="status-line">TX1 (still valid on-chain): ${txLink(state.rngTx1Id)}</p>` : ''}
+      <div class="row">
+        <button data-action="rngReset">Reset</button>
+      </div>`;
+  }
+
+  return `<div class="card"><h2>5 · Verify &amp; execute</h2>${body}</div>`;
+}
+
+/**
+ * Renders the resolved claims from a random blend, with the in-roll
+ * odds of each outcome shown next to it. Same layout as the pack
+ * outcomes panel so the two flows feel symmetric.
+ */
+function renderRngOutcome(claimed: boolean): string {
+  const row = state.rngClaim;
+  if (!row || row.claims.length === 0) return '';
+  const cls = claimed ? 'unbox-outcome claimed' : 'unbox-outcome rolled';
+
+  const items = row.claims.map((c, idx) => {
+    const variant = c.claim?.[0];
+    const payload = c.claim?.[1] ?? {};
+    let tidStr = '';
+    if (variant === 'ON_DEMAND_NFT_CLAIM') {
+      tidStr = String((payload as { template_id?: number }).template_id ?? '');
+    } else if (variant === 'POOL_NFT_CLAIM') {
+      tidStr = `pool asset ${String((payload as { asset_id?: string }).asset_id ?? '')}`;
+    } else if (variant === 'FT_CLAIM') {
+      tidStr = String((payload as { amount?: { quantity?: string } }).amount?.quantity ?? '');
+    } else if (variant === 'EMPTY_CLAIM') {
+      tidStr = 'empty (no mint)';
+    }
+    const rolls = state.blend?.rolls ?? [];
+    const roll = rolls[idx];
+    let pctLabel = '?';
+    if (roll && variant === 'ON_DEMAND_NFT_CLAIM') {
+      const total = roll.total_odds || roll.outcomes.reduce((a, o) => a + o.odds, 0);
+      const tid = Number((payload as { template_id?: number }).template_id);
+      const match = roll.outcomes.find((o) =>
+        (o.results ?? []).some((r) => r[0] === 'ON_DEMAND_NFT_RESULT' && Number((r[1] as { template_id?: number }).template_id) === tid),
+      );
+      if (match && total > 0) pctLabel = `${((match.odds / total) * 100).toFixed(2)}%`;
+    }
+    const label = row.claims.length === 1 ? 'Card' : `Card ${idx + 1}`;
+    return `
+      <li class="${cls}">
+        <span class="unbox-outcome-label">${escapeHtml(label)} <span class="term">(roll #${idx})</span></span>
+        <span class="unbox-outcome-name"><span class="term">${escapeHtml(variant ?? 'unknown variant')}</span></span>
+        <code class="unbox-outcome-tid">${escapeHtml(tidStr || '-')}</code>
+        <span class="unbox-outcome-odds">${escapeHtml(pctLabel)}</span>
+      </li>`;
+  });
+
+  const heading = claimed
+    ? `<h3>Minted to your wallet</h3>`
+    : `<h3>Oracle resolved</h3><p class="status-line" style="margin:4px 0 6px">The contract has staged the outcome below. Click step 2 to mint the result to your wallet. Percentages are the in-roll odds (chance of this exact outcome).</p>`;
+  return `${heading}<ul class="unbox-outcomes">${items.join('')}</ul>`;
 }
 
 function renderStatus(): string {
@@ -2155,19 +2537,19 @@ function renderPickPack(): string {
       <p style="margin-top:0; color:var(--fg-dim); font-size:12px">
         Opening a pack always takes <strong>two wallet signatures</strong> (one to send the pack to <code>atomicpacksx</code>, one to mint the resolved cards). This is how the contract works for every collection on WAX, not something specific to your wallet. Crucible scans the chain globally and only lists the collections where you currently hold at least one openable pack.
       </p>
-      <div class="row" style="gap:14px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 10px">
-        ${collPicker}
-        ${designPicker}
-        ${mintPicker}
+      <div class="row" style="gap:14px; align-items:center; margin-bottom: 14px; flex-wrap:wrap">
         <button class="primary" data-action="refreshPacks" ${state.packsLoading || !session ? 'disabled' : ''}>
           ${escapeHtml(refreshLabel)}
         </button>
-      </div>
-      <div class="row" style="margin-top:10px; gap:14px; align-items:center; flex-wrap:wrap">
         <div class="spacer"></div>
         ${totalLine}
       </div>
       ${statusLine}
+      <div class="row" style="gap:14px; align-items: flex-end; flex-wrap: wrap; margin-top: 8px">
+        ${collPicker}
+        ${designPicker}
+        ${mintPicker}
+      </div>
     </div>`;
 }
 
@@ -2241,6 +2623,7 @@ function renderPackActions(): string {
     body = `
       <p class="${cls('ok')}">TX1 confirmed: ${txLink(state.packTx1Id)}</p>
       <p class="${cls('ok')}">${escapeHtml(state.packPhaseMessage ?? 'Ready to claim.')}</p>
+      ${renderUnboxOutcomes(false)}
       <div class="row">
         <button class="primary" data-action="packClaim">Sign step 2: claim ${state.packUnboxAssets.length} card${state.packUnboxAssets.length === 1 ? '' : 's'}</button>
         <div class="spacer"></div>
@@ -2248,12 +2631,14 @@ function renderPackActions(): string {
   } else if (phase === 'claiming') {
     body = `
       <p class="${cls('ok')}">TX1: ${txLink(state.packTx1Id)}</p>
-      <p class="${cls('info')}">${escapeHtml(state.packPhaseMessage ?? 'Awaiting signature…')}</p>`;
+      <p class="${cls('info')}">${escapeHtml(state.packPhaseMessage ?? 'Awaiting signature…')}</p>
+      ${renderUnboxOutcomes(false)}`;
   } else if (phase === 'done') {
     body = `
       <p class="${cls('ok')}">TX1: ${txLink(state.packTx1Id)}</p>
       <p class="${cls('ok')}">TX2: ${txLink(state.packTx2Id)}</p>
       <p class="${cls('ok')}">${escapeHtml(state.packPhaseMessage ?? 'Done.')}</p>
+      ${renderUnboxOutcomes(true)}
       <div class="row">
         <button data-action="packReset">Open another pack</button>
       </div>`;
@@ -2271,6 +2656,54 @@ function renderPackActions(): string {
       <h2>4 · Unbox flow</h2>
       ${body}
     </div>`;
+}
+
+/**
+ * Renders the resolved outcomes after ORNG callback: for each card the
+ * oracle rolled, show which template was picked, its (best-effort) name,
+ * and the probability that exact outcome had within its roll.
+ *
+ * `claimed` flips the visual from "about to mint" (pulsing accent) to
+ * "minted" (calm green), but the same data is shown.
+ *
+ * Both states draw from:
+ *   - state.packUnboxAssets: the on-chain ORNG result rows (origin_roll_id
+ *     + template_id), populated by waitForUnboxAssets().
+ *   - state.packRolls: the pack design's full roll table, so we can
+ *     compute "this template_id had X% odds in this roll".
+ *   - state.packRollNames: opportunistically-fetched template names.
+ */
+function renderUnboxOutcomes(claimed: boolean): string {
+  if (state.packUnboxAssets.length === 0) return '';
+  const rollById = new Map<number, PackRoll>();
+  for (const r of state.packRolls) rollById.set(Number(r.roll_id), r);
+
+  const cls = claimed ? 'unbox-outcome claimed' : 'unbox-outcome rolled';
+  const items = state.packUnboxAssets.map((row, idx) => {
+    const rollId = Number(row.origin_roll_id);
+    const roll = rollById.get(rollId);
+    const tid = Number(row.template_id);
+    const name = state.packRollNames.get(tid);
+    let pctLabel = '?';
+    if (roll) {
+      const total = roll.total_odds || roll.outcomes.reduce((a, o) => a + o.odds, 0);
+      const match = roll.outcomes.find((o) => Number(o.template_id) === tid);
+      if (match && total > 0) pctLabel = `${((match.odds / total) * 100).toFixed(2)}%`;
+    }
+    const cardLabel = state.packUnboxAssets.length === 1 ? 'Card' : `Card ${idx + 1}`;
+    return `
+      <li class="${cls}">
+        <span class="unbox-outcome-label">${escapeHtml(cardLabel)} <span class="term">(roll #${rollId})</span></span>
+        <span class="unbox-outcome-name">${name ? escapeHtml(name) : `<span class="term">resolving name…</span>`}</span>
+        <code class="unbox-outcome-tid">template ${escapeHtml(String(tid))}</code>
+        <span class="unbox-outcome-odds" title="probability of this exact outcome within roll #${rollId}">${escapeHtml(pctLabel)}</span>
+      </li>`;
+  });
+
+  const heading = claimed
+    ? `<h3>Minted to your wallet</h3>`
+    : `<h3>Oracle rolled</h3><p class="status-line" style="margin:4px 0 6px">These are the exact templates ORNG picked for your pack. Step 2 mints them to your wallet, the percentages are the in-roll odds (what was the chance of this particular result?).</p>`;
+  return `${heading}<ul class="unbox-outcomes">${items.join('')}</ul>`;
 }
 
 function renderPacksView(): string {
@@ -2591,6 +3024,15 @@ function attachHandlers() {
           break;
         case 'packReset':
           onPackReset();
+          break;
+        case 'rngClaim':
+          onClaimRng();
+          break;
+        case 'rngCancelWait':
+          onCancelRngWait();
+          break;
+        case 'rngReset':
+          onResetRng();
           break;
       }
       ev.stopPropagation();

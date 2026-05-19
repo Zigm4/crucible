@@ -98,6 +98,8 @@ transaction.
 
 ```
 [*] deterministic blends (nosecfuse, fixed result)
+[*] random blends (fuse + claim, two signatures, auto-wait between
+    signatures, full outcome + in-roll odds shown before TX2)
 [*] token-paying blends (FT ingredients, auto openbal + transfer)
 [*] drops:
     - public                (claimdrop)
@@ -111,9 +113,12 @@ transaction.
 [*] live ABI read on boot, survives compatible contract upgrades
 [*] secure.nefty whitelist check when a blend has security_id != 0
 [*] zero backend, zero telemetry, zero stored secrets
-[x] random blends (secfuse, commit-reveal via ORNG): detected and
-    hidden. Adding them is on the roadmap, the pack flow already uses
-    the same primitive.
+[x] ownership-secured random blends: a small minority of random
+    blends require the user to send an OWNERSHIP_CHECK with specific
+    proof NFTs. The current UI sends a no-op WHITELIST_CHECK; that
+    works for unsecured + whitelist-secured random blends but the
+    contract rejects ownership-gated ones. Picker tags the affected
+    rows. A small UI extension would add this.
 [x] authkey drops (claimdropkey): the drop creator must pre-sign a
     per-user message we cannot obtain.
 [x] persistent storage beyond your last-used collection name.

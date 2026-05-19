@@ -107,9 +107,26 @@ actions lead the sequence:
 [*] checks secure.nefty whitelists before letting you sign
 [*] resolves the token contract from blend.nefty/config/supported_tokens
     (159 tokens registered as of 2026)
-[x] random blends (secfuse, commit-reveal with the ORNG oracle) are
-    detected and hidden. The two-tx flow is not yet implemented.
+[*] random blends (fuse + claim, two signatures) supported with
+    auto-wait between TX1 and TX2 and a full breakdown of the
+    resolved outcome + the in-roll odds
 ```
+
+For random blends (any roll with 2+ possible outcomes), the flow becomes:
+
+```
+TX 1 - blend.nefty::announcedepo + atomicassets::transfer + blend.nefty::fuse
+       (the contract either resolves synchronously or queues an ORNG job)
+
+       ... wait for claimassets[claimer] to gain a new row ...
+
+TX 2 - blend.nefty::claim  claim_id, roll_indexes
+       (mints the resolved cards to your wallet)
+```
+
+Crucible auto-waits between the two signatures, exactly like the UNPACK
+flow, and shows you which outcome the contract picked plus its
+probability before you sign step 2.
 
 ### CLAIM tab · `neftyblocksd`
 
@@ -360,10 +377,13 @@ public/
 
 Honesty up front:
 
-- **`secfuse` blends** (random results via the ORNG oracle) need a
-  two-transaction commit-reveal flow plus reveal monitoring. Detected
-  and hidden in the UI. Adding it is a tractable next step, the pack
-  flow already uses the same primitive.
+- **Ownership-secured random blends**: a tiny minority of random
+  blends require the user to prove on-chain ownership of a specific
+  set of NFTs (`OWNERSHIP_CHECK` security). The current UI sends a
+  no-op `WHITELIST_CHECK` payload, which works for non-secured and
+  whitelist-secured random blends but is rejected by the contract for
+  ownership-gated ones. The picker tags these blends; supporting them
+  is a small UI extension on top of the existing flow.
 - **`claimdropkey` drops** (cryptographic-key gated) need a per-user
   pre-signed message from the drop creator. No client can fabricate
   that, fundamentally outside the scope of any third-party tool.

@@ -10,8 +10,10 @@
  * The on-chain path uses 16 parallel chunks of 25K blend_ids each. Total
  * walk time is typically 5-10 seconds on a fast WAX node.
  *
- * Random (`secfuse`) blends are filtered out entirely because this tool
- * cannot execute them yet. They reappear when we add commit-reveal flow.
+ * Random (`fuse`) blends are kept in the list and tagged via the
+ * `is_random` field on `DiscoveredBlend`. The UI uses a separate state
+ * machine (announce + fuse, wait for claimassets, then claim) when the
+ * user picks one.
  *
  * When `actor` is supplied, the result also resolves whitelist eligibility
  * for blends with security_id != 0 by reading `secure.nefty/whitelists`.
@@ -65,6 +67,14 @@ export interface DiscoveredBlend {
   whitelist_required: boolean;
   /** True/false once we've checked; undefined when no wallet or check failed. */
   whitelist_allowed?: boolean;
+  /**
+   * True for blends where at least one roll has 2+ outcomes (the result
+   * is decided at unbox time, not at recipe time). The UI executes
+   * these through the announce+fuse / wait / claim state machine
+   * instead of the single-shot nosecfuse path. Pool-NFT blends are also
+   * tagged here because their pool is drawn from at execution time.
+   */
+  is_random: boolean;
   /**
    * Raw ingredient list, kept around so the picker can offer an
    * "only show blends I can do" filter without re-fetching each row.
@@ -298,10 +308,6 @@ function normalizeChainBlend(b: RawBlend): RawBlend {
 function shapeAndFilter(raw: RawBlend[], includeInactive: boolean): DiscoveredBlend[] {
   const out: DiscoveredBlend[] = [];
   for (const b of raw) {
-    // Hide random / non-deterministic blends entirely, this tool can't
-    // execute them, and "non-selectable" should be reserved for whitelist
-    // denial to make the legend unambiguous.
-    if (!isDeterministicRolls(b.rolls)) continue;
     const shaped = toDiscovered(b);
     if (shaped) out.push(shaped);
   }
@@ -381,6 +387,7 @@ function toDiscovered(b: RawBlend): DiscoveredBlend | undefined {
     name: (dd.name && String(dd.name)) || `Blend #${id}`,
     status: computeStatus(b),
     whitelist_required: security_id !== '0',
+    is_random: !isDeterministicRolls(b.rolls),
     // whitelist_allowed left undefined until enrichWhitelist runs
     ingredients: b.ingredients as import('./blend').IngredientVariant[] | undefined,
   };
