@@ -198,6 +198,16 @@ interface AppState {
   dropShowInactive: boolean;
   /** When true, hides drops the wallet cannot currently claim. */
   dropOnlyEligible: boolean;
+  /**
+   * Cache of `primary_template_id -> resolved on-chain name`, populated
+   * lazily after a discover run completes. Many drops have empty
+   * display_data on-chain, the canonical user-facing name is on the
+   * primary mint template instead. This map lets the picker show
+   * something readable for those rows.
+   */
+  dropNameByTemplate: Map<number, string>;
+  /** Cache of `drop_id -> token balance status` for paid-drop affordability. */
+  dropFtStatus: Map<string, { ticker: string; required: number; balance: number }>;
 
   // ── packs view ──
   /**
@@ -295,6 +305,8 @@ const state: AppState = {
   dropLoading: false,
   dropShowInactive: false,
   dropOnlyEligible: false,
+  dropNameByTemplate: new Map(),
+  dropFtStatus: new Map(),
   packDesigns: [],
   ownedPacks: [],
   packsLoading: false,
@@ -878,6 +890,15 @@ async function loadDropsList() {
       },
     });
     state.drops = drops;
+    // Kick off best-effort name resolution for drops whose on-chain
+    // display_data is empty. The picker falls back to the primary mint
+    // template's name, fetched from the AtomicAssets indexer. Failures
+    // are silently swallowed, the row keeps its "Drop #<id>" fallback.
+    void enrichDropNames(drops);
+    // Same idea for paid drops: precompute whether the user has the
+    // required balance. Sets state.dropFtStatus[drop_id] when we can,
+    // leaves it unset when the session is missing or the token is exotic.
+    void enrichDropAffordability(drops);
   } catch (err) {
     state.dropsError = (err as Error).message;
     state.drops = [];
@@ -886,6 +907,99 @@ async function loadDropsList() {
     state.dropsProgress = undefined;
     render();
   }
+}
+
+/**
+ * Best-effort name resolution for drops with empty display_data. Looks
+ * up each unique primary template_id via the AtomicAssets indexer (one
+ * request per template, dedup'd) and stashes the resolved name in
+ * `state.dropNameByTemplate`. The picker checks this cache when the
+ * raw `d.name` is still the auto-generated `Drop #<id>` fallback.
+ */
+async function enrichDropNames(drops: DiscoveredDrop[]): Promise<void> {
+  const seen = new Set<number>();
+  const tasks: Promise<void>[] = [];
+  for (const d of drops) {
+    const tid = d.primary_template_id;
+    if (!tid) continue;
+    if (seen.has(tid)) continue;
+    if (state.dropNameByTemplate.has(tid)) continue;
+    seen.add(tid);
+    tasks.push(
+      fetchTemplateName(d.collection_name, tid).then((name) => {
+        if (name) {
+          state.dropNameByTemplate.set(tid, name);
+          if (state.view === 'drops') render();
+        }
+      }).catch(() => {}),
+    );
+  }
+  await Promise.all(tasks);
+}
+
+/**
+ * Reads the user's balance for each paid drop's settlement token and
+ * stashes a small {required, balance} record per drop_id. The picker
+ * uses this to flag "insufficient funds" inline so the user knows they
+ * need to top up before signing.
+ */
+async function enrichDropAffordability(drops: DiscoveredDrop[]): Promise<void> {
+  const session = getCurrentSession();
+  if (!session) return;
+  const owner = String(session.actor);
+  const byTicker = new Map<string, number>();
+  const tasks: Promise<void>[] = [];
+  for (const d of drops) {
+    if (d.is_free) continue;
+    const required = parseAssetAmount(d.listing_price);
+    const ticker = tickerFromQuantity(d.listing_price);
+    if (!ticker || !Number.isFinite(required)) continue;
+    // Avoid hammering the chain: one balance read per ticker, cached.
+    if (!byTicker.has(ticker)) {
+      byTicker.set(ticker, -1);
+      tasks.push(
+        (async () => {
+          try {
+            const contract = await resolveTokenContract(d.listing_price);
+            const balance = await readTokenBalance({
+              owner,
+              contract,
+              symbolCode: ticker,
+            });
+            byTicker.set(ticker, balance);
+          } catch {
+            byTicker.set(ticker, -1);
+          }
+        })(),
+      );
+    }
+  }
+  await Promise.all(tasks);
+  for (const d of drops) {
+    if (d.is_free) continue;
+    const required = parseAssetAmount(d.listing_price);
+    const ticker = tickerFromQuantity(d.listing_price);
+    if (!ticker || !Number.isFinite(required)) continue;
+    const balance = byTicker.get(ticker) ?? -1;
+    state.dropFtStatus.set(d.drop_id, { ticker, required, balance });
+  }
+  if (state.view === 'drops') render();
+}
+
+/**
+ * Returns the user-facing name for a drop: prefers the on-chain
+ * display_data name, falls back to the resolved primary-template name
+ * (best-effort), and finally to the auto-generated "Drop #<id>".
+ */
+function displayDropName(d: DiscoveredDrop): string {
+  const fallback = `Drop #${d.drop_id}`;
+  if (d.name && d.name !== fallback) return d.name;
+  const tid = d.primary_template_id;
+  if (tid) {
+    const resolved = state.dropNameByTemplate.get(tid);
+    if (resolved) return resolved;
+  }
+  return d.name || fallback;
 }
 
 function onToggleDropShowInactive(checked: boolean) {
@@ -936,6 +1050,12 @@ async function onPickDrop(dropId: string) {
     } finally {
       state.dropTemplateLoading = false;
     }
+  }
+  // Make sure the affordability check is fresh for the picked drop:
+  // when the user comes in via manual entry, the discover-time
+  // enrichment never ran for this drop. Single drop, single fetch.
+  if (!drop.is_free && !state.dropFtStatus.has(drop.drop_id)) {
+    void enrichDropAffordability([drop]);
   }
   state.dropLoading = false;
   render();
@@ -1000,6 +1120,11 @@ function readyToClaim(): boolean {
   if (d.auth.kind === 'proof' && !d.auth.resolved?.satisfied) return false;
   if (state.dropAmount < 1) return false;
   if (typeof d.account_remaining === 'number' && d.account_remaining < state.dropAmount) return false;
+  // Paid drop with a known insufficient balance? Block the Sign &
+  // claim button. We don't block on `balance === -1` (failed to read)
+  // because the contract will surface its own error in that case.
+  const ft = state.dropFtStatus.get(d.drop_id);
+  if (ft && ft.balance >= 0 && ft.balance < ft.required * state.dropAmount) return false;
   return true;
 }
 
@@ -1467,7 +1592,29 @@ function statusLabel(s: DiscoveredStatus): string {
  * clickable chips: clicking one fills the input and commits the change
  * (same effect as typing the name + pressing Enter).
  */
-function renderCollectionSelector(): string {
+/**
+ * Just the text input for the discovery collection. The suggestion
+ * chips live on their own row below so the input + picker dropdown can
+ * sit on the same horizontal baseline at the top of the card.
+ */
+function renderCollectionInput(): string {
+  return `
+    <input
+      id="collectionPick"
+      type="text"
+      autocomplete="off"
+      spellcheck="false"
+      maxlength="12"
+      placeholder="type a collection..."
+      value="${escapeHtml(state.discoveryCollection)}"
+    />`;
+}
+
+/**
+ * Suggestion chips for the SUPPORTED_COLLECTIONS list. Free-form
+ * collection names are still accepted, this is a convenience.
+ */
+function renderCollectionChips(): string {
   const chips = SUPPORTED_COLLECTIONS
     .map((c) => {
       const active = state.discoveryCollection === c ? ' active' : '';
@@ -1475,20 +1622,9 @@ function renderCollectionSelector(): string {
     })
     .join('');
   return `
-    <div class="collection-input">
-      <input
-        id="collectionPick"
-        type="text"
-        autocomplete="off"
-        spellcheck="false"
-        maxlength="12"
-        placeholder="type any WAX collection..."
-        value="${escapeHtml(state.discoveryCollection)}"
-      />
-      <div class="collection-chips">
-        <span class="collection-chips-label">suggestions:</span>
-        ${chips}
-      </div>
+    <div class="collection-chips">
+      <span class="collection-chips-label">suggestions:</span>
+      ${chips}
     </div>`;
 }
 
@@ -1607,12 +1743,12 @@ function renderPickBlend(): string {
   return `
     <div class="card">
       <h2>2 · Pick a blend</h2>
-      <div class="row" style="gap:14px; align-items: flex-end; margin-bottom: 10px">
-        <div style="min-width: 220px">
+      <div class="row" style="gap:14px; align-items: flex-end; margin-bottom: 8px">
+        <div style="width: 140px; flex: 0 0 140px">
           <label>Collection</label>
-          ${renderCollectionSelector()}
+          ${renderCollectionInput()}
         </div>
-        <div style="flex:1; min-width: 220px">
+        <div style="flex: 1 1 380px; min-width: 280px">
           <label>Available blends</label>
           <div class="picker">
             ${renderPickerToggle()}
@@ -1623,6 +1759,7 @@ function renderPickBlend(): string {
           ${escapeHtml(refreshLabel)}
         </button>
       </div>
+      ${renderCollectionChips()}
       ${progressBar}
       <div class="row" style="margin-top:10px; gap:14px; align-items:center; flex-wrap:wrap">
         <label class="inline-toggle">
@@ -2068,7 +2205,7 @@ function renderDropPickerToggle(): string {
   if (notLoadedYet) {
     label = `Click "Discover drops" to load ${state.discoveryCollection || 'a collection'}’s list`;
   } else if (state.drop) {
-    label = `[#${state.drop.drop_id}] ${state.drop.name}`;
+    label = `[#${state.drop.drop_id}] ${displayDropName(state.drop)}`;
   } else if (state.dropsLoading) {
     label = state.dropsProgress?.message ?? 'Scanning drops...';
   } else if (state.dropsError) {
@@ -2125,11 +2262,17 @@ function renderDropPickerPanel(): string {
         : `<span class="picker-price">${escapeHtml(d.listing_price)}</span>`;
       const classes = ['picker-row'];
       if (disabled) classes.push('picker-row-disabled');
+      const ft = state.dropFtStatus.get(d.drop_id);
+      const insufficient = ft && ft.balance >= 0 && ft.balance < ft.required;
+      const fundsBadge = insufficient
+        ? `<span class="picker-wl-badge" title="You're eligible but your wallet doesn't hold enough ${escapeHtml(ft!.ticker)} (have ${ft!.balance.toFixed(4)}, need ${ft!.required.toFixed(4)}).">insufficient ${escapeHtml(ft!.ticker)}</span>`
+        : '';
       return `
         <div class="${classes.join(' ')}" ${disabled ? '' : `data-action="pickDrop" data-drop="${escapeHtml(d.drop_id)}"`}>
           <span class="picker-id">#${escapeHtml(d.drop_id)}</span>
-          <span class="picker-name">${escapeHtml(d.name)}</span>
+          <span class="picker-name">${escapeHtml(displayDropName(d))}</span>
           ${priceTag}
+          ${fundsBadge}
           ${wlBadge}
           <span class="status-chip status-${escapeHtml(d.status)}">${escapeHtml(dropStatusLabel(d.status))}</span>
         </div>`;
@@ -2186,12 +2329,12 @@ function renderPickDrop(): string {
   return `
     <div class="card">
       <h2>2 · Pick a drop</h2>
-      <div class="row" style="gap:14px; align-items: flex-end; margin-bottom: 10px">
-        <div style="min-width: 220px">
+      <div class="row" style="gap:14px; align-items: flex-end; margin-bottom: 8px">
+        <div style="width: 140px; flex: 0 0 140px">
           <label>Collection</label>
-          ${renderCollectionSelector()}
+          ${renderCollectionInput()}
         </div>
-        <div style="flex:1; min-width: 220px">
+        <div style="flex: 1 1 380px; min-width: 280px">
           <label>Available drops</label>
           <div class="picker drop-picker">
             ${renderDropPickerToggle()}
@@ -2202,6 +2345,7 @@ function renderPickDrop(): string {
           ${escapeHtml(refreshLabel)}
         </button>
       </div>
+      ${renderCollectionChips()}
       ${progressBar}
       <div class="row" style="margin-top:10px; gap:14px; align-items:center; flex-wrap:wrap">
         <label class="inline-toggle">
@@ -2337,9 +2481,28 @@ function renderDropInfo(): string {
   const noSessionHint = !session && d.account_limit > 0
     ? '<p class="term">Connect your wallet to check how many claims you have left on this drop.</p>'
     : '';
+  // Insufficient-balance notice: the wallet IS eligible (whitelist /
+  // proof / public all check out) but doesn't hold enough of the drop's
+  // settlement token. We compute it on-the-fly here so it stays fresh
+  // even if the user opens a drop whose discover-time enrichment hadn't
+  // landed yet.
+  const ft = state.dropFtStatus.get(d.drop_id);
+  let insufficientNotice = '';
+  if (!d.is_free && ft && ft.balance >= 0 && ft.balance < ft.required) {
+    const missing = ft.required - ft.balance;
+    insufficientNotice = `
+      <p class="status-line warn">
+        <strong>Insufficient ${escapeHtml(ft.ticker)} balance.</strong>
+        You're eligible to claim this drop, but your wallet holds only
+        <code>${ft.balance.toFixed(4)} ${escapeHtml(ft.ticker)}</code>
+        and the drop costs <code>${escapeHtml(d.listing_price)}</code>.
+        Top up at least <code>${missing.toFixed(4)} ${escapeHtml(ft.ticker)}</code>
+        (an Alcor / TacoSwap / wallet transfer works) and the Sign &amp; claim button will unlock.
+      </p>`;
+  }
   return `
     <div class="card">
-      <h2>3 · Drop #${escapeHtml(d.drop_id)} <span class="term">-- ${escapeHtml(d.collection_name)}</span></h2>
+      <h2>3 · ${escapeHtml(displayDropName(d))} <span class="term">-- #${escapeHtml(d.drop_id)} · ${escapeHtml(d.collection_name)}</span></h2>
       <div class="row">
         <span class="status-chip status-${escapeHtml(d.status)}">${escapeHtml(dropStatusLabel(d.status))}</span>
         ${d.is_free ? '<span class="tag ok">free</span>' : `<span class="tag">${escapeHtml(d.listing_price)}</span>`}
@@ -2347,6 +2510,7 @@ function renderDropInfo(): string {
         <span class="tag">claims ${escapeHtml(remaining)}</span>
         ${limitTag}
       </div>
+      ${insufficientNotice}
       ${renderDropAuthExplainer(d)}
       ${cooldownNote}
       ${noSessionHint}
