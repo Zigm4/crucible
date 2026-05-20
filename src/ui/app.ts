@@ -66,6 +66,14 @@ import {
 } from '../nefty/upgrades';
 import { buildUpgradeActions, executeUpgrade } from '../nefty/upgradeExecute';
 import {
+  listWaxdaoBlends,
+  loadWaxdaoBlendById,
+  type DiscoveredWaxdaoBlend,
+  type WaxdaoBlendStatus,
+  type WaxdaoIngredient,
+} from '../waxdao/blends';
+import { buildWaxdaoBlendActions, executeWaxdaoBlend } from '../waxdao/blendExecute';
+import {
   readKnownClaimIds,
   waitForClaim,
   type ClaimAssetsRow,
@@ -102,7 +110,31 @@ import { waitForUnboxAssets, type UnboxAssetRow } from '../nefty/packWait';
 import { dryRunActions } from './dryrun';
 import { renderAboutPanels } from './about';
 
-type AppView = 'blends' | 'drops' | 'packs' | 'upgrades';
+type AppView =
+  | 'blends'   // Nefty: blend.nefty
+  | 'drops'    // Nefty: neftyblocksd
+  | 'packs'    // Nefty: atomicpacksx
+  | 'upgrades' // Nefty: up.nefty
+  | 'waxdao-blends'; // WaxDAO: waxdaomarket
+
+/**
+ * Top-level platform switch. Each platform exposes its own set of
+ * tabs; the user picks one platform at a time. The choice is reflected
+ * in the URL hash (#/nefty or #/waxdao) so the page is bookmarkable
+ * and shareable.
+ */
+type Platform = 'nefty' | 'waxdao';
+
+/** Default tab per platform. Used when the platform pill is clicked. */
+const DEFAULT_VIEW_FOR_PLATFORM: Record<Platform, AppView> = {
+  nefty: 'blends',
+  waxdao: 'waxdao-blends',
+};
+
+/** Reverse mapping: which platform a given view belongs to. */
+function platformOf(view: AppView): Platform {
+  return view === 'waxdao-blends' ? 'waxdao' : 'nefty';
+}
 
 /**
  * Multi-phase state machine for the auto-wait pack unbox flow.
@@ -275,6 +307,22 @@ interface AppState {
 
   // ── UPGRADE view state machine ──
   upgrades: UpgradeViewState;
+  /** WaxDAO blend tab state. */
+  waxdao: WaxdaoViewState;
+  /**
+   * Top-level platform pill. 'nefty' = blend.nefty / neftyblocksd /
+   * atomicpacksx / up.nefty. 'waxdao' = waxdaomarket. Mirrors
+   * location.hash (#/nefty, #/waxdao) so the page is bookmarkable.
+   */
+  platform: Platform;
+  /**
+   * Set when the URL hash carries an entity ID (e.g.
+   * `#/nefty/blend/43444`). Cleared once the entity has been loaded
+   * into the corresponding tab. Used to (a) trigger the load on mount
+   * and (b) surface a "connect to sign this" banner when no wallet is
+   * active yet.
+   */
+  pendingDeepLink?: { view: AppView; id: string };
 
   /**
    * Cross-tab cache of `template_id -> human-readable name`. Populated
@@ -295,6 +343,37 @@ type RngPhase =
   | 'error';
 
 /** Slot machine sub-state for the UPGRADE tab. */
+/**
+ * State machine for the WAXDAO BLEND tab. Mirrors UpgradeViewState
+ * because the picker / info / slots / actions flow is the same shape,
+ * just against a different contract.
+ */
+interface WaxdaoViewState {
+  /** Free-form blend_ID input (manual entry path). */
+  blendIdInput: string;
+  /** Discovered blends for the active collection. */
+  list: DiscoveredWaxdaoBlend[];
+  loading: boolean;
+  progress?: { pct: number; message: string };
+  error?: string;
+  /** Currently picked blend. */
+  picked?: DiscoveredWaxdaoBlend;
+  pickerOpen: boolean;
+  showInactive: boolean;
+  /**
+   * NFT picks by ingredient slot. WaxDAO slot indexing: slot 0 is the
+   * FT cost (no NFT), then slots 1..N are NFT ingredients in order.
+   * Single-asset slots store a single asset_id; multi-asset slots
+   * (when an ingredient's amount > 1) store an array.
+   */
+  selection: Map<number, string | string[]>;
+  /** Per-FT-ingredient affordability (index in `ingredients`). */
+  ftStatus: Map<number, { ticker: string; required: number; balance: number }>;
+  lastTrxId?: string;
+  lastDryRun?: unknown;
+  pending: boolean;
+}
+
 interface UpgradeViewState {
   /** Free-form Upgrade-id input (manual entry path). */
   upgradeIdInput: string;
@@ -345,7 +424,7 @@ const state: AppState = {
   showInactive: false,
   onlyExecutable: false,
   pickerOpen: false,
-  view: 'blends',
+  view: parseHashRoute().view,
   drops: [],
   dropsLoading: false,
   dropId: '',
@@ -377,8 +456,123 @@ const state: AppState = {
     ftStatus: new Map(),
     pending: false,
   },
+  waxdao: {
+    blendIdInput: '',
+    list: [],
+    loading: false,
+    pickerOpen: false,
+    showInactive: false,
+    selection: new Map(),
+    ftStatus: new Map(),
+    pending: false,
+  },
+  platform: readPlatformFromHash(),
+  pendingDeepLink: (() => {
+    const r = parseHashRoute();
+    return r.id ? { view: r.view, id: r.id } : undefined;
+  })(),
   templateNames: new Map(),
 };
+
+/**
+ * Hash routing grammar:
+ *
+ *   #/<platform>                          platform only, default tab
+ *   #/<platform>/<tab>                    specific tab, no entity
+ *   #/<platform>/<tab>/<id>               deep link to a specific entity
+ *
+ * Tab slugs:
+ *   nefty   → blend | claim | unpack | upgrade
+ *   waxdao  → blend
+ *
+ * Entity IDs:
+ *   blend    → blend_id  (uint64)
+ *   claim    → drop_id   (uint64)
+ *   upgrade  → upgrade_id (uint64)
+ *   unpack   → unsupported (you can only open packs you own)
+ *
+ * `#/nefty/blend/43444` is shareable: when a fresh user lands on that
+ * URL we auto-select the BLEND tab, fetch blend 43444, and show a
+ * "connect your wallet to sign" banner if no session is active.
+ */
+export interface ParsedRoute {
+  platform: Platform;
+  view: AppView;
+  id?: string;
+}
+
+function tabSlugToView(platform: Platform, slug: string | undefined): AppView {
+  if (platform === 'waxdao') return 'waxdao-blends';
+  switch (slug) {
+    case 'claim':
+    case 'drop':
+    case 'drops':
+      return 'drops';
+    case 'unpack':
+    case 'pack':
+    case 'packs':
+      return 'packs';
+    case 'upgrade':
+    case 'upgrades':
+      return 'upgrades';
+    case 'blend':
+    case 'blends':
+    default:
+      return 'blends';
+  }
+}
+
+function viewToTabSlug(view: AppView): string {
+  switch (view) {
+    case 'blends':         return 'blend';
+    case 'drops':          return 'claim';
+    case 'packs':          return 'unpack';
+    case 'upgrades':       return 'upgrade';
+    case 'waxdao-blends':  return 'blend';
+  }
+}
+
+function parseHashRoute(): ParsedRoute {
+  try {
+    const h = (typeof location !== 'undefined' ? location.hash : '') || '';
+    const clean = h.replace(/^#\/?/, '');
+    const parts = clean.split('/').map((p) => p.trim()).filter(Boolean);
+    const platformSlug = (parts[0] || '').toLowerCase();
+    const platform: Platform = platformSlug === 'waxdao' ? 'waxdao' : 'nefty';
+    const view = tabSlugToView(platform, (parts[1] || '').toLowerCase());
+    const id = parts[2] ? parts[2] : undefined;
+    return { platform, view, id };
+  } catch {
+    return { platform: 'nefty', view: 'blends' };
+  }
+}
+
+function readPlatformFromHash(): Platform {
+  return parseHashRoute().platform;
+}
+
+/**
+ * Writes a platform / tab / id triple into the hash without firing a
+ * hashchange (uses history.replaceState). Skip the call when the hash
+ * is already at the target so we don't pollute the back stack.
+ */
+function writeHashRoute(platform: Platform, view: AppView, id?: string) {
+  try {
+    const slug = viewToTabSlug(view);
+    const target = id
+      ? `#/${platform}/${slug}/${id}`
+      : `#/${platform}/${slug}`;
+    if (location.hash === target) return;
+    // replaceState avoids browser history pollution and does NOT fire
+    // hashchange, so our hashchange listener stays a one-way "incoming
+    // URL → state" bridge.
+    history.replaceState(null, '', target);
+  } catch { /* ignore */ }
+}
+
+function writePlatformToHash(p: Platform) {
+  writeHashRoute(p, DEFAULT_VIEW_FOR_PLATFORM[p]);
+}
 
 function setStatus(msg: string, kind: AppState['statusKind'] = 'info') {
   state.status = msg;
@@ -644,6 +838,10 @@ function onPickerOutsideClick(ev: MouseEvent) {
     state.dropPickerOpen = false;
     mutated = true;
   }
+  if (state.waxdao.pickerOpen && (!target || (!target.closest('.waxdao-picker') && !insidePanel))) {
+    state.waxdao.pickerOpen = false;
+    mutated = true;
+  }
   if (state.upgrades.pickerOpen && (!target || (!target.closest('.upgrade-picker') && !insidePanel))) {
     state.upgrades.pickerOpen = false;
     mutated = true;
@@ -667,7 +865,82 @@ function onSwitchView(v: AppView) {
     state.packAbort = undefined;
   }
   state.view = v;
+  // Keep platform in sync with view, in case the user clicked a tab
+  // that belongs to the OTHER platform (the tabs we render are always
+  // platform-scoped, but defensive code is cheap).
+  const newPlatform = platformOf(v);
+  if (state.platform !== newPlatform) {
+    state.platform = newPlatform;
+  }
+  // Reset hash to the new tab WITHOUT an entity id (user is switching
+  // contexts, the previously linked entity is no longer relevant).
+  writeHashRoute(state.platform, v);
   render();
+}
+
+/**
+ * Switches the top-level platform pill. Resets `state.view` to the
+ * default view of the target platform (e.g. clicking the WaxDAO pill
+ * lands you on the WaxDAO Blend tab). Hash is updated so the new
+ * platform is bookmarkable.
+ */
+function onSwitchPlatform(p: Platform) {
+  if (state.platform === p) return;
+  // Defensive: cancel any pending pack-tab wait if we're walking
+  // away from it via a platform switch.
+  if (state.view === 'packs' && state.packAbort) {
+    state.packAbort.abort();
+    state.packAbort = undefined;
+  }
+  state.platform = p;
+  state.view = DEFAULT_VIEW_FOR_PLATFORM[p];
+  // Clear any pending deep link, the user clicked away from it.
+  state.pendingDeepLink = undefined;
+  writePlatformToHash(p);
+  render();
+}
+
+/**
+ * Reads `state.pendingDeepLink` and triggers the appropriate
+ * `onLoadXManual()` for the carried entity. Idempotent: once the
+ * entity loads, the deep link is cleared.
+ *
+ * Called once after `mount()` and again whenever a hashchange brings
+ * a new ID. Wallet connection is NOT required: the entity loads and
+ * renders so the user can see what the link points to. A banner in
+ * the Connect-wallet card prompts them to sign in when they're ready.
+ */
+async function applyPendingDeepLink() {
+  const dl = state.pendingDeepLink;
+  if (!dl) return;
+  // Mark consumed up front so re-entry doesn't double-load.
+  state.pendingDeepLink = undefined;
+  try {
+    switch (dl.view) {
+      case 'blends':
+        state.blendId = dl.id;
+        await onLoadBlend();
+        break;
+      case 'drops':
+        state.dropId = dl.id;
+        await onLoadDropManual();
+        break;
+      case 'upgrades':
+        state.upgrades.upgradeIdInput = dl.id;
+        await onLoadUpgradeManual();
+        break;
+      case 'waxdao-blends':
+        state.waxdao.blendIdInput = dl.id;
+        await onLoadWaxdaoBlendManual();
+        break;
+      case 'packs':
+        // Deep links to packs are not meaningful: the user can only
+        // unbox what they own. We ignore the id and stay on the tab.
+        break;
+    }
+  } catch (err) {
+    setStatus(`Deep link failed: ${(err as Error).message}`, 'err');
+  }
 }
 
 // ─── packs view: discovery + auto-wait state machine ─────────────────── //
@@ -1107,6 +1380,7 @@ async function onPickDrop(dropId: string) {
   state.dropTemplateLoading = !!drop.primary_template_id;
   state.dropLastDryRun = undefined;
   state.dropLastTrxId = undefined;
+  writeHashRoute('nefty', 'drops', drop.drop_id);
   render();
 
   if (drop.primary_template_id) {
@@ -1295,6 +1569,8 @@ async function onLoadBlend() {
     setStatus(`Reading blend ${state.blendId}…`, 'info');
     state.blend = await loadBlend({ blend_id: state.blendId });
     state.collection = state.blend.collection_name;
+    // Reflect the picked blend in the URL so the user can share it.
+    writeHashRoute('nefty', 'blends', String(state.blend.blend_id));
     // Reset any pending RNG state from a previous blend.
     state.rngPhase = 'idle';
     state.rngPhaseMessage = undefined;
@@ -1688,6 +1964,7 @@ async function onPickUpgrade(upgrade_id: string) {
   u.selection.clear();
   u.lastDryRun = undefined;
   u.lastTrxId = undefined;
+  writeHashRoute('nefty', 'upgrades', upgrade_id);
   render();
   await refreshUpgradeFtStatus();
 }
@@ -1907,11 +2184,85 @@ async function onExecuteUpgrade() {
 
 // ─── render ───────────────────────────────────────────────────────────── //
 
+/**
+ * Renders a small "share link" button. Click copies the current page
+ * URL (already pointing at the picked entity via the hash) to the
+ * clipboard. Used by every info card (blend, drop, upgrade, waxdao)
+ * so a user can share what they're looking at in one click.
+ */
+function renderShareButton(): string {
+  return `
+    <button class="share-btn" data-action="copyShareLink"
+            title="Copy a direct link to this. Anyone opening it will see this exact entity and be prompted to connect their wallet.">
+      ⎘ share link
+    </button>`;
+}
+
+/**
+ * Copies the current location.href to the clipboard. The URL already
+ * carries the hash route (#/<platform>/<tab>/<id>) for whatever the
+ * user is currently looking at, so the recipient lands on the same
+ * entity.
+ */
+async function onCopyShareLink() {
+  try {
+    const url = location.href;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(url);
+      setStatus(`Link copied: ${url}`, 'ok');
+    } else {
+      // Fallback: legacy execCommand. Some embedded webviews still
+      // ship without the async clipboard API.
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      setStatus(`Link copied: ${url}`, 'ok');
+    }
+  } catch {
+    setStatus('Could not copy link, copy the URL bar manually.', 'warn');
+  }
+}
+
+/**
+ * Produces a short human label describing the entity currently loaded
+ * via a deep link, used in the Connect-wallet banner.
+ */
+function activeDeepLinkLabel(): string | undefined {
+  const r = parseHashRoute();
+  if (!r.id) return undefined;
+  switch (r.view) {
+    case 'blends':
+      return `blend #${r.id} (NeftyBlocks)`;
+    case 'drops':
+      return `drop #${r.id} (NeftyBlocks)`;
+    case 'upgrades':
+      return `upgrade #${r.id} (NeftyBlocks)`;
+    case 'waxdao-blends':
+      return `blend #${r.id} (WaxDAO)`;
+    default:
+      return undefined;
+  }
+}
+
 function renderConnect(session: ReturnType<typeof getCurrentSession>): string {
   if (!session) {
+    const label = activeDeepLinkLabel();
+    const banner = label
+      ? `<p class="status-line warn" style="margin-bottom:10px">
+           <strong>Shared link detected.</strong> You're looking at
+           <code>${escapeHtml(label)}</code>. Connect a wallet to be able to
+           sign it.
+         </p>`
+      : '';
     return `
       <div class="card">
         <h2>1 · Connect wallet</h2>
+        ${banner}
         <p class="term">Anchor or WAX Cloud Wallet. No backend, your key stays in your wallet.</p>
         <div class="row" style="margin-top:10px">
           <button class="primary" data-action="login">Initialize session</button>
@@ -2225,7 +2576,10 @@ function renderBlendInfo(): string {
     : `${b.use_count}/∞`;
   return `
     <div class="card">
-      <h2>3 · Blend #${escapeHtml(String(b.blend_id))} <span class="term">-- ${escapeHtml(b.collection_name)}</span></h2>
+      <div class="card-header">
+        <h2>3 · Blend #${escapeHtml(String(b.blend_id))} <span class="term">-- ${escapeHtml(b.collection_name)}</span></h2>
+        ${renderShareButton()}
+      </div>
       <div class="row">
         ${det.ok
           ? '<span class="tag ok">deterministic · single output</span>'
@@ -2583,6 +2937,12 @@ function renderStatus(): string {
   return `<p class="status-line ${state.statusKind}">${escapeHtml(state.status)}</p>`;
 }
 
+/**
+ * Renders the top-level platform pills + the tab bar of the active
+ * platform. Two platforms exist (Nefty / WaxDAO) and each one exposes
+ * its own set of tabs. The pills update location.hash so the choice
+ * is bookmarkable.
+ */
 function renderTabs(): string {
   const tab = (id: AppView, label: string, sub: string) => {
     const active = state.view === id ? ' active' : '';
@@ -2592,13 +2952,32 @@ function renderTabs(): string {
         <span class="tab-sub">${escapeHtml(sub)}</span>
       </button>`;
   };
-  return `
-    <div class="card tabs-card">
-      <div class="tabs">
+  const pill = (p: Platform, label: string, sub: string) => {
+    const active = state.platform === p ? ' active' : '';
+    return `
+      <button class="platform-pill${active}" data-action="switchPlatform" data-platform="${p}">
+        <span class="platform-pill-label">${escapeHtml(label)}</span>
+        <span class="platform-pill-sub">${escapeHtml(sub)}</span>
+      </button>`;
+  };
+  const tabs = state.platform === 'nefty'
+    ? `
         ${tab('blends',   'Blend',   'burn NFTs → mint result')}
         ${tab('drops',    'Claim',   'pay (or not) → mint a drop')}
         ${tab('packs',    'Unpack',  'open packs you own')}
-        ${tab('upgrades', 'Upgrade', 'mutate NFTs you own')}
+        ${tab('upgrades', 'Upgrade', 'mutate NFTs you own')}`
+    : `
+        ${tab('waxdao-blends', 'Blend', 'waxdaomarket: burn NFTs → mint result')}`;
+  return `
+    <div class="card platform-card">
+      <div class="platform-pills">
+        ${pill('nefty',  'NeftyBlocks', 'blend.nefty · neftyblocksd · atomicpacksx · up.nefty')}
+        ${pill('waxdao', 'WaxDAO',      'waxdaomarket')}
+      </div>
+    </div>
+    <div class="card tabs-card">
+      <div class="tabs">
+        ${tabs}
       </div>
     </div>`;
 }
@@ -2924,7 +3303,10 @@ function renderDropInfo(): string {
     : '';
   return `
     <div class="card">
-      <h2>3 · ${escapeHtml(displayDropName(d))} <span class="term">-- #${escapeHtml(d.drop_id)} · ${escapeHtml(d.collection_name)}</span></h2>
+      <div class="card-header">
+        <h2>3 · ${escapeHtml(displayDropName(d))} <span class="term">-- #${escapeHtml(d.drop_id)} · ${escapeHtml(d.collection_name)}</span></h2>
+        ${renderShareButton()}
+      </div>
       <div class="row">
         <span class="status-chip status-${escapeHtml(d.status)}">${escapeHtml(dropStatusLabel(d.status))}</span>
         ${d.is_free ? '<span class="tag ok">free</span>' : `<span class="tag">${escapeHtml(d.listing_price)}</span>`}
@@ -3584,7 +3966,10 @@ function renderUpgradeInfo(): string {
 
   return `
     <div class="card">
-      <h2>3 · ${escapeHtml(up.name)} <span class="term">-- #${escapeHtml(up.upgrade_id)} · ${escapeHtml(up.collection_name)}</span></h2>
+      <div class="card-header">
+        <h2>3 · ${escapeHtml(up.name)} <span class="term">-- #${escapeHtml(up.upgrade_id)} · ${escapeHtml(up.collection_name)}</span></h2>
+        ${renderShareButton()}
+      </div>
       <div class="row">
         <span class="status-chip status-${escapeHtml(up.status)}">${escapeHtml(upgradeStatusLabel(up.status))}</span>
         <span class="tag">uses ${escapeHtml(remainingUses)}</span>
@@ -3686,6 +4071,539 @@ function renderUpgradeActions(): string {
 
 function renderUpgradesView(): string {
   return renderPickUpgrade() + renderUpgradeInfo() + renderUpgradeSlots() + renderUpgradeActions();
+}
+
+// ─── WAXDAO BLEND view: handlers + rendering ─────────────────────── //
+
+/**
+ * Discovers waxdaomarket blends for the active collection. Refreshes
+ * the wallet inventory too so the per-slot NFT picker has data.
+ */
+async function loadWaxdaoList() {
+  const w = state.waxdao;
+  w.loading = true;
+  w.error = undefined;
+  w.progress = undefined;
+  render();
+  try {
+    const { blends } = await listWaxdaoBlends({
+      collection: state.discoveryCollection,
+      includeInactive: w.showInactive,
+      onProgress: (message, pct) => {
+        w.progress = { pct, message };
+        render();
+      },
+    });
+    w.list = blends;
+    const session = getCurrentSession();
+    if (session) {
+      try {
+        state.discoveryOwnedAssets = await listAssetsForOwner({
+          owner: String(session.actor),
+          collection_name: state.discoveryCollection,
+        });
+      } catch { /* non-fatal */ }
+    }
+  } catch (err) {
+    w.error = (err as Error).message;
+    w.list = [];
+  } finally {
+    w.loading = false;
+    w.progress = undefined;
+    render();
+  }
+}
+
+function onToggleWaxdaoShowInactive(checked: boolean) {
+  state.waxdao.showInactive = checked;
+  state.waxdao.list = [];
+  state.waxdao.error = undefined;
+  render();
+}
+
+function onToggleWaxdaoPicker() {
+  state.waxdao.pickerOpen = !state.waxdao.pickerOpen;
+  render();
+}
+
+async function onPickWaxdaoBlend(blend_id: string) {
+  const w = state.waxdao;
+  w.pickerOpen = false;
+  const found = w.list.find((b) => b.blend_id === blend_id);
+  if (!found) return;
+  w.picked = found;
+  w.blendIdInput = blend_id;
+  w.selection.clear();
+  w.lastDryRun = undefined;
+  w.lastTrxId = undefined;
+  writeHashRoute('waxdao', 'waxdao-blends', blend_id);
+  render();
+  await refreshWaxdaoFtStatus();
+}
+
+async function onLoadWaxdaoBlendManual() {
+  const w = state.waxdao;
+  if (!w.blendIdInput) {
+    setStatus('Enter a WaxDAO blend ID first.', 'err');
+    return;
+  }
+  const local = w.list.find((b) => b.blend_id === w.blendIdInput);
+  if (local) {
+    onPickWaxdaoBlend(w.blendIdInput);
+    return;
+  }
+  w.loading = true;
+  render();
+  try {
+    const b = await loadWaxdaoBlendById(w.blendIdInput);
+    if (!b) {
+      setStatus(`WaxDAO blend ${w.blendIdInput} not found.`, 'err');
+      return;
+    }
+    w.picked = b;
+    w.selection.clear();
+    w.lastDryRun = undefined;
+    w.lastTrxId = undefined;
+    if (b.creator && b.creator !== state.discoveryCollection) {
+      state.discoveryCollection = b.creator;
+    }
+    try {
+      const session = getCurrentSession();
+      if (session) {
+        state.discoveryOwnedAssets = await listAssetsForOwner({
+          owner: String(session.actor),
+          collection_name: b.creator,
+        });
+      }
+    } catch { /* non-fatal */ }
+    await refreshWaxdaoFtStatus();
+  } catch (err) {
+    setStatus(`Error: ${(err as Error).message}`, 'err');
+  } finally {
+    w.loading = false;
+    render();
+  }
+}
+
+async function refreshWaxdaoFtStatus() {
+  const w = state.waxdao;
+  w.ftStatus.clear();
+  if (!w.picked) return;
+  const session = getCurrentSession();
+  if (!session) return;
+  const owner = String(session.actor);
+  w.picked.ingredients.forEach((ing, idx) => {
+    if (ing.kind !== 'fungible') return;
+    const required = parseAssetAmount(ing.quantity);
+    const ticker = tickerFromQuantity(ing.quantity);
+    if (!ticker || !Number.isFinite(required)) return;
+    void (async () => {
+      try {
+        const balance = await readTokenBalance({
+          owner,
+          contract: ing.contract,
+          symbolCode: ticker,
+        });
+        w.ftStatus.set(idx, { ticker, required, balance });
+      } catch {
+        w.ftStatus.set(idx, { ticker, required, balance: -1 });
+      } finally {
+        render();
+      }
+    })();
+  });
+}
+
+function onPickWaxdaoAsset(slot: number, asset_id: string) {
+  const w = state.waxdao;
+  const current = w.selection.get(slot);
+  // Each slot in v1 holds a single asset_id (multi-asset slots come
+  // later when an ingredient's amount > 1). Toggle re-clicking.
+  if (current === asset_id) {
+    w.selection.delete(slot);
+  } else {
+    for (const [other, id] of w.selection.entries()) {
+      if (other !== slot && id === asset_id) {
+        setStatus(`Asset ${asset_id} is already picked by slot ${other}.`, 'warn');
+        return;
+      }
+    }
+    w.selection.set(slot, asset_id);
+  }
+  render();
+}
+
+/**
+ * Eligible NFTs for a WaxDAO slot, matching the ingredient's filter.
+ * Today we support template / schema / collection filters; attribute
+ * filters are surfaced but not enforced client-side (the contract
+ * will catch any mismatch).
+ */
+function ownedAssetsForWaxdaoSlot(ing: WaxdaoIngredient): AtomicAsset[] {
+  const owned = state.discoveryOwnedAssets;
+  return owned.filter((a) => {
+    if (ing.kind === 'nft_template') {
+      if (a.collection?.collection_name && ing.collection_name && a.collection.collection_name !== ing.collection_name) return false;
+      if (a.schema?.schema_name && ing.schema_name && a.schema.schema_name !== ing.schema_name) return false;
+      const tid = a.template?.template_id;
+      return tid != null && Number(tid) === ing.template_id;
+    }
+    if (ing.kind === 'nft_schema') {
+      if (ing.collection_name && a.collection?.collection_name !== ing.collection_name) return false;
+      return a.schema?.schema_name === ing.schema_name;
+    }
+    if (ing.kind === 'nft_collection') {
+      return a.collection?.collection_name === ing.collection_name;
+    }
+    if (ing.kind === 'nft_attribute') {
+      // Schema match only -- attribute matching is left to the contract.
+      if (ing.collection_name && a.collection?.collection_name !== ing.collection_name) return false;
+      return a.schema?.schema_name === ing.schema_name;
+    }
+    return false;
+  });
+}
+
+function readyToWaxdaoBlend(): boolean {
+  const w = state.waxdao;
+  if (!w.picked) return false;
+  if (w.picked.status !== 'active') return false;
+  // Every NFT slot must have a pick.
+  for (const { slot } of w.picked.nftSlots) {
+    if (!w.selection.get(slot)) return false;
+  }
+  // Every FT ingredient must be covered.
+  w.picked.ingredients.forEach((ing, idx) => {
+    if (ing.kind !== 'fungible') return;
+    const st = w.ftStatus.get(idx);
+    if (!st || st.balance < 0 || st.balance < st.required) {
+      // shortcut: can't `return` from forEach to exit early, so we set a flag below
+    }
+  });
+  for (const [idx, ing] of w.picked.ingredients.entries()) {
+    if (ing.kind !== 'fungible') continue;
+    const st = w.ftStatus.get(idx);
+    if (!st || st.balance < 0 || st.balance < st.required) return false;
+  }
+  return true;
+}
+
+function selectionForBuilder(): Map<number, string | string[]> {
+  const out = new Map<number, string | string[]>();
+  for (const [k, v] of state.waxdao.selection.entries()) out.set(k, v);
+  return out;
+}
+
+async function onWaxdaoDryRun() {
+  const w = state.waxdao;
+  const session = getCurrentSession();
+  if (!session || !w.picked) return;
+  try {
+    setStatus('Simulating WaxDAO blend (local ABI serialisation)...', 'info');
+    const actions = buildWaxdaoBlendActions({
+      claimer: String(session.actor),
+      blend: w.picked,
+      nftSelection: selectionForBuilder(),
+    });
+    const out = await dryRunActions(actions);
+    w.lastDryRun = { actions, abi_serialization: out };
+    const ok = out.every((r) => !r.error);
+    setStatus(ok ? `Simulation OK, ${actions.length} action(s) serialize cleanly.` : 'Simulation failed.', ok ? 'ok' : 'err');
+  } catch (err) {
+    setStatus((err as Error).message, 'err');
+  }
+  render();
+}
+
+async function onExecuteWaxdaoBlend() {
+  const w = state.waxdao;
+  const session = getCurrentSession();
+  if (!session || !w.picked) return;
+  w.pending = true;
+  render();
+  try {
+    setStatus('Awaiting wallet signature for the WaxDAO blend...', 'info');
+    const result = await executeWaxdaoBlend(session, {
+      blend: w.picked,
+      nftSelection: selectionForBuilder(),
+    });
+    const trxId =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    w.lastTrxId = trxId;
+    setStatus(`WaxDAO blend broadcast: ${trxId}`, 'ok');
+  } catch (err) {
+    setStatus(`WaxDAO blend failed: ${(err as Error).message}`, 'err');
+  } finally {
+    w.pending = false;
+    render();
+  }
+}
+
+// ── render ── //
+
+function waxdaoStatusLabel(s: WaxdaoBlendStatus): string {
+  switch (s) {
+    case 'active':   return 'active';
+    case 'upcoming': return 'upcoming';
+    case 'sold_out': return 'sold out';
+    case 'ended':    return 'ended';
+  }
+}
+
+function waxdaoIngredientLabel(ing: WaxdaoIngredient): string {
+  switch (ing.kind) {
+    case 'fungible':       return `Pay ${ing.quantity}`;
+    case 'nft_template':   return `Burn ${ing.amount} NFT(s) of template ${ing.template_id} (${ing.collection_name})`;
+    case 'nft_schema':     return `Burn ${ing.amount} NFT(s) from schema ${ing.schema_name}`;
+    case 'nft_collection': return `Burn ${ing.amount} NFT(s) from collection ${ing.collection_name}`;
+    case 'nft_attribute':  return `Burn ${ing.amount} NFT(s) matching attribute filter`;
+    case 'unknown':        return 'Unknown ingredient type';
+  }
+}
+
+function renderWaxdaoPickerToggle(): string {
+  const w = state.waxdao;
+  let label = 'Select a WaxDAO blend...';
+  const notLoadedYet = w.list.length === 0 && !w.loading && !w.error;
+  if (notLoadedYet) {
+    label = `Click "Discover WaxDAO blends" to load ${state.discoveryCollection || 'a collection'}’s list`;
+  } else if (w.picked) {
+    label = `[#${w.picked.blend_id}] ${w.picked.title}`;
+  } else if (w.loading) {
+    label = w.progress?.message ?? 'Scanning waxdaomarket...';
+  } else if (w.error) {
+    label = 'Discovery failed';
+  }
+  const disabled = w.loading || w.error || notLoadedYet;
+  return `
+    <button class="picker-toggle" data-action="toggleWaxdaoPicker" ${disabled ? 'disabled' : ''}>
+      <span class="picker-current">${escapeHtml(label)}</span>
+      <span class="picker-caret">${w.pickerOpen ? '▴' : '▾'}</span>
+    </button>`;
+}
+
+function renderWaxdaoPickerPanel(): string {
+  const w = state.waxdao;
+  if (!w.pickerOpen || w.loading || w.error) return '';
+  const visible = w.list;
+  if (visible.length === 0) {
+    return `<div class="picker-panel"><div class="picker-empty">${escapeHtml('No WaxDAO blends found for this collection.')}</div></div>`;
+  }
+  const rows = visible.map((b) => {
+    const disabled = b.status !== 'active';
+    const cls = ['picker-row'];
+    if (disabled) cls.push('picker-row-disabled');
+    const ft = b.ingredients.find((i) => i.kind === 'fungible');
+    const priceTag = ft
+      ? `<span class="picker-price">${escapeHtml((ft as Extract<WaxdaoIngredient,{kind:'fungible'}>).quantity)}</span>`
+      : '';
+    return `
+      <div class="${cls.join(' ')}" ${disabled ? '' : `data-action="pickWaxdaoBlend" data-waxdao-blend="${escapeHtml(b.blend_id)}"`}>
+        <span class="picker-id">#${escapeHtml(b.blend_id)}</span>
+        <span class="picker-name">${escapeHtml(b.title)}</span>
+        ${priceTag}
+        <span class="status-chip status-${escapeHtml(b.status)}">${escapeHtml(waxdaoStatusLabel(b.status))}</span>
+      </div>`;
+  }).join('');
+  return `<div class="picker-panel"><div class="picker-rows">${rows}</div></div>`;
+}
+
+function renderWaxdaoLegend(): string {
+  return `
+    <div class="legend">
+      <span class="legend-label">Color codes</span>
+      <span class="legend-item"><span class="status-chip status-active">active</span></span>
+      <span class="legend-item"><span class="status-chip status-sold_out">sold out</span></span>
+      <span class="legend-item"><span class="status-chip status-ended">ended</span></span>
+      <span class="legend-item"><span class="status-chip status-upcoming">upcoming</span></span>
+    </div>`;
+}
+
+function renderPickWaxdao(): string {
+  const w = state.waxdao;
+  const session = getCurrentSession();
+  const refreshLabel = w.loading
+    ? 'Refreshing...'
+    : w.list.length > 0
+      ? 'Refresh WaxDAO blends'
+      : 'Discover WaxDAO blends';
+  const counts = w.list.length > 0
+    ? `${w.list.length} blend${w.list.length === 1 ? '' : 's'} found`
+    : '';
+  const progressBar = w.loading && w.progress
+    ? `<div class="progress"><div class="progress-fill" style="width:${Math.round(w.progress.pct * 100)}%"></div></div>`
+    : '';
+  return `
+    <div class="card">
+      <h2>2 · Pick a WaxDAO blend</h2>
+      <p style="margin-top:0; color:var(--fg-dim); font-size:12px">
+        WaxDAO's website is down but the <code>waxdaomarket</code> contract
+        is still live. Crucible drives it directly: one
+        <code>assertblend</code> + one transfer per ingredient slot, slot
+        index in the memo.
+      </p>
+      <div class="row" style="gap:14px; align-items: flex-end; margin-bottom: 8px">
+        <div style="width: 140px; flex: 0 0 140px">
+          <label>Collection</label>
+          ${renderCollectionInput()}
+        </div>
+        <div style="flex: 1 1 380px; min-width: 280px">
+          <label>Available blends</label>
+          <div class="picker waxdao-picker">
+            ${renderWaxdaoPickerToggle()}
+            ${renderWaxdaoPickerPanel()}
+          </div>
+        </div>
+        <button class="primary" data-action="refreshWaxdao" ${w.loading || !isValidWaxName(state.discoveryCollection) ? 'disabled' : ''}>
+          ${escapeHtml(refreshLabel)}
+        </button>
+      </div>
+      ${renderCollectionChips()}
+      ${progressBar}
+      <div class="row" style="margin-top:10px; gap:14px; align-items:center; flex-wrap:wrap">
+        <label class="inline-toggle">
+          <input id="waxdaoShowInactive" type="checkbox" data-action="toggleWaxdaoInactive" ${w.showInactive ? 'checked' : ''} />
+          <span>show ended / upcoming / sold-out</span>
+        </label>
+        <div class="spacer"></div>
+        <span class="term">${escapeHtml(counts)}</span>
+      </div>
+      ${renderWaxdaoLegend()}
+      ${session ? '' : '<p class="status-line term">Connect your wallet to match owned NFTs against each ingredient slot.</p>'}
+
+      <div class="divider"></div>
+
+      <label>Or enter a WaxDAO blend ID manually</label>
+      <div class="row" style="gap:14px; align-items: flex-end">
+        <div style="flex:1; min-width: 200px">
+          <input id="waxdaoBlendIdInput" type="text" value="${escapeHtml(w.blendIdInput)}" placeholder="e.g. 1921" autocomplete="off" />
+        </div>
+        <button class="primary" data-action="loadWaxdaoManual" ${w.loading ? 'disabled' : ''}>
+          ${w.loading ? 'Loading…' : 'Load blend'}
+        </button>
+      </div>
+      ${w.error ? `<p class="status-line warn">Discovery: ${escapeHtml(w.error)}</p>` : ''}
+    </div>`;
+}
+
+function renderWaxdaoInfo(): string {
+  const w = state.waxdao;
+  const b = w.picked;
+  if (!b) return '';
+  const remaining = b.max_blends > 0
+    ? `${b.max_blends - b.blends_remaining}/${b.max_blends} (${b.blends_remaining} left)`
+    : `unlimited (${b.max_blends - b.blends_remaining}/∞ used)`;
+  const ingList = `<h3>Cost</h3><ul class="mint-info">${
+    b.ingredients.map((ing) => `<li>${escapeHtml(waxdaoIngredientLabel(ing))}</li>`).join('')
+  }</ul>`;
+  const outList = b.results.length > 0
+    ? `<h3>Expected mint</h3><ul class="mint-info">${
+        b.results.map((r) => {
+          const tid = r.template_id ? `template <code>${r.template_id}</code>` : '<span class="term">no template</span>';
+          const sch = r.schema_name ? ` · schema <code>${escapeHtml(r.schema_name)}</code>` : '';
+          const name = r.nft_name ? ` (${escapeHtml(r.nft_name)})` : '';
+          return `<li>${tid}${sch}${name}</li>`;
+        }).join('')
+      }</ul>`
+    : '';
+  return `
+    <div class="card">
+      <div class="card-header">
+        <h2>3 · ${escapeHtml(b.title)} <span class="term">-- #${escapeHtml(b.blend_id)} · ${escapeHtml(b.creator)}</span></h2>
+        ${renderShareButton()}
+      </div>
+      <div class="row">
+        <span class="status-chip status-${escapeHtml(b.status)}">${escapeHtml(waxdaoStatusLabel(b.status))}</span>
+        <span class="tag">uses ${escapeHtml(remaining)}</span>
+      </div>
+      ${ingList}
+      ${outList}
+      ${b.description ? `<details style="margin-top:12px"><summary class="term" style="cursor:pointer">blend description</summary><p style="margin-top:8px; font-size:12px; color:var(--fg-dim); white-space:pre-wrap">${escapeHtml(b.description)}</p></details>` : ''}
+    </div>`;
+}
+
+function renderWaxdaoSlotEntry(slot: number, ing: WaxdaoIngredient): string {
+  const w = state.waxdao;
+  const owned = ownedAssetsForWaxdaoSlot(ing);
+  const pickedAsset = w.selection.get(slot);
+  const items = owned.map((a) => {
+    const selected = pickedAsset === a.asset_id ? ' selected' : '';
+    const name = displayAssetName(a);
+    return `
+      <div class="asset${selected}" data-action="pickWaxdaoAsset" data-waxdao-slot="${slot}" data-asset="${escapeHtml(a.asset_id)}">
+        <span>${escapeHtml(name)}</span>
+        <span class="id">#${escapeHtml(a.asset_id)}${a.template_mint ? ' · mint ' + escapeHtml(a.template_mint) : ''}</span>
+      </div>`;
+  });
+  return `
+    <div class="slot">
+      <div class="slot-header">
+        <div class="slot-label">Slot ${slot} · ${escapeHtml(waxdaoIngredientLabel(ing))}</div>
+        <div class="slot-progress">${pickedAsset ? '1/1 picked' : '0/1 picked'} · ${owned.length} eligible</div>
+      </div>
+      ${owned.length === 0
+        ? '<p class="status-line err">No matching NFT in your wallet for this slot.</p>'
+        : `<div class="asset-grid">${items.join('')}</div>`}
+    </div>`;
+}
+
+function renderWaxdaoSlots(): string {
+  const w = state.waxdao;
+  if (!w.picked) return '';
+  const slotsHtml = w.picked.nftSlots
+    .map(({ slot, ingredient }) => renderWaxdaoSlotEntry(slot, ingredient))
+    .join('');
+  const ftHtml = w.picked.ingredients.map((ing, idx) => {
+    if (ing.kind !== 'fungible') return '';
+    const st = w.ftStatus.get(idx);
+    const required = parseAssetAmount(ing.quantity);
+    if (!st) {
+      return `
+        <div class="slot ft-slot">
+          <div class="slot-header"><div class="slot-label">${escapeHtml(`Slot 0 · Pay ${ing.quantity}`)}</div></div>
+          <p class="status-line">Reading your wallet balance…</p>
+        </div>`;
+    }
+    const okBalance = st.balance >= 0 && st.balance >= required;
+    return `
+      <div class="slot ft-slot">
+        <div class="slot-header"><div class="slot-label">${escapeHtml(`Slot 0 · Pay ${ing.quantity}`)}</div></div>
+        <p class="status-line ${okBalance ? 'ok' : 'err'}">
+          Balance: <code>${st.balance >= 0 ? st.balance.toFixed(4) : '?'}</code> · required <code>${required.toFixed(4)}</code>
+        </p>
+      </div>`;
+  }).join('');
+  return `
+    <div class="card">
+      <h2>4 · Pick the inputs ${state.assetsLoading ? '<span class="term">(refreshing your wallet…)</span>' : ''}</h2>
+      ${ftHtml}
+      ${slotsHtml}
+    </div>`;
+}
+
+function renderWaxdaoActions(): string {
+  const w = state.waxdao;
+  if (!w.picked) return '';
+  const ready = readyToWaxdaoBlend();
+  return `
+    <div class="card">
+      <h2>5 · Verify &amp; execute</h2>
+      <div class="row">
+        <button data-action="waxdaoDryRun" ${ready ? '' : 'disabled'}>Simulate (no signature)</button>
+        <button class="primary" data-action="waxdaoExecute" ${ready ? '' : 'disabled'}>${w.pending ? 'Signing…' : 'Sign &amp; broadcast'}</button>
+      </div>
+      ${w.lastDryRun
+        ? `<h3>Dry-run output</h3><pre>${escapeHtml(JSON.stringify(w.lastDryRun, null, 2))}</pre>`
+        : ''}
+      ${w.lastTrxId
+        ? `<p class="status-line ok">Trx broadcast: <a target="_blank" href="https://waxblock.io/transaction/${escapeHtml(w.lastTrxId)}">${escapeHtml(w.lastTrxId)}</a></p>`
+        : ''}
+    </div>`;
+}
+
+function renderWaxdaoBlendsView(): string {
+  return renderPickWaxdao() + renderWaxdaoInfo() + renderWaxdaoSlots() + renderWaxdaoActions();
 }
 
 /**
@@ -3839,7 +4757,9 @@ function performRender() {
         ? renderDropsView()
         : state.view === 'packs'
           ? renderPacksView()
-          : renderUpgradesView());
+          : state.view === 'upgrades'
+            ? renderUpgradesView()
+            : renderWaxdaoBlendsView());
   attachHandlers();
   positionOpenPickers();
   restoreRenderSnapshot(snap);
@@ -3933,6 +4853,20 @@ function attachHandlers() {
   if (toggleUpgradesInactive) {
     toggleUpgradesInactive.addEventListener('change', () => onToggleUpgradesShowInactive(toggleUpgradesInactive.checked));
   }
+  // WAXDAO blend tab inputs.
+  const waxdaoIdInput = document.getElementById('waxdaoBlendIdInput') as HTMLInputElement | null;
+  if (waxdaoIdInput) {
+    waxdaoIdInput.addEventListener('input', (e) => {
+      state.waxdao.blendIdInput = (e.target as HTMLInputElement).value.trim();
+    });
+    waxdaoIdInput.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Enter') void onLoadWaxdaoBlendManual();
+    });
+  }
+  const toggleWaxdaoInactive = document.getElementById('waxdaoShowInactive') as HTMLInputElement | null;
+  if (toggleWaxdaoInactive) {
+    toggleWaxdaoInactive.addEventListener('change', () => onToggleWaxdaoShowInactive(toggleWaxdaoInactive.checked));
+  }
 
   rootEl().querySelectorAll<HTMLElement>('[data-action]').forEach((el) => {
     const action = el.dataset.action;
@@ -3942,7 +4876,8 @@ function attachHandlers() {
       action === 'toggleOnlyExecutable' ||
       action === 'toggleDropInactive' ||
       action === 'toggleDropOnlyEligible' ||
-      action === 'toggleUpgradesInactive'
+      action === 'toggleUpgradesInactive' ||
+      action === 'toggleWaxdaoInactive'
     ) return;
     el.addEventListener('click', (ev) => {
       switch (action) {
@@ -4076,6 +5011,33 @@ function attachHandlers() {
         case 'upgradeExecute':
           onExecuteUpgrade();
           break;
+        case 'switchPlatform':
+          onSwitchPlatform(el.dataset.platform as Platform);
+          break;
+        case 'copyShareLink':
+          void onCopyShareLink();
+          break;
+        case 'refreshWaxdao':
+          loadWaxdaoList();
+          break;
+        case 'toggleWaxdaoPicker':
+          onToggleWaxdaoPicker();
+          break;
+        case 'pickWaxdaoBlend':
+          void onPickWaxdaoBlend(el.dataset.waxdaoBlend ?? '');
+          break;
+        case 'loadWaxdaoManual':
+          void onLoadWaxdaoBlendManual();
+          break;
+        case 'pickWaxdaoAsset':
+          onPickWaxdaoAsset(Number(el.dataset.waxdaoSlot), el.dataset.asset ?? '');
+          break;
+        case 'waxdaoDryRun':
+          onWaxdaoDryRun();
+          break;
+        case 'waxdaoExecute':
+          onExecuteWaxdaoBlend();
+          break;
       }
       ev.stopPropagation();
     });
@@ -4090,10 +5052,39 @@ export async function mount() {
     // Reposition any open picker when the viewport changes (scroll, resize,
     // mobile keyboard, dev-tools open, ...). Skip if no panel is open.
     const reflow = () => {
-      if (state.pickerOpen || state.dropPickerOpen || state.upgrades.pickerOpen) positionOpenPickers();
+      if (state.pickerOpen || state.dropPickerOpen || state.upgrades.pickerOpen || state.waxdao.pickerOpen) positionOpenPickers();
     };
     window.addEventListener('scroll', reflow, { passive: true });
     window.addEventListener('resize', reflow);
+    // Reflect URL hash changes (forward/back navigation, manual edits,
+    // paste of a deep link into the address bar) back into state.
+    // We compare the parsed route to the current state and apply any
+    // differences, then re-trigger the deep-link loader if an ID is
+    // present.
+    window.addEventListener('hashchange', () => {
+      const r = parseHashRoute();
+      let mutated = false;
+      if (r.platform !== state.platform) {
+        state.platform = r.platform;
+        mutated = true;
+      }
+      if (r.view !== state.view) {
+        state.view = r.view;
+        mutated = true;
+      }
+      if (r.id) {
+        state.pendingDeepLink = { view: r.view, id: r.id };
+        mutated = true;
+      }
+      if (mutated) {
+        render();
+        void applyPendingDeepLink();
+      }
+    });
+    // Normalise the hash on first load (write back the canonical form
+    // so a refresh keeps you exactly where you were).
+    const r0 = parseHashRoute();
+    writeHashRoute(r0.platform, r0.view, r0.id);
     outsideClickAttached = true;
   }
   setStatus('Verifying live blend.nefty ABI…', 'info');
@@ -4109,4 +5100,10 @@ export async function mount() {
   // On-demand fetching: NO auto-discovery at mount. The user clicks
   // Refresh on the picker card when they're ready, this avoids spinning
   // up ~30 RPC calls before they've even decided what to look at.
+  //
+  // EXCEPT for deep links: if the user landed on a URL carrying an
+  // entity ID (#/nefty/blend/43444), load that entity right away so
+  // they see what was shared with them. The wallet connection prompt
+  // still appears at the top when no session is active.
+  void applyPendingDeepLink();
 }

@@ -1,11 +1,12 @@
 # Crucible · user guide
 
 Crucible lets you execute NeftyBlocks **blends**, claim **drops**, open
-**packs**, and apply **upgrades** to NFTs on WAX, without going through
-the Nefty website (which is shut down). The smart contracts
-(`blend.nefty`, `neftyblocksd`, `atomicpacksx`, `up.nefty`) are still
-alive on-chain; this page just composes the right transactions and asks
-your wallet to sign them.
+**packs**, apply **upgrades** to NFTs, and run **WaxDAO crafting
+recipes** on WAX, without going through the original websites (which
+are all down). The smart contracts (`blend.nefty`, `neftyblocksd`,
+`atomicpacksx`, `up.nefty`, `waxdaomarket`) are still alive on-chain;
+this page just composes the right transactions and asks your wallet
+to sign them.
 
 ## Before you start
 
@@ -27,8 +28,9 @@ totalling ~3 ms.
 
 ### 3. Pick what to do
 
-Four tabs at the top of the page:
+Two platforms at the top of the page (pills), each with its own tabs:
 
+**NeftyBlocks** (4 tabs)
 - **Blend**: burn NFTs (and optionally pay tokens) to mint a result.
   Deterministic and random (fuse + claim) both supported.
 - **Claim**: pay (or not) to mint a drop. Whitelist, NFT-proof, and
@@ -37,6 +39,17 @@ Four tabs at the top of the page:
   signatures (one to lock the pack, one to mint the resolved cards).
 - **Upgrade**: mutate NFTs you hold (image, colour, level, ...). The
   NFT stays in your wallet, only its on-chain mutable_data changes.
+
+**WaxDAO** (1 tab)
+- **Blend**: craft recipes on `waxdaomarket`. Different action shape
+  than Nefty blends (one transfer per ingredient slot, slot index in
+  the memo) but Crucible drives the contract directly even though
+  waxdao.io itself is down.
+
+The two platforms have **independent ID spaces**: blend `#1127` on
+`blend.nefty` is a different recipe from blend `#1127` on
+`waxdaomarket`. The active platform pill tells you which one is in
+play.
 
 For Blend and Claim, you don't need to know any ID in advance: click
 *Discover* and pick from the list. You can also paste a `blend_id` or
@@ -116,6 +129,43 @@ Upgrades flagged `RNG` (random results via ORNG) or `gated`
 not yet executable from the UI; the action builders are ready, the
 UI extension is on the roadmap.
 
+### WaxDAO Blend
+
+1. **Connect your wallet**.
+2. Click the **WAXDAO** pill at the top of the page to switch
+   platforms. The tab bar updates to show the WaxDAO Blend tab.
+3. Pick a collection, click **Discover WaxDAO blends**, and select
+   one. Or paste a WaxDAO `blend_id` (e.g. `1921` for STARBORE) and
+   click *Load blend*.
+4. The recipe is shown the same way as Nefty blends: cost
+   (FT + NFT), expected output, status. Internally the action set
+   is different (one transfer per slot, slot index in memo) but the
+   user flow is identical.
+5. Pick the matching NFT for each slot from your wallet, simulate,
+   then sign.
+
+## Shareable deep links
+
+Every blend, drop, and upgrade has its own URL hash. As soon as you
+pick one, the page address updates automatically:
+
+```
+#/nefty/blend/43444     -- a NeftyBlocks blend
+#/nefty/claim/237418    -- a NeftyBlocks drop
+#/nefty/upgrade/447     -- a NeftyBlocks upgrade
+#/waxdao/blend/1921     -- a WaxDAO blend (e.g. STARBORE)
+```
+
+Anyone opening one of those URLs lands on the right platform + tab,
+and Crucible auto-loads the recipe so they see exactly what was
+shared. If they don't have a wallet yet, a banner inside the "Connect
+wallet" card tells them what they're looking at and invites them to
+sign in.
+
+Each info card (zone 3) shows a **`⎘ share link`** button next to the
+title. Click it to copy the current URL to your clipboard, ready to
+paste in Discord, Twitter, Telegram, wherever.
+
 ## What this page does (and does NOT do)
 
 ```
@@ -138,6 +188,12 @@ UI extension is on the roadmap.
       more of your NFTs in place
     - per-spec NFT picker matches recipe requirements to your wallet
     - clearly marks RNG / gated upgrades as not-yet-executable
+[*] WaxDAO blends (waxdaomarket):
+    - per-collection discovery, alphabetical sort
+    - per-slot NFT picker filtered by template / schema / collection
+    - byte-for-byte equivalent to a real 2024 WaxDAO blend
+[*] shareable deep links: #/<platform>/<tab>/<id> auto-loads the
+    entity, no wallet required to READ
 [*] live ABI read on boot, survives compatible contract upgrades
 [*] secure.nefty whitelist check when a blend has security_id != 0
 [*] zero backend, zero telemetry, zero stored secrets
@@ -222,6 +278,35 @@ When the upgrade requires burning NFTs too, the leg adds an
 `up.nefty::announcedepo` + `atomicassets::transfer` between the
 token transfer and the `upgrade` call, with the burned NFTs in
 `transferred_assets`.
+
+### WaxDAO blend (one transaction, multiple transfers)
+
+```json
+{
+  "actions": [
+    { "account": "waxdaomarket", "name": "assertblend",
+      "data": { "blend_ID": "<id>", "user": "<you>",
+                "unique_id": "<client-generated uint64>" } },
+    { "account": "<token contract>", "name": "transfer",
+      "data": { "from": "<you>", "to": "waxdaomarket",
+                "quantity": "10.00000000 UPMAX",
+                "memo": "|blend_deposit|<id>|0|" } },
+    { "account": "atomicassets", "name": "transfer",
+      "data": { "from": "<you>", "to": "waxdaomarket",
+                "asset_ids": ["<NFT for slot 1>"],
+                "memo": "|blend_deposit|<id>|1|" } },
+    { "account": "atomicassets", "name": "transfer",
+      "data": { "from": "<you>", "to": "waxdaomarket",
+                "asset_ids": ["<NFT for slot 2>"],
+                "memo": "|blend_deposit|<id>|2|" } }
+    // ... one transfer per NFT ingredient slot
+  ]
+}
+```
+
+Slot 0 is reserved for the FT cost when present; NFT slots start at
+1 (or 0 when there's no FT). The `unique_id` is a client-generated
+uint64 used by the contract to dedup pending blend orders.
 
 ### Pack unbox (two separate transactions)
 

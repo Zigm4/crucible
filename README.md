@@ -3,20 +3,21 @@
     \|/
    ◆ ◆ ◆        C R U C I B L E
     /|\
-   ─ ─ ─        on-chain blends · drops · packs · upgrades
+   ─ ─ ─        on-chain blends · drops · packs · upgrades · waxdao
                 no website, no backend, no trust required
 ```
 
 ```
 > SESSION OPEN
 
-  Nefty.io shut down its UI. The smart contracts it wrapped are
-  still running on WAX, 24/7, exactly as they were. Crucible is
-  the missing client.
+  Nefty.io shut down its UI. WaxDAO's website went dark too. The
+  smart contracts both relied on are still running on WAX, 24/7,
+  exactly as they were. Crucible is the missing client for ALL of
+  them.
 
-  Burn NFTs, claim drops, open packs, mutate NFTs in place. All
-  directly on-chain, without going through any platform that can
-  disappear again.
+  Burn NFTs, claim drops, open packs, mutate NFTs in place, craft
+  via WaxDAO recipes. All directly on-chain, without going through
+  any platform that can disappear again.
 ```
 
 ---
@@ -24,21 +25,36 @@
 ## tl;dr
 
 A **single HTML file** with bundled JavaScript that talks straight to
-four public WAX smart contracts (`blend.nefty`, `neftyblocksd`,
-`atomicpacksx`, `up.nefty`). Your wallet signs the transactions; the
-page never sees a private key, never phones home, never stores
-anything. The blend / drop / upgrade fees that always existed still
-go where they always went, nothing comes to me.
+five public WAX smart contracts (`blend.nefty`, `neftyblocksd`,
+`atomicpacksx`, `up.nefty`, `waxdaomarket`). Your wallet signs the
+transactions; the page never sees a private key, never phones home,
+never stores anything. The blend / drop / upgrade / craft fees that
+always existed still go where they always went, nothing comes to me.
 
 ```
 $ crucible --status
 contracts...... blend.nefty + neftyblocksd
-                + atomicpacksx + up.nefty           [LIVE]
-backend........ none                                [BY DESIGN]
-telemetry...... none                                [BY DESIGN]
-cookies........ none                                [BY DESIGN]
-service charge. 0 %                                 [GUARANTEED]
-audit.......... open source                         [GO READ IT]
+                + atomicpacksx + up.nefty
+                + waxdaomarket                       [LIVE]
+backend........ none                                 [BY DESIGN]
+telemetry...... none                                 [BY DESIGN]
+cookies........ none                                 [BY DESIGN]
+service charge. 0 %                                  [GUARANTEED]
+audit.......... open source                          [GO READ IT]
+```
+
+```
+$ crucible --layout
+                                                       wallet
+   ┌─────────────────────────────────────────────────────●──┐
+   │  [ NEFTYBLOCKS ]   [ WAXDAO ]                          │  <- platform pills
+   ├─────────────────────────────────────────────────────────┤
+   │  Blend | Claim | Unpack | Upgrade                       │  <- tabs (per platform)
+   └─────────────────────────────────────────────────────────┘
+   addressable via hash:  #/nefty/blend/43444
+                          #/nefty/claim/237418
+                          #/nefty/upgrade/447
+                          #/waxdao/blend/1921
 ```
 
 ---
@@ -57,11 +73,12 @@ has been running for years and is enforced byte-for-byte by the chain.
 | `neftyblocksd` contract     | Its on-chain code         | Same |
 | `atomicpacksx` contract     | Its on-chain code         | Same, plus the ORNG oracle |
 | `up.nefty` contract         | Its on-chain code         | Same |
+| `waxdaomarket` contract     | Its on-chain code         | Same |
 | WharfKit (signing library)  | Greymass + audit-friendly | Open source on GitHub |
 | Crucible's front-end        | **You. Read it.**         | This repo + the [verifier scripts](#--verify-everything--) below |
 
 Remove every Crucible-specific layer from that table and trust only
-WAX and the four contracts above: the worst Crucible can do is *fail
+WAX and the five contracts above: the worst Crucible can do is *fail
 to build the right transaction*. It can't steal funds, drain wallets,
 or front-run you. Your wallet shows every action before signing and
 would refuse anything weird.
@@ -232,6 +249,72 @@ common one).
     no stale cache
 ```
 
+### WAXDAO BLEND tab · `waxdaomarket`
+
+WaxDAO is a parallel ecosystem to NeftyBlocks on WAX. Its blends live
+on a different contract (`waxdaomarket`) and use a different action
+shape: instead of one big NFT transfer carrying all ingredients, each
+ingredient slot gets its OWN `atomicassets::transfer` with a
+slot-indexed memo. Crucible drives the contract directly even though
+waxdao.io is currently down.
+
+```
+1.  waxdaomarket::assertblend           { blend_ID, user, unique_id }
+[2. <token>::transfer  to=waxdaomarket
+                        memo="|blend_deposit|<id>|0|"]
+ 3. atomicassets::transfer  to=waxdaomarket
+                            memo="|blend_deposit|<id>|1|"
+ 4. atomicassets::transfer  to=waxdaomarket
+                            memo="|blend_deposit|<id>|2|"
+ ...                          one transfer per NFT ingredient slot
+```
+
+Switch to the **WAXDAO** platform pill at the top of the page to
+access it. The two platforms have independent ID spaces, so blend
+`#1127` on `blend.nefty` and blend `#1127` on `waxdaomarket` are
+totally different recipes.
+
+```
+[*] per-collection discovery from waxdaomarket/blends
+[*] picker with active / sold-out / ended / upcoming status chips
+[*] per-slot NFT picker filtered by template / schema / collection
+[*] per-slot FT balance check (token contract resolved from the
+    ingredient's own field, no global registry needed)
+[*] one signature for the whole multi-action transaction, byte-for-
+    byte equivalent to a real WaxDAO blend from 2024
+```
+
+---
+
+## --- Shareable links ---
+
+Every blend, drop, and upgrade has its own deep-link URL. Once you've
+picked one, the page address updates automatically:
+
+```
+#/nefty/blend/43444     -- a NeftyBlocks blend
+#/nefty/claim/237418    -- a NeftyBlocks drop
+#/nefty/upgrade/447     -- a NeftyBlocks upgrade
+#/waxdao/blend/1921     -- a WaxDAO blend (e.g. STARBORE)
+#/nefty                 -- platform default tab, no entity
+#/waxdao                -- platform default tab, no entity
+```
+
+Anyone opening one of those URLs lands directly on the right platform
++ tab. The recipe loads automatically, even if no wallet is connected
+yet: a banner inside the "Connect wallet" card tells the visitor what
+they're looking at and invites them to sign in.
+
+```
+[*] one-click "share link" button in every info card (zone 3)
+    copies the current URL to the clipboard
+[*] no history pollution: hash writes use replaceState so the
+    back button never gets clogged with intermediate states
+[*] hash changes work in reverse: pasting / typing one of the
+    URLs above into the address bar triggers the same auto-load
+[*] no wallet required to READ a recipe, only to sign it
+```
+
 ---
 
 ## --- Verify everything ---
@@ -272,6 +355,16 @@ $ node scripts/verify-packs.mjs
 $ node scripts/verify-upgrades.mjs
 === FT-only upgrade 447 (10 WAX, no NFT cost) ===   ✓
 === FT+NFT upgrade 323 ===                          ✓
+```
+
+```bash
+$ node scripts/verify-waxdao.mjs
+=== Back Scratcher blend #1127 (waxdaomarket) ===
+   ✓ waxdaomarket::assertblend
+   ✓ underpunks55::transfer memo="|blend_deposit|1127|0|"
+   ✓ atomicassets::transfer memo="|blend_deposit|1127|1|"
+   ✓ atomicassets::transfer memo="|blend_deposit|1127|2|"
+   ✓ atomicassets::transfer memo="|blend_deposit|1127|3|"
 ```
 
 ```bash
@@ -390,6 +483,9 @@ src/
     packWait.ts        : polls unboxassets between TX1 and TX2
     upgrades.ts        : lists up.nefty upgrades per collection
     upgradeExecute.ts  : upgrade tx (openbal + transfer + upgrade)
+  waxdao/
+    blends.ts          : lists waxdaomarket blends per collection
+    blendExecute.ts    : assertblend + slot-indexed transfers
   atomic/
     assets.ts          : lists a user's NFTs from AtomicAssets API
     matcher.ts         : matches blend ingredients to owned NFTs
@@ -405,6 +501,7 @@ scripts/
   verify-drops.mjs             : byte-for-byte for drop traces
   verify-packs.mjs             : byte-for-byte for pack-unbox traces
   verify-upgrades.mjs          : byte-for-byte for upgrade traces
+  verify-waxdao.mjs            : byte-for-byte for waxdaomarket blends
   verify-discover-chain.mjs    : on-chain discovery sanity check
 public/
   favicon.svg         : crucible glyph (animated molten core)
@@ -432,6 +529,9 @@ public/
 [*] NFT slots show the human-readable name, not just the template_id.
     Names are resolved from the indexer (best-effort) and cached
     across tab switches
+[*] every entity has a shareable hash URL. The address bar updates
+    as soon as you pick an entity, and the info card has a one-click
+    "share link" button. No wallet required to READ a recipe.
 ```
 
 ---
@@ -457,6 +557,9 @@ Honesty up front:
   (TEMPLATE / SCHEMA / COLLECTION ingredients) are decoded but the
   UI doesn't yet offer a picker for them; only FT-only upgrades are
   signable from v0.4.
+- **WaxDAO drops / packs / farms**: only WaxDAO blends are wired up
+  today. The rest of the `waxdao*` contract family (drops, farms,
+  pack openings on waxdaobacker, etc.) is on the roadmap.
 - **`claimdropkey` drops**: cryptographic-key gated drops need a per-
   user pre-signed message from the drop creator. No client can
   fabricate it, fundamentally outside the scope of any third-party
@@ -484,8 +587,9 @@ Built on top of, and indebted to:
 - **[Pink.gg](https://pink.gg)** for the AtomicAssets standard and
   the public AtomicHub indexer that survived Nefty.
 - **[NeftyBlocks](https://neftyblocks.com)** for `blend.nefty`,
-  `neftyblocksd`, `atomicpacksx` and `up.nefty`. The contracts
-  outlive the platform that deployed them. That's exactly what smart
+  `neftyblocksd`, `atomicpacksx` and `up.nefty`, and
+  **[WaxDAO](https://waxdao.io)** for `waxdaomarket`. The contracts
+  outlive the platforms that deployed them. That's exactly what smart
   contracts are supposed to do.
 
 ```

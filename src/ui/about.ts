@@ -1,7 +1,7 @@
 /**
- * The inline guide that lives at the top of the app. Same content the
- * Underpunks Discord article uses, lightly tweaked for in-app reading
- * (no "open the tool" step since the reader is already inside it).
+ * The inline guide that lives at the top of the app. Same idea as the
+ * Discord article, lightly tweaked for in-app reading (no "open the
+ * tool" step since the reader is already inside it).
  *
  * Each panel is rendered as a native <details>/<summary>, so the
  * cyberpunk theme can style them with CSS only.
@@ -24,33 +24,41 @@ const PANELS: Panel[] = [
     open: true,
     body: `
       <p>
-        Nefty.io shut down its website, so a lot of people assumed
-        blending was over. <strong>It isn't.</strong>
+        Nefty.io shut down its website, and the WaxDAO site is down too.
+        A lot of people assumed blending, claiming and crafting were
+        over. <strong>They aren't.</strong>
       </p>
       <p>
         On a blockchain, the <em>website</em> and the <em>smart
-        contract</em> are two completely different things. Nefty's
-        website is gone, but the contract that runs the blends
-        (<code>blend.nefty</code> on WAX mainnet) is still running,
-        24/7, exactly as it was. It can't be "shut down" by anyone,
-        including Nefty.
+        contract</em> are two completely different things. The
+        websites are gone, but the contracts behind them
+        (<code>blend.nefty</code>, <code>neftyblocksd</code>,
+        <code>atomicpacksx</code>, <code>up.nefty</code>,
+        <code>waxdaomarket</code>) are still running on WAX mainnet,
+        24/7, exactly as they were. They can't be "shut down" by
+        anyone, including the companies that deployed them.
       </p>
       <p>
         <strong>Crucible</strong> is a small open-source page that
-        talks directly to that contract. It is the missing UI.
+        talks directly to those contracts. It is the missing UI for
+        all of them.
       </p>
       <ul>
         <li><strong>I take zero cut.</strong> No fee to me, no
-        commission. The blend fees that always existed (paid to
-        <code>fees.nefty</code> and to the collection author) still go
-        where they always went.</li>
+        commission. The blend / drop / upgrade fees that always
+        existed still go where they always went.</li>
         <li><strong>No backend.</strong> One HTML file plus JavaScript.
         No server I run, no database, nothing tracking you.</li>
+        <li><strong>No persistent storage.</strong> Every page load
+        is a clean boot. The only thing the page reads is the URL
+        hash (for shareable links to a specific blend / drop /
+        upgrade).</li>
         <li><strong>Open source.</strong> Read every line. Fork it,
         host it yourself, never trust me again. That's the whole
         point.</li>
-        <li><strong>Your keys never leave your wallet.</strong> Anchor
-        and WAX Cloud Wallet sign locally. I never see anything.</li>
+        <li><strong>Your keys never leave your wallet.</strong>
+        Anchor and WAX Cloud Wallet sign locally. I never see
+        anything.</li>
       </ul>
     `,
   },
@@ -59,11 +67,11 @@ const PANELS: Panel[] = [
     summary: 'WHAT A BLEND ACTUALLY IS · 90 SECOND CRASH COURSE',
     body: `
       <p>
-        Every action on WAX is a tiny message you send to a
-        "smart contract", which is a public program living on the
-        chain. Smart contracts have rules they enforce
-        automatically. They can't lie, they can't change behind
-        your back, and they can't disappear.
+        Every action on WAX is a tiny message you send to a "smart
+        contract", which is a public program living on the chain.
+        Smart contracts have rules they enforce automatically. They
+        can't lie, they can't change behind your back, and they can't
+        disappear.
       </p>
       <p>
         A <strong>blend</strong> is just a sequence of those
@@ -80,20 +88,20 @@ const PANELS: Panel[] = [
 <pre><code>0a. openbal             "Reserve a balance slot for UPMAX" (once, ever)
 0b. transfer (UPMAX)    "Here's the token cost, memo: deposit"</code></pre>
       <p>
+        For <strong>random</strong> blends (any roll with more than
+        one possible outcome) the final action becomes
+        <code>fuse</code> and you sign a second transaction
+        (<code>claim</code>) a few seconds later, once the on-chain
+        oracle has staged your result. Crucible auto-waits between
+        the two signatures and shows you the resolved outcome with
+        its probability before you sign step 2.
+      </p>
+      <p>
         The contract receives those messages, verifies the
         ingredients match the recipe, burns them, mints the output,
         and ships the result to your wallet. <strong>Every blend you
         ever did followed this exact flow.</strong> Nefty's website
-        was just a friendly wrapper that built those messages for
-        you.
-      </p>
-      <p>
-        Crucible does the same job, in under a megabyte of
-        JavaScript. It reads the live recipe straight from the
-        chain, lets you pick your inputs, builds the same messages,
-        and asks your wallet to sign. The chain doesn't care which
-        UI sent them. Same fees go to the same places. Same result
-        NFT lands in your wallet.
+        was just a friendly wrapper.
       </p>
       <p>
         <strong>One change:</strong> Nefty used to pay your CPU via
@@ -106,30 +114,91 @@ const PANELS: Panel[] = [
     `,
   },
   {
+    id: 'platforms',
+    summary: 'TWO PLATFORMS · FIVE CONTRACTS · ONE PAGE',
+    body: `
+      <p>
+        Crucible covers two parallel ecosystems on WAX. Pick the
+        platform with the top pills:
+      </p>
+      <ul>
+        <li>
+          <strong>NeftyBlocks</strong> · four contracts, four tabs:
+          <ul>
+            <li><strong>Blend</strong> (<code>blend.nefty</code>):
+            burn NFTs (and optionally pay tokens) to mint a result.
+            Handles deterministic blends in one signature and random
+            blends in two.</li>
+            <li><strong>Claim</strong> (<code>neftyblocksd</code>):
+            pay (or not) to mint a drop. Public, whitelist, and NFT-
+            proof drops are all signable.</li>
+            <li><strong>Unpack</strong> (<code>atomicpacksx</code>):
+            open packs you already hold. Cross-collection
+            discovery, two signatures with auto-wait for the ORNG
+            oracle between them.</li>
+            <li><strong>Upgrade</strong> (<code>up.nefty</code>):
+            mutate NFTs you own. The asset stays in your wallet,
+            only its on-chain mutable_data changes (image, colour,
+            level, etc.).</li>
+          </ul>
+        </li>
+        <li>
+          <strong>WaxDAO</strong> · one contract, one tab (for now):
+          <ul>
+            <li><strong>Blend</strong> (<code>waxdaomarket</code>):
+            same idea as Nefty's blend, different action shape. One
+            <code>assertblend</code> + one transfer per ingredient
+            slot, slot index in the memo. Crucible drives the
+            contract directly even though waxdao.io itself is
+            down.</li>
+          </ul>
+        </li>
+      </ul>
+      <p>
+        The two platforms have <em>separate ID spaces</em>: blend
+        <code>#1127</code> on <code>blend.nefty</code> is a totally
+        different recipe from blend <code>#1127</code> on
+        <code>waxdaomarket</code>. The platform pill above the tab
+        bar tells you which one is active.
+      </p>
+    `,
+  },
+  {
     id: 'how-to-use',
     summary: 'HOW TO USE THIS PAGE · STEP BY STEP',
     body: `
       <ol>
         <li>
           <strong>Connect your wallet</strong> at the top of the page
-          (Anchor or WAX Cloud Wallet). If you blended before, you
-          already have one.
+          (Anchor or WAX Cloud Wallet). If you blended or claimed
+          before, you already have one.
         </li>
         <li>
-          <strong>Make sure you've staked ~5 to 10 WAX in CPU</strong>
-          in your wallet's "Resources" tab. You aren't spending it;
-          you can unstake later.
+          <strong>Stake ~5 to 10 WAX in CPU</strong> in your wallet's
+          "Resources" tab. You aren't spending it; you can unstake
+          later. Without enough CPU, transactions fail with
+          <code>exceeded the account CPU limit</code>.
         </li>
         <li>
-          <strong>Pick a blend</strong> from the dropdown. The list
-          auto-fills with active blends for the selected collection.
-          You can also paste a <code>blend_id</code> manually if you
-          have it.
+          <strong>Pick a platform</strong> with the top pills
+          (NeftyBlocks or WaxDAO), then a tab inside that platform.
         </li>
         <li>
-          <strong>Inspect what the blend wants.</strong> The page
-          reads the recipe directly from the contract: which NFTs to
-          burn, token cost, expected mint, whitelist status.
+          <strong>Pick the entity</strong> from the dropdown. The list
+          auto-fills with everything matching the selected collection
+          when you click <em>Discover</em>. You can also paste a
+          numeric ID manually if you have it.
+        </li>
+        <li>
+          <strong>Inspect what the contract wants.</strong> The page
+          reads the recipe directly from the chain: which NFTs to
+          burn, token cost, expected mint, whitelist status, and any
+          mutations (for upgrades).
+        </li>
+        <li>
+          <strong>Pick inputs</strong> in the slot card. The grid is
+          filtered to NFTs you actually own that match each slot.
+          Token costs are pre-flighted against your balance.
         </li>
         <li>
           <strong>Click "Simulate" first.</strong> The transaction is
@@ -138,19 +207,55 @@ const PANELS: Panel[] = [
         </li>
         <li>
           <strong>Click "Sign &amp; broadcast".</strong> Your wallet
-          shows the 3 to 5 actions, you confirm. A few seconds later,
-          a <code>waxblock.io</code> link to the transaction appears.
+          shows the actions, you confirm. A few seconds later, a
+          <code>waxblock.io</code> link to the transaction appears.
+        </li>
+        <li>
+          For <strong>random blends</strong>, <strong>packs</strong>,
+          and <strong>random upgrades</strong>, a second signature is
+          needed after the on-chain oracle has rolled the result.
+          Crucible polls the chain automatically and prompts you for
+          step 2 when ready.
         </li>
       </ol>
-      <p>
-        Done. The new NFT is in your wallet. The flow is identical
-        to what Nefty's UI used to do, minus the dead website.
-      </p>
       <p class="term">
-        If something doesn't work, share the <code>blend_id</code>,
-        the on-page error text, and whether you staked CPU. The
-        whole tool exists exactly so that nobody (including me) can
-        ever be a single point of failure for our community again.
+        If something doesn't work, share the entity ID, the on-page
+        error text, and whether you staked CPU. The whole tool exists
+        exactly so that nobody (including me) can ever be a single
+        point of failure for our communities again.
+      </p>
+    `,
+  },
+  {
+    id: 'sharing',
+    summary: 'SHAREABLE LINKS · SEND ANYONE TO A SPECIFIC RECIPE',
+    body: `
+      <p>
+        Every blend, drop, and upgrade has its own shareable URL.
+        Once you've picked one, the page address updates automatically
+        to a hash like:
+      </p>
+<pre><code>#/nefty/blend/43444     -- a NeftyBlocks blend
+#/nefty/claim/237418    -- a NeftyBlocks drop
+#/nefty/upgrade/447     -- a NeftyBlocks upgrade
+#/waxdao/blend/1921     -- a WaxDAO blend (e.g. STARBORE)</code></pre>
+      <p>
+        Anyone opening one of those URLs lands directly on the right
+        platform + tab and Crucible auto-loads the recipe for them.
+        If they don't have a wallet connected yet, a banner inside
+        the "Connect wallet" card tells them what they're looking at
+        and invites them to sign in.
+      </p>
+      <p>
+        Once you've picked an entity, the info card (zone 3) shows
+        a <strong><code>⎘ share link</code></strong> button next to
+        the title. Click it: the current URL goes to your clipboard,
+        ready to paste in Discord, Twitter, Telegram, wherever.
+      </p>
+      <p>
+        Reverse direction works too: typing or pasting one of those
+        hashes into your address bar is enough. No login required to
+        read the recipe; the wallet is only needed to sign.
       </p>
     `,
   },
@@ -160,11 +265,10 @@ const PANELS: Panel[] = [
     body: `
       <p>
         Blends aren't the only thing Nefty's UI was wrapping.
-        <strong>Drops</strong> are the "claim an NFT, pay 50 WAX,
-        mint delivered to your wallet" feature. They live in a
-        separate contract called <code>neftyblocksd</code>. Same
-        story: the contract is still alive on-chain, only the
-        website is gone.
+        <strong>Drops</strong> are the "claim an NFT, pay 50 WAX, mint
+        delivered to your wallet" feature. They live in a separate
+        contract called <code>neftyblocksd</code>. Same story: the
+        contract is still alive on-chain, only the website is gone.
       </p>
       <p>
         Switch to the <strong>CLAIM</strong> tab to browse drops for
@@ -181,14 +285,19 @@ const PANELS: Panel[] = [
         <li><strong>NFT proof.</strong> You must own specific NFTs
         to be allowed. Crucible reads the proof rule from on-chain,
         scans your wallet for matching NFTs, and passes their
-        asset_ids to <code>claimwproof</code>.</li>
+        asset_ids to <code>claimwproof</code>. If you don't satisfy
+        the rule, the row stays clickable so you can see the
+        requirement in plain English and know what to buy.</li>
         <li><strong>Authkey</strong> (signed message). The drop
         creator gives each user a signed key off-chain. Without
         that key the contract refuses; Crucible can't help here.</li>
       </ul>
       <p>
-        When a drop is <em>paid</em>, two more actions lead the
-        transaction:
+        When a drop is <em>paid</em>, Crucible pre-flights your
+        balance for the settlement token and shows the exact top-up
+        needed if you're short. The Sign &amp; claim button stays
+        disabled until you have enough, so you can never waste CPU
+        on a tx that's going to revert.
       </p>
 <pre><code>1. neftyblocksd::assertprice      "lock this price"
 2. &lt;token&gt;::transfer             "here's the payment, memo: deposit"
@@ -196,6 +305,105 @@ const PANELS: Panel[] = [
       <p>
         Free drops skip steps 1 and 2 entirely. Only the claim
         action is signed.
+      </p>
+    `,
+  },
+  {
+    id: 'unpack',
+    summary: 'UNPACK · OPEN PACKS WITH THE ORNG ORACLE',
+    body: `
+      <p>
+        Pack opening lives on a third contract,
+        <code>atomicpacksx</code>. It's a commit-reveal flow with the
+        on-chain ORNG randomness oracle, so opening a pack takes
+        <strong>two wallet signatures</strong>:
+      </p>
+<pre><code>TX 1  atomicassets::transfer  to=atomicpacksx, memo="unbox"
+      "Take this pack, ask the oracle for randomness."
+
+      ... 5..30 seconds while ORNG calls the contract back ...
+
+TX 2  atomicpacksx::claimunboxed  pack_asset_id, origin_roll_ids
+      "Randomness is in, mint my cards."</code></pre>
+      <p>
+        The <strong>UNPACK</strong> tab scans
+        <code>atomicpacksx</code> globally and lists only the
+        collections where your wallet currently holds at least one
+        openable pack. You then pick: collection, pack type, specific
+        mint (when you own more than one of the same).
+      </p>
+      <p>
+        Between TX1 and TX2, Crucible polls the
+        <code>unboxassets</code> table every 2 seconds. When the
+        oracle row appears, you see exactly which templates the
+        contract picked, with the in-roll probability of each
+        outcome, BEFORE you sign step 2.
+      </p>
+    `,
+  },
+  {
+    id: 'upgrade',
+    summary: 'UPGRADE · MUTATE NFTS YOU OWN IN PLACE',
+    body: `
+      <p>
+        The <strong>UPGRADE</strong> tab drives a fourth Nefty
+        contract, <code>up.nefty</code>. Upgrades are different from
+        blends in a key way: they <strong>mutate</strong> NFTs you
+        already hold instead of burning them. The asset stays in your
+        wallet; only its on-chain <code>mutable_data</code> is
+        rewritten (image, colour, level, etc.).
+      </p>
+      <p>
+        On-chain shape, mirroring blend.nefty but with an extra
+        <code>assets_to_upgrade</code> field that lists the NFTs
+        being mutated:
+      </p>
+<pre><code>[0a. up.nefty::openbal               once per (owner, FT) ever]
+[0b. &lt;token&gt;::transfer  memo=deposit  one per FT ingredient]
+ 1.  up.nefty::announcedepo          (only when burning NFTs as cost)
+ 2.  atomicassets::transfer  memo=deposit
+ 3.  up.nefty::upgrade               assets_to_upgrade=[ ... ]</code></pre>
+      <p>
+        FT-only upgrades (the most common case, e.g. underpunks55's
+        Maschine Key Card colour upgrades) are fully signable from
+        Crucible today. Random-result and whitelist-gated upgrades
+        are detected, tagged in the picker, and on the roadmap.
+      </p>
+    `,
+  },
+  {
+    id: 'waxdao',
+    summary: 'WAXDAO · CRAFTS THE NEFTY UI NEVER WRAPPED',
+    body: `
+      <p>
+        <strong>WaxDAO</strong> is a parallel ecosystem to
+        NeftyBlocks. Its blends live in a different contract
+        (<code>waxdaomarket</code>) and use a different action shape:
+        instead of one big transfer with all the NFTs in it, every
+        ingredient gets its own <code>atomicassets::transfer</code>
+        with a slot-indexed memo:
+      </p>
+<pre><code>1.  waxdaomarket::assertblend           { blend_ID, user, unique_id }
+[2. &lt;token&gt;::transfer  to=waxdaomarket
+                          memo="|blend_deposit|&lt;id&gt;|0|"]
+ 3. atomicassets::transfer  to=waxdaomarket
+                            memo="|blend_deposit|&lt;id&gt;|1|"
+ 4. atomicassets::transfer  to=waxdaomarket
+                            memo="|blend_deposit|&lt;id&gt;|2|"
+ ... one transfer per NFT ingredient slot</code></pre>
+      <p>
+        The WaxDAO website is currently down, but the
+        <code>waxdaomarket</code> contract is alive and independent.
+        Crucible drives it directly, exactly as it does for the
+        Nefty contracts.
+      </p>
+      <p>
+        Click the <strong>WAXDAO</strong> pill at the top of the
+        page to switch context. Recipes are listed per collection,
+        sorted alphabetically. The byte-for-byte verifier
+        (<code>scripts/verify-waxdao.mjs</code>) confirms that the
+        actions Crucible builds are identical to a real on-chain
+        WaxDAO blend executed in 2024.
       </p>
     `,
   },
