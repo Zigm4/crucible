@@ -58,6 +58,14 @@ import {
   type SecurityCheck,
 } from '../nefty/rngExecute';
 import {
+  listUpgrades,
+  loadUpgradeById,
+  type DiscoveredUpgrade,
+  type UpgradeStatus,
+  type UpgradeIngredient,
+} from '../nefty/upgrades';
+import { buildUpgradeActions, executeUpgrade } from '../nefty/upgradeExecute';
+import {
   readKnownClaimIds,
   waitForClaim,
   type ClaimAssetsRow,
@@ -94,7 +102,7 @@ import { waitForUnboxAssets, type UnboxAssetRow } from '../nefty/packWait';
 import { dryRunActions } from './dryrun';
 import { renderAboutPanels } from './about';
 
-type AppView = 'blends' | 'drops' | 'packs';
+type AppView = 'blends' | 'drops' | 'packs' | 'upgrades';
 
 /**
  * Multi-phase state machine for the auto-wait pack unbox flow.
@@ -264,6 +272,17 @@ interface AppState {
   rngClaim?: ClaimAssetsRow;
   /** Cancel handle for the wait loop. */
   rngAbort?: AbortController;
+
+  // ── UPGRADE view state machine ──
+  upgrades: UpgradeViewState;
+
+  /**
+   * Cross-tab cache of `template_id -> human-readable name`. Populated
+   * lazily by displayAssetName() the first time an asset with no
+   * `name` field is rendered. Survives tab switches so the second
+   * paint of the same template is instant.
+   */
+  templateNames: Map<number, string>;
 }
 
 type RngPhase =
@@ -274,6 +293,37 @@ type RngPhase =
   | 'claiming'
   | 'done'
   | 'error';
+
+/** Slot machine sub-state for the UPGRADE tab. */
+interface UpgradeViewState {
+  /** Free-form Upgrade-id input (manual entry path). */
+  upgradeIdInput: string;
+  /** All upgrades for the active collection, on-chain ordered. */
+  list: DiscoveredUpgrade[];
+  loading: boolean;
+  progress?: { pct: number; message: string };
+  error?: string;
+  /** Currently picked upgrade (after click in the picker). */
+  picked?: DiscoveredUpgrade;
+  /** Picker dropdown open state. */
+  pickerOpen: boolean;
+  /** When true, includes ended / upcoming / sold-out / hidden upgrades. */
+  showInactive: boolean;
+  /**
+   * The assets the user picked from their wallet to upgrade. Keyed by
+   * spec index (each upgrade can have multiple specs each requiring one
+   * NFT). Value is the asset_id chosen for that spec slot.
+   */
+  selection: Map<number, string>;
+  /** Per-FT-ingredient status: required vs balance, indexed by ingredient idx. */
+  ftStatus: Map<number, { ticker: string; required: number; balance: number }>;
+  /** Last broadcast trx_id (success). */
+  lastTrxId?: string;
+  /** Local dry-run output. */
+  lastDryRun?: unknown;
+  /** UI flag while a transaction is in flight. */
+  pending: boolean;
+}
 
 const state: AppState = {
   blendId: '',
@@ -317,6 +367,17 @@ const state: AppState = {
   packUnboxAssets: [],
   rngPhase: 'idle',
   rngWaitElapsedMs: 0,
+  upgrades: {
+    upgradeIdInput: '',
+    list: [],
+    loading: false,
+    pickerOpen: false,
+    showInactive: false,
+    selection: new Map(),
+    ftStatus: new Map(),
+    pending: false,
+  },
+  templateNames: new Map(),
 };
 
 function setStatus(msg: string, kind: AppState['statusKind'] = 'info') {
@@ -568,13 +629,23 @@ function onTogglePicker() {
 
 function onPickerOutsideClick(ev: MouseEvent) {
   const target = ev.target as HTMLElement | null;
+  // Once positionOpenPickers portals the dropdown panel to <body>, the
+  // panel is no longer a descendant of its `.picker` toggle. Clicks
+  // INSIDE the panel must still count as "inside the picker", otherwise
+  // the panel would close on the first row click. We treat any click
+  // inside any `.picker-panel` as a click inside the matching picker.
+  const insidePanel = target?.closest('.picker-panel');
   let mutated = false;
-  if (state.pickerOpen && (!target || !target.closest('.picker'))) {
+  if (state.pickerOpen && (!target || (!target.closest('.picker') && !insidePanel))) {
     state.pickerOpen = false;
     mutated = true;
   }
-  if (state.dropPickerOpen && (!target || !target.closest('.drop-picker'))) {
+  if (state.dropPickerOpen && (!target || (!target.closest('.drop-picker') && !insidePanel))) {
     state.dropPickerOpen = false;
+    mutated = true;
+  }
+  if (state.upgrades.pickerOpen && (!target || (!target.closest('.upgrade-picker') && !insidePanel))) {
+    state.upgrades.pickerOpen = false;
     mutated = true;
   }
   if (mutated) render();
@@ -1550,6 +1621,290 @@ function onResetRng() {
   render();
 }
 
+// ─── UPGRADE view handlers ───────────────────────────────────────────── //
+
+/**
+ * Fetches all `up.nefty` upgrades for the active collection and
+ * refreshes the wallet inventory used to pre-pick assets_to_upgrade.
+ */
+async function loadUpgradesList() {
+  const u = state.upgrades;
+  u.loading = true;
+  u.error = undefined;
+  u.progress = undefined;
+  render();
+  try {
+    const { upgrades } = await listUpgrades({
+      collection: state.discoveryCollection,
+      includeInactive: u.showInactive,
+      onProgress: (message, pct) => {
+        u.progress = { pct, message };
+        render();
+      },
+    });
+    u.list = upgrades;
+    // Refresh wallet inventory for the same collection so we can match
+    // template requirements to owned assets.
+    const session = getCurrentSession();
+    if (session) {
+      try {
+        state.discoveryOwnedAssets = await listAssetsForOwner({
+          owner: String(session.actor),
+          collection_name: state.discoveryCollection,
+        });
+      } catch {
+        // non-fatal: matcher will fall back to empty
+      }
+    }
+  } catch (err) {
+    u.error = (err as Error).message;
+    u.list = [];
+  } finally {
+    u.loading = false;
+    u.progress = undefined;
+    render();
+  }
+}
+
+function onToggleUpgradesShowInactive(checked: boolean) {
+  state.upgrades.showInactive = checked;
+  state.upgrades.list = [];
+  state.upgrades.error = undefined;
+  render();
+}
+
+function onToggleUpgradesPicker() {
+  state.upgrades.pickerOpen = !state.upgrades.pickerOpen;
+  render();
+}
+
+async function onPickUpgrade(upgrade_id: string) {
+  const u = state.upgrades;
+  u.pickerOpen = false;
+  const found = u.list.find((up) => up.upgrade_id === upgrade_id);
+  if (!found) return;
+  u.picked = found;
+  u.upgradeIdInput = upgrade_id;
+  u.selection.clear();
+  u.lastDryRun = undefined;
+  u.lastTrxId = undefined;
+  render();
+  await refreshUpgradeFtStatus();
+}
+
+async function onLoadUpgradeManual() {
+  const u = state.upgrades;
+  if (!u.upgradeIdInput) {
+    setStatus('Enter an upgrade_id first.', 'err');
+    return;
+  }
+  // If it's already in the discovered list, just pick it.
+  const local = u.list.find((up) => up.upgrade_id === u.upgradeIdInput);
+  if (local) {
+    onPickUpgrade(u.upgradeIdInput);
+    return;
+  }
+  u.loading = true;
+  render();
+  try {
+    const up = await loadUpgradeById(u.upgradeIdInput);
+    if (!up) {
+      setStatus(`Upgrade ${u.upgradeIdInput} not found.`, 'err');
+      return;
+    }
+    u.picked = up;
+    u.selection.clear();
+    u.lastDryRun = undefined;
+    u.lastTrxId = undefined;
+    // If the upgrade's collection differs from the active one, switch
+    // implicitly so the wallet match works.
+    if (up.collection_name && up.collection_name !== state.discoveryCollection) {
+      state.discoveryCollection = up.collection_name;
+    }
+    try {
+      const session = getCurrentSession();
+      if (session) {
+        state.discoveryOwnedAssets = await listAssetsForOwner({
+          owner: String(session.actor),
+          collection_name: up.collection_name,
+        });
+      }
+    } catch { /* non-fatal */ }
+    await refreshUpgradeFtStatus();
+  } catch (err) {
+    setStatus(`Error: ${(err as Error).message}`, 'err');
+  } finally {
+    u.loading = false;
+    render();
+  }
+}
+
+/**
+ * Reads the user's balance for each FT ingredient of the picked
+ * upgrade so we can show insufficient-balance warnings in zone 4.
+ */
+async function refreshUpgradeFtStatus() {
+  const u = state.upgrades;
+  u.ftStatus.clear();
+  if (!u.picked) return;
+  const session = getCurrentSession();
+  if (!session) return;
+  const owner = String(session.actor);
+  u.picked.ingredients.forEach((ing, idx) => {
+    if (ing.kind !== 'ft') return;
+    const required = parseAssetAmount(ing.quantity);
+    const ticker = tickerFromQuantity(ing.quantity);
+    if (!ticker || !Number.isFinite(required)) return;
+    void (async () => {
+      try {
+        const contract = await resolveTokenContract(ing.quantity);
+        const balance = await readTokenBalance({ owner, contract, symbolCode: ticker });
+        u.ftStatus.set(idx, { ticker, required, balance });
+      } catch {
+        u.ftStatus.set(idx, { ticker, required, balance: -1 });
+      } finally {
+        render();
+      }
+    })();
+  });
+}
+
+function onPickUpgradeAsset(specIdx: number, asset_id: string) {
+  const u = state.upgrades;
+  // Toggle: re-clicking the same asset deselects it.
+  const current = u.selection.get(specIdx);
+  if (current === asset_id) {
+    u.selection.delete(specIdx);
+  } else {
+    // Prevent the same asset being used by two different specs.
+    for (const [other, id] of u.selection.entries()) {
+      if (other !== specIdx && id === asset_id) {
+        setStatus(`Asset ${asset_id} is already picked by spec #${other}.`, 'warn');
+        return;
+      }
+    }
+    u.selection.set(specIdx, asset_id);
+  }
+  render();
+}
+
+/**
+ * Returns the list of owned assets that satisfy a given UpgradeSpec
+ * (currently: just template_ids from TEMPLATE / TEMPLATES requirements).
+ * Attribute requirements are not enforced client-side, the contract
+ * will reject if the user picks a non-matching asset.
+ */
+function ownedAssetsForSpec(spec: DiscoveredUpgrade['specs'][number]): AtomicAsset[] {
+  const owned = state.discoveryOwnedAssets;
+  // Collect template_ids from each requirement.
+  const accepted = new Set<number>();
+  for (const req of spec.requirements) {
+    if (req.kind === 'template') accepted.add(req.template_id);
+    if (req.kind === 'templates') for (const id of req.template_ids) accepted.add(id);
+  }
+  // Filter by schema first, then by template.
+  return owned.filter((a) => {
+    if (a.schema?.schema_name && a.schema.schema_name !== spec.schema_name) return false;
+    if (accepted.size === 0) return true; // attribute-only filters: show all in the schema
+    const tid = a.template?.template_id;
+    return tid != null && accepted.has(Number(tid));
+  });
+}
+
+function readyToUpgrade(): boolean {
+  const u = state.upgrades;
+  if (!u.picked) return false;
+  if (u.picked.status !== 'active') return false;
+  if (u.picked.is_random) return false; // out of scope for v1
+  if (u.picked.whitelist_required) return false; // gated upgrades not supported in v1
+  // Every spec must have a picked asset.
+  for (let i = 0; i < u.picked.specs.length; i++) {
+    if (!u.selection.get(i)) return false;
+  }
+  // Every FT ingredient must be covered.
+  for (let i = 0; i < u.picked.ingredients.length; i++) {
+    const ing = u.picked.ingredients[i];
+    if (ing.kind !== 'ft') {
+      // NFT cost ingredients not supported via UI in v1.
+      return false;
+    }
+    const st = u.ftStatus.get(i);
+    if (!st || st.balance < 0 || st.balance < st.required) return false;
+  }
+  return true;
+}
+
+async function buildUpgradePlan(): Promise<BuiltAction[]> {
+  const session = getCurrentSession();
+  const u = state.upgrades;
+  if (!session || !u.picked) throw new Error('No session / upgrade loaded');
+  const assets_to_upgrade = Array.from(
+    { length: u.picked.specs.length },
+    (_, i) => u.selection.get(i),
+  ).filter((x): x is string => !!x);
+  const ft_payments = u.picked.ingredients
+    .filter((ing): ing is Extract<UpgradeIngredient, { kind: 'ft' }> => ing.kind === 'ft')
+    .map((ing) => ing.quantity);
+  return buildUpgradeActions({
+    claimer: String(session.actor),
+    upgrade_id: u.picked.upgrade_id,
+    assets_to_upgrade,
+    transferred_assets: [],
+    own_assets: [],
+    ft_payments,
+  });
+}
+
+async function onUpgradeDryRun() {
+  const u = state.upgrades;
+  try {
+    setStatus('Simulating upgrade (local ABI serialisation)...', 'info');
+    const actions = await buildUpgradePlan();
+    const out = await dryRunActions(actions);
+    u.lastDryRun = { actions, abi_serialization: out };
+    const ok = out.every((r) => !r.error);
+    setStatus(ok ? `Simulation OK, ${actions.length} action(s) serialize cleanly.` : 'Simulation failed.', ok ? 'ok' : 'err');
+  } catch (err) {
+    setStatus((err as Error).message, 'err');
+  }
+  render();
+}
+
+async function onExecuteUpgrade() {
+  const session = getCurrentSession();
+  const u = state.upgrades;
+  if (!session || !u.picked) return;
+  u.pending = true;
+  render();
+  try {
+    const assets_to_upgrade = Array.from(
+      { length: u.picked.specs.length },
+      (_, i) => u.selection.get(i),
+    ).filter((x): x is string => !!x);
+    const ft_payments = u.picked.ingredients
+      .filter((ing): ing is Extract<UpgradeIngredient, { kind: 'ft' }> => ing.kind === 'ft')
+      .map((ing) => ing.quantity);
+    setStatus('Awaiting wallet signature for the upgrade...', 'info');
+    const result = await executeUpgrade(session, {
+      upgrade_id: u.picked.upgrade_id,
+      assets_to_upgrade,
+      transferred_assets: [],
+      own_assets: [],
+      ft_payments,
+    });
+    const trxId =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    u.lastTrxId = trxId;
+    setStatus(`Upgrade broadcast: ${trxId}`, 'ok');
+  } catch (err) {
+    setStatus(`Upgrade failed: ${(err as Error).message}`, 'err');
+  } finally {
+    u.pending = false;
+    render();
+  }
+}
+
 // ─── render ───────────────────────────────────────────────────────────── //
 
 function renderConnect(session: ReturnType<typeof getCurrentSession>): string {
@@ -1715,9 +2070,17 @@ function renderLegend(): string {
       <span class="legend-item"><span class="status-chip status-upcoming">upcoming</span></span>
       <span class="legend-item"><span class="status-chip status-hidden">hidden</span></span>
       <span class="legend-sep">·</span>
-      <span class="legend-item legend-disabled">
-        <span class="legend-disabled-swatch"></span>
-        greyed = you're not whitelisted for that blend
+      <span class="legend-item">
+        <span class="picker-wl-badge pending">RNG</span>
+        random blend, signs in two transactions (fuse + claim)
+      </span>
+      <span class="legend-item">
+        <span class="picker-wl-badge">not whitelisted</span>
+        your account isn't on this blend's whitelist (row stays disabled)
+      </span>
+      <span class="legend-item">
+        <span class="picker-wl-badge pending">whitelist?</span>
+        whitelist not yet checked (connect your wallet)
       </span>
     </div>`;
 }
@@ -1918,6 +2281,57 @@ function renderRngOdds(b: BlendRow): string {
   return `<h3>Possible mints</h3><p class="status-line" style="margin-bottom:6px">This blend has multiple outcomes per roll. The on-chain contract will randomly pick one outcome per roll when you submit. Probabilities below are the in-roll odds.</p>${blocks.join('')}`;
 }
 
+/**
+ * Returns the best human-readable name for an asset. Priority:
+ *   1. The asset's own `name` (immutable_data.name surfaced by the
+ *      AtomicAssets indexer)
+ *   2. The asset's `data.name` (mutable-data fallback)
+ *   3. The cached resolved template name for `a.template.template_id`
+ *      (populated lazily by enrichAssetTemplateNames)
+ *   4. "template #<id>" if all else fails
+ *
+ * The cache lives in `state.templateNames`. When a row needs an
+ * unresolved name we fire-and-forget a fetch through the AtomicAssets
+ * indexer; the row re-renders once the name lands.
+ */
+function displayAssetName(a: AtomicAsset): string {
+  if (a.name) return a.name;
+  const dataName = (a.data && typeof a.data === 'object' && (a.data as Record<string, unknown>).name);
+  if (typeof dataName === 'string' && dataName) return dataName;
+  const tid = a.template?.template_id;
+  if (tid != null) {
+    const cached = state.templateNames.get(Number(tid));
+    if (cached) return cached;
+    // Kick off a best-effort name fetch (will trigger a re-render).
+    void enrichAssetTemplateName(a);
+    return `template #${tid}`;
+  }
+  return 'asset';
+}
+
+const _templateFetchInflight = new Set<number>();
+async function enrichAssetTemplateName(a: AtomicAsset): Promise<void> {
+  const tid = a.template?.template_id;
+  if (tid == null) return;
+  const n = Number(tid);
+  if (state.templateNames.has(n)) return;
+  if (_templateFetchInflight.has(n)) return;
+  _templateFetchInflight.add(n);
+  try {
+    const coll = a.collection?.collection_name ?? state.collection;
+    if (!coll) return;
+    const name = await fetchTemplateName(coll, n);
+    if (name) {
+      state.templateNames.set(n, name);
+      render();
+    }
+  } catch {
+    // silently ignore: row keeps the "template #<id>" fallback
+  } finally {
+    _templateFetchInflight.delete(n);
+  }
+}
+
 function renderNftSlot(slot: IngredientSlot): string {
   if (slot.kind === 'UNSUPPORTED') {
     return `
@@ -1930,11 +2344,12 @@ function renderNftSlot(slot: IngredientSlot): string {
   const picked = state.selection.get(slot.index) ?? [];
   const items = slot.eligible.map((a) => {
     const selected = picked.includes(a.asset_id) ? ' selected' : '';
-    const name = a.name ?? a.template?.template_id ?? 'asset';
+    const name = displayAssetName(a);
+    const tid = a.template?.template_id;
     return `
       <div class="asset${selected}" data-action="toggle" data-slot="${slot.index}" data-asset="${escapeHtml(a.asset_id)}">
-        <span>${escapeHtml(String(name))}</span>
-        <span class="id">#${escapeHtml(a.asset_id)}</span>
+        <span>${escapeHtml(name)}</span>
+        <span class="id">#${escapeHtml(a.asset_id)}${tid != null ? ' · tpl ' + escapeHtml(String(tid)) : ''}${a.template_mint ? ' · mint ' + escapeHtml(a.template_mint) : ''}</span>
       </div>`;
   });
   return `
@@ -2180,9 +2595,10 @@ function renderTabs(): string {
   return `
     <div class="card tabs-card">
       <div class="tabs">
-        ${tab('blends', 'Blend', 'burn NFTs → mint result')}
-        ${tab('drops',  'Claim', 'pay (or not) → mint a drop')}
-        ${tab('packs',  'Unpack', 'open packs you own')}
+        ${tab('blends',   'Blend',   'burn NFTs → mint result')}
+        ${tab('drops',    'Claim',   'pay (or not) → mint a drop')}
+        ${tab('packs',    'Unpack',  'open packs you own')}
+        ${tab('upgrades', 'Upgrade', 'mutate NFTs you own')}
       </div>
     </div>`;
 }
@@ -2308,9 +2724,29 @@ function renderDropLegend(): string {
       <span class="legend-item"><span class="status-chip status-ended">ended</span></span>
       <span class="legend-item"><span class="status-chip status-upcoming">upcoming</span></span>
       <span class="legend-sep">·</span>
-      <span class="legend-item legend-disabled">
-        <span class="legend-disabled-swatch"></span>
-        greyed = whitelist, NFT proof, key-gated, or per-account limit reached
+      <span class="legend-item">
+        <span class="picker-wl-badge">not whitelisted</span>
+        whitelist required and your account isn't on it (row disabled)
+      </span>
+      <span class="legend-item">
+        <span class="picker-wl-badge">missing NFT proof</span>
+        you don't hold the required NFT(s) (row still clickable)
+      </span>
+      <span class="legend-item">
+        <span class="picker-wl-badge">insufficient TICKER</span>
+        you're eligible but short on the settlement token (row still clickable)
+      </span>
+      <span class="legend-item">
+        <span class="picker-wl-badge">limit reached</span>
+        you hit this drop's per-account limit (row disabled)
+      </span>
+      <span class="legend-item">
+        <span class="picker-wl-badge">key-gated</span>
+        claimdropkey, needs an off-chain signature (row disabled)
+      </span>
+      <span class="legend-item">
+        <span class="picker-wl-badge pending">connect to verify</span>
+        connect a wallet so eligibility can be checked
       </span>
     </div>`;
 }
@@ -2944,6 +3380,314 @@ function renderDropsView(): string {
   return renderPickDrop() + renderDropInfo() + renderDropActions();
 }
 
+// ─── UPGRADE view rendering ────────────────────────────────────────── //
+
+function upgradeStatusLabel(s: UpgradeStatus): string {
+  switch (s) {
+    case 'active':   return 'active';
+    case 'upcoming': return 'upcoming';
+    case 'ended':    return 'ended';
+    case 'sold_out': return 'sold out';
+    case 'hidden':   return 'hidden';
+  }
+}
+
+function renderUpgradeLegend(): string {
+  return `
+    <div class="legend">
+      <span class="legend-label">Color codes</span>
+      <span class="legend-item"><span class="status-chip status-active">active</span></span>
+      <span class="legend-item"><span class="status-chip status-sold_out">sold out</span></span>
+      <span class="legend-item"><span class="status-chip status-ended">ended</span></span>
+      <span class="legend-item"><span class="status-chip status-upcoming">upcoming</span></span>
+      <span class="legend-item"><span class="status-chip status-hidden">hidden</span></span>
+      <span class="legend-sep">·</span>
+      <span class="legend-item">
+        <span class="picker-wl-badge">RNG</span>
+        random results, not yet executable
+      </span>
+      <span class="legend-item">
+        <span class="picker-wl-badge">gated</span>
+        whitelist / ownership gate, not yet executable
+      </span>
+    </div>`;
+}
+
+function ingredientLabel(ing: UpgradeIngredient): string {
+  switch (ing.kind) {
+    case 'ft':           return `Pay ${escapeHtml(ing.quantity)}`;
+    case 'template':     return `Burn ${ing.amount} NFT(s) of template ${ing.template_id}`;
+    case 'schema':       return `Burn ${ing.amount} NFT(s) from schema ${escapeHtml(ing.schema_name)}`;
+    case 'collection':   return `Burn ${ing.amount} NFT(s) from collection ${escapeHtml(ing.collection_name)}`;
+    case 'attribute':    return `Burn ${ing.amount} NFT(s) matching specific attributes`;
+    case 'typed_attribute': return `Burn ${ing.amount} NFT(s) matching typed attributes`;
+    case 'balance':      return `Reduce ${ing.attribute_name} by ${ing.cost} on a held NFT`;
+    case 'unknown':      return 'Unknown ingredient type';
+  }
+}
+
+function renderUpgradePickerToggle(): string {
+  const u = state.upgrades;
+  let label = 'Select an upgrade...';
+  const notLoadedYet = u.list.length === 0 && !u.loading && !u.error;
+  if (notLoadedYet) {
+    label = `Click "Discover upgrades" to load ${state.discoveryCollection || 'a collection'}’s list`;
+  } else if (u.picked) {
+    label = `[#${u.picked.upgrade_id}] ${u.picked.name}`;
+  } else if (u.loading) {
+    label = u.progress?.message ?? 'Scanning upgrades...';
+  } else if (u.error) {
+    label = 'Discovery failed';
+  }
+  const disabled = u.loading || u.error || notLoadedYet;
+  return `
+    <button class="picker-toggle" data-action="toggleUpgradesPicker" ${disabled ? 'disabled' : ''}>
+      <span class="picker-current">${escapeHtml(label)}</span>
+      <span class="picker-caret">${u.pickerOpen ? '▴' : '▾'}</span>
+    </button>`;
+}
+
+function renderUpgradePickerPanel(): string {
+  const u = state.upgrades;
+  if (!u.pickerOpen || u.loading || u.error) return '';
+  const visible = u.list;
+  if (visible.length === 0) {
+    return `<div class="picker-panel"><div class="picker-empty">${escapeHtml('No upgrades found.')}</div></div>`;
+  }
+  const rows = visible.map((up) => {
+    const random = up.is_random;
+    const wl = up.whitelist_required;
+    const disabled = random || wl;
+    const cls = ['picker-row'];
+    if (disabled) cls.push('picker-row-disabled');
+    const rngBadge = random
+      ? '<span class="picker-wl-badge" title="Random upgrade results need an ORNG wait, not supported yet.">RNG</span>'
+      : '';
+    const wlBadge = wl
+      ? '<span class="picker-wl-badge" title="Whitelist or ownership gate, not supported yet.">gated</span>'
+      : '';
+    // Show first FT ingredient cost as the price tag (most common case).
+    const ft = up.ingredients.find((ing) => ing.kind === 'ft');
+    const priceTag = ft
+      ? `<span class="picker-price">${escapeHtml((ft as Extract<UpgradeIngredient, {kind:'ft'}>).quantity)}</span>`
+      : '';
+    return `
+      <div class="${cls.join(' ')}" ${disabled ? '' : `data-action="pickUpgrade" data-upgrade="${escapeHtml(up.upgrade_id)}"`}>
+        <span class="picker-id">#${escapeHtml(up.upgrade_id)}</span>
+        <span class="picker-name">${escapeHtml(up.name)}</span>
+        ${priceTag}
+        ${rngBadge}
+        ${wlBadge}
+        <span class="status-chip status-${escapeHtml(up.status)}">${escapeHtml(upgradeStatusLabel(up.status))}</span>
+      </div>`;
+  }).join('');
+  return `<div class="picker-panel"><div class="picker-rows">${rows}</div></div>`;
+}
+
+function renderPickUpgrade(): string {
+  const u = state.upgrades;
+  const session = getCurrentSession();
+  const refreshLabel = u.loading
+    ? 'Refreshing...'
+    : u.list.length > 0
+      ? 'Refresh upgrades'
+      : 'Discover upgrades';
+  const counts = u.list.length > 0
+    ? `${u.list.length} upgrade${u.list.length === 1 ? '' : 's'} found`
+    : '';
+  const progressBar = u.loading && u.progress
+    ? `<div class="progress"><div class="progress-fill" style="width:${Math.round(u.progress.pct * 100)}%"></div></div>`
+    : '';
+  return `
+    <div class="card">
+      <h2>2 · Pick an upgrade</h2>
+      <div class="row" style="gap:14px; align-items: flex-end; margin-bottom: 8px">
+        <div style="width: 140px; flex: 0 0 140px">
+          <label>Collection</label>
+          ${renderCollectionInput()}
+        </div>
+        <div style="flex: 1 1 380px; min-width: 280px">
+          <label>Available upgrades</label>
+          <div class="picker upgrade-picker">
+            ${renderUpgradePickerToggle()}
+            ${renderUpgradePickerPanel()}
+          </div>
+        </div>
+        <button class="primary" data-action="refreshUpgrades" ${u.loading || !isValidWaxName(state.discoveryCollection) ? 'disabled' : ''}>
+          ${escapeHtml(refreshLabel)}
+        </button>
+      </div>
+      ${renderCollectionChips()}
+      ${progressBar}
+      <div class="row" style="margin-top:10px; gap:14px; align-items:center; flex-wrap:wrap">
+        <label class="inline-toggle">
+          <input id="upgradesShowInactive" type="checkbox" data-action="toggleUpgradesInactive" ${u.showInactive ? 'checked' : ''} />
+          <span>show ended / upcoming / sold-out</span>
+        </label>
+        <div class="spacer"></div>
+        <span class="term">${escapeHtml(counts)}</span>
+      </div>
+      ${renderUpgradeLegend()}
+      ${session ? '' : '<p class="status-line term">Connect your wallet to match owned NFTs against each upgrade\'s requirements.</p>'}
+
+      <div class="divider"></div>
+
+      <label>Or enter an upgrade_id manually</label>
+      <div class="row" style="gap:14px; align-items: flex-end">
+        <div style="flex:1; min-width: 200px">
+          <input id="upgradeIdInput" type="text" value="${escapeHtml(u.upgradeIdInput)}" placeholder="e.g. 447" autocomplete="off" />
+        </div>
+        <button class="primary" data-action="loadUpgradeManual" ${u.loading ? 'disabled' : ''}>
+          ${u.loading ? 'Loading…' : 'Load upgrade'}
+        </button>
+      </div>
+      ${u.error ? `<p class="status-line warn">Discovery: ${escapeHtml(u.error)}</p>` : ''}
+    </div>`;
+}
+
+function renderUpgradeInfo(): string {
+  const u = state.upgrades;
+  const up = u.picked;
+  if (!up) return '';
+  const remainingUses = up.max > 0
+    ? `${up.use_count}/${up.max} (${Math.max(0, up.max - up.use_count)} left)`
+    : `${up.use_count}/∞`;
+
+  const ingredientsList = up.ingredients.length
+    ? `<h3>Cost</h3><ul class="mint-info">${
+        up.ingredients.map((ing) => `<li>${escapeHtml(ingredientLabel(ing))}</li>`).join('')
+      }</ul>`
+    : '';
+
+  const specsBlock = up.specs.map((spec, i) => {
+    const reqText = spec.requirements.map((req) => {
+      if (req.kind === 'template') return `template <code>${req.template_id}</code>`;
+      if (req.kind === 'templates') return `one of templates [${req.template_ids.map((id) => `<code>${id}</code>`).join(', ')}]`;
+      return `<span class="term">attribute-based requirement</span>`;
+    }).join(' · ');
+    const resultText = spec.results.map((res) => {
+      if (res.is_random) {
+        return `<li><strong>${escapeHtml(res.attribute_name)}</strong> <span class="term">(${escapeHtml(res.attribute_type)})</span>: <span class="term">random / oracle-driven (not yet supported)</span></li>`;
+      }
+      return `<li><strong>${escapeHtml(res.attribute_name)}</strong> <span class="term">(${escapeHtml(res.attribute_type)})</span> = <code>${escapeHtml(String(res.immediate_value ?? ''))}</code></li>`;
+    }).join('');
+    return `
+      <details class="pack-roll" open>
+        <summary>Spec #${i} · schema <code>${escapeHtml(spec.schema_name)}</code> · ${reqText || 'no template constraint'}</summary>
+        <ul class="mint-info">${resultText}</ul>
+      </details>`;
+  }).join('');
+
+  const flags: string[] = [];
+  if (up.is_random) flags.push('<span class="tag warn">random results · not yet executable</span>');
+  if (up.whitelist_required) flags.push('<span class="tag warn">whitelist / ownership gate · not yet executable</span>');
+
+  return `
+    <div class="card">
+      <h2>3 · ${escapeHtml(up.name)} <span class="term">-- #${escapeHtml(up.upgrade_id)} · ${escapeHtml(up.collection_name)}</span></h2>
+      <div class="row">
+        <span class="status-chip status-${escapeHtml(up.status)}">${escapeHtml(upgradeStatusLabel(up.status))}</span>
+        <span class="tag">uses ${escapeHtml(remainingUses)}</span>
+        ${flags.join('')}
+      </div>
+      ${ingredientsList}
+      <h3>What gets mutated</h3>
+      ${specsBlock}
+      ${up.description ? `<details style="margin-top:12px"><summary class="term" style="cursor:pointer">upgrade description</summary><p style="margin-top:8px; font-size:12px; color:var(--fg-dim)">${escapeHtml(up.description)}</p></details>` : ''}
+    </div>`;
+}
+
+function renderUpgradeAssetSlot(spec: DiscoveredUpgrade['specs'][number], specIdx: number): string {
+  const u = state.upgrades;
+  const owned = ownedAssetsForSpec(spec);
+  const picked = u.selection.get(specIdx);
+  const reqLabel = spec.requirements.map((req) => {
+    if (req.kind === 'template') return `template ${req.template_id}`;
+    if (req.kind === 'templates') return `one of templates [${req.template_ids.join(', ')}]`;
+    return 'attribute constraint';
+  }).join(' · ');
+  const items = owned.map((a) => {
+    const selected = picked === a.asset_id ? ' selected' : '';
+    const name = displayAssetName(a);
+    return `
+      <div class="asset${selected}" data-action="pickUpgradeAsset" data-spec="${specIdx}" data-asset="${escapeHtml(a.asset_id)}">
+        <span>${escapeHtml(name)}</span>
+        <span class="id">#${escapeHtml(a.asset_id)}${a.template_mint ? ' · mint ' + escapeHtml(a.template_mint) : ''}</span>
+      </div>`;
+  });
+  return `
+    <div class="slot">
+      <div class="slot-header">
+        <div class="slot-label">Spec #${specIdx} · ${escapeHtml(reqLabel)}</div>
+        <div class="slot-progress">${picked ? '1/1 picked' : '0/1 picked'} · ${owned.length} eligible</div>
+      </div>
+      ${owned.length === 0
+        ? '<p class="status-line err">No matching NFT in your wallet for this spec.</p>'
+        : `<div class="asset-grid">${items.join('')}</div>`}
+    </div>`;
+}
+
+function renderUpgradeSlots(): string {
+  const u = state.upgrades;
+  if (!u.picked) return '';
+  const slots = u.picked.specs.map((spec, i) => renderUpgradeAssetSlot(spec, i)).join('');
+  // FT ingredient status (cost / balance).
+  const ftBlocks = u.picked.ingredients.map((ing, idx) => {
+    if (ing.kind !== 'ft') return '';
+    const st = u.ftStatus.get(idx);
+    const required = parseAssetAmount(ing.quantity);
+    if (!st) {
+      return `
+        <div class="slot ft-slot">
+          <div class="slot-header"><div class="slot-label">${escapeHtml(`Pay ${ing.quantity}`)}</div></div>
+          <p class="status-line">Reading your wallet balance…</p>
+        </div>`;
+    }
+    const okBalance = st.balance >= 0 && st.balance >= required;
+    return `
+      <div class="slot ft-slot">
+        <div class="slot-header"><div class="slot-label">${escapeHtml(`Pay ${ing.quantity}`)}</div></div>
+        <p class="status-line ${okBalance ? 'ok' : 'err'}">
+          Balance: <code>${st.balance >= 0 ? st.balance.toFixed(4) : '?'}</code> · required <code>${required.toFixed(4)}</code>
+        </p>
+      </div>`;
+  }).join('');
+  return `
+    <div class="card">
+      <h2>4 · Select NFTs to upgrade ${state.assetsLoading ? '<span class="term">(refreshing your wallet…)</span>' : ''}</h2>
+      ${slots}
+      ${ftBlocks}
+    </div>`;
+}
+
+function renderUpgradeActions(): string {
+  const u = state.upgrades;
+  if (!u.picked) return '';
+  const ready = readyToUpgrade();
+  const blockers: string[] = [];
+  if (u.picked.is_random) blockers.push('<p class="status-line warn">Random-result upgrades use the ORNG oracle and are not yet implemented in Crucible.</p>');
+  if (u.picked.whitelist_required) blockers.push('<p class="status-line warn">Whitelist / ownership-gated upgrades are not yet implemented in Crucible.</p>');
+  return `
+    <div class="card">
+      <h2>5 · Verify &amp; execute</h2>
+      ${blockers.join('')}
+      <div class="row">
+        <button data-action="upgradeDryRun" ${ready ? '' : 'disabled'}>Simulate (no signature)</button>
+        <button class="primary" data-action="upgradeExecute" ${ready ? '' : 'disabled'}>${u.pending ? 'Signing…' : 'Sign &amp; broadcast'}</button>
+      </div>
+      ${u.lastDryRun
+        ? `<h3>Dry-run output</h3><pre>${escapeHtml(JSON.stringify(u.lastDryRun, null, 2))}</pre>`
+        : ''}
+      ${u.lastTrxId
+        ? `<p class="status-line ok">Trx broadcast: <a target="_blank" href="https://waxblock.io/transaction/${escapeHtml(u.lastTrxId)}">${escapeHtml(u.lastTrxId)}</a></p>`
+        : ''}
+    </div>`;
+}
+
+function renderUpgradesView(): string {
+  return renderPickUpgrade() + renderUpgradeInfo() + renderUpgradeSlots() + renderUpgradeActions();
+}
+
 /**
  * Captures the window scroll position and the currently-focused input
  * (with its cursor offset and selection range) so we can restore them
@@ -2984,16 +3728,32 @@ function restoreRenderSnapshot(snap: RenderSnapshot) {
 }
 
 /**
- * Walks every open picker panel and decides whether it should drop down
- * below the toggle or flip up above it, then caps its inner scroll area
- * to whatever vertical space is actually available in the viewport.
+ * Walks every open picker panel and:
+ *   1. portals it to <body> so `position: fixed` actually escapes its
+ *      card's containing block (cards use `backdrop-filter` which, per
+ *      CSS spec, captures `position: fixed` exactly like a `transform`
+ *      would, otherwise the panel would jump or sit behind sibling
+ *      cards)
+ *   2. anchors it to the toggle via viewport coordinates from
+ *      `getBoundingClientRect`
+ *   3. decides whether to drop down or flip up based on available
+ *      space, and caps `max-height` to the remaining viewport
  *
- * Runs after each render(). The render() output positions the panel with
- * a default "top: calc(100% + 4px)"; this function only overrides when
- * there isn't enough room below, or to set the max-height so the panel
- * never extends past the viewport edge (no more "stuck below the fold").
+ * Runs after each render(). The render() output places the panel
+ * inside the picker DOM; this function moves it out so the dropdown
+ * paints above ALL cards regardless of their backdrop-filter stacking
+ * contexts.
  */
 function positionOpenPickers() {
+  // 1. Clean up any panels that this same routine portaled to <body> in
+  //    a previous render. They'll be re-portaled below if the picker is
+  //    still open (and re-rendered the panel inside its card again).
+  for (const stale of document.querySelectorAll<HTMLElement>(
+    'body > .picker-panel[data-portaled]',
+  )) {
+    stale.remove();
+  }
+
   const panels = document.querySelectorAll<HTMLElement>('.picker-panel');
   for (const panel of panels) {
     const picker = panel.closest<HTMLElement>('.picker');
@@ -3017,6 +3777,24 @@ function positionOpenPickers() {
     panel.style.maxHeight = `${cap}px`;
     const rows = panel.querySelector<HTMLElement>('.picker-rows');
     if (rows) rows.style.maxHeight = `${cap}px`;
+
+    // Inline anchor in viewport coordinates.
+    panel.style.left = `${rect.left}px`;
+    panel.style.width = `${rect.width}px`;
+    if (placeAbove) {
+      panel.style.top = 'auto';
+      panel.style.bottom = `${viewportH - rect.top + 4}px`;
+    } else {
+      panel.style.top = `${rect.bottom + 4}px`;
+      panel.style.bottom = 'auto';
+    }
+
+    // 2. Portal: move the panel out of its card and into <body> so it
+    //    isn't captured by the card's backdrop-filter containing block.
+    //    Tag it so the cleanup at the top of this function can find it
+    //    on the next render.
+    panel.dataset.portaled = 'true';
+    document.body.appendChild(panel);
   }
 }
 
@@ -3059,7 +3837,9 @@ function performRender() {
       ? renderBlendsView()
       : state.view === 'drops'
         ? renderDropsView()
-        : renderPacksView());
+        : state.view === 'packs'
+          ? renderPacksView()
+          : renderUpgradesView());
   attachHandlers();
   positionOpenPickers();
   restoreRenderSnapshot(snap);
@@ -3139,6 +3919,20 @@ function attachHandlers() {
   if (amountInput) {
     amountInput.addEventListener('input', (e) => onChangeDropAmount(Number((e.target as HTMLInputElement).value)));
   }
+  // UPGRADE tab inputs.
+  const upgradeIdInput = document.getElementById('upgradeIdInput') as HTMLInputElement | null;
+  if (upgradeIdInput) {
+    upgradeIdInput.addEventListener('input', (e) => {
+      state.upgrades.upgradeIdInput = (e.target as HTMLInputElement).value.trim();
+    });
+    upgradeIdInput.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Enter') void onLoadUpgradeManual();
+    });
+  }
+  const toggleUpgradesInactive = document.getElementById('upgradesShowInactive') as HTMLInputElement | null;
+  if (toggleUpgradesInactive) {
+    toggleUpgradesInactive.addEventListener('change', () => onToggleUpgradesShowInactive(toggleUpgradesInactive.checked));
+  }
 
   rootEl().querySelectorAll<HTMLElement>('[data-action]').forEach((el) => {
     const action = el.dataset.action;
@@ -3147,7 +3941,8 @@ function attachHandlers() {
       action === 'toggleInactive' ||
       action === 'toggleOnlyExecutable' ||
       action === 'toggleDropInactive' ||
-      action === 'toggleDropOnlyEligible'
+      action === 'toggleDropOnlyEligible' ||
+      action === 'toggleUpgradesInactive'
     ) return;
     el.addEventListener('click', (ev) => {
       switch (action) {
@@ -3260,6 +4055,27 @@ function attachHandlers() {
         case 'rngReset':
           onResetRng();
           break;
+        case 'refreshUpgrades':
+          loadUpgradesList();
+          break;
+        case 'toggleUpgradesPicker':
+          onToggleUpgradesPicker();
+          break;
+        case 'pickUpgrade':
+          void onPickUpgrade(el.dataset.upgrade!);
+          break;
+        case 'loadUpgradeManual':
+          void onLoadUpgradeManual();
+          break;
+        case 'pickUpgradeAsset':
+          onPickUpgradeAsset(Number(el.dataset.spec), el.dataset.asset ?? '');
+          break;
+        case 'upgradeDryRun':
+          onUpgradeDryRun();
+          break;
+        case 'upgradeExecute':
+          onExecuteUpgrade();
+          break;
       }
       ev.stopPropagation();
     });
@@ -3274,7 +4090,7 @@ export async function mount() {
     // Reposition any open picker when the viewport changes (scroll, resize,
     // mobile keyboard, dev-tools open, ...). Skip if no panel is open.
     const reflow = () => {
-      if (state.pickerOpen || state.dropPickerOpen) positionOpenPickers();
+      if (state.pickerOpen || state.dropPickerOpen || state.upgrades.pickerOpen) positionOpenPickers();
     };
     window.addEventListener('scroll', reflow, { passive: true });
     window.addEventListener('resize', reflow);

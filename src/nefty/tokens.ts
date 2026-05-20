@@ -78,17 +78,24 @@ interface ExtBalanceRow {
 }
 
 /**
- * Checks if `owner` has already called openbal for `symbol` ("8,UPMAX").
- * If yes: calling openbal again would fail (RAM already allocated). We use
- * this to conditionally inject openbal only when needed.
+ * Checks if `owner` has already called openbal for `symbol` ("8,UPMAX")
+ * on `contract`. If yes: calling openbal again would fail (RAM already
+ * allocated). We use this to conditionally inject openbal only when
+ * needed.
+ *
+ * Default contract is `blend.nefty` for backward compatibility, but the
+ * same `extbalances` table layout is used by `up.nefty` and every other
+ * NeftyBlocks contract that lets users pre-deposit a token symbol.
  */
 export async function hasOpenBalance(args: {
   owner: string;
   symbol: string;
+  contract?: string;
 }): Promise<boolean> {
+  const contract = args.contract ?? 'blend.nefty';
   const rows = await getTableRows<ExtBalanceRow>({
-    code: 'blend.nefty',
-    scope: 'blend.nefty',
+    code: contract,
+    scope: contract,
     table: 'extbalances',
     lower_bound: args.owner,
     upper_bound: args.owner,

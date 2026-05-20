@@ -1,10 +1,11 @@
 # Crucible · user guide
 
-Crucible lets you execute NeftyBlocks **blends**, claim **drops**, and
-open **packs** on WAX, without going through the Nefty website (which is
-shut down). The smart contracts (`blend.nefty`, `neftyblocksd`,
-`atomicpacksx`) are still alive on-chain; this page just composes the
-right transactions and asks your wallet to sign them.
+Crucible lets you execute NeftyBlocks **blends**, claim **drops**, open
+**packs**, and apply **upgrades** to NFTs on WAX, without going through
+the Nefty website (which is shut down). The smart contracts
+(`blend.nefty`, `neftyblocksd`, `atomicpacksx`, `up.nefty`) are still
+alive on-chain; this page just composes the right transactions and asks
+your wallet to sign them.
 
 ## Before you start
 
@@ -26,13 +27,16 @@ totalling ~3 ms.
 
 ### 3. Pick what to do
 
-Three tabs at the top of the page:
+Four tabs at the top of the page:
 
-- **Blend**: burn NFTs (and optionally pay tokens) to mint a fixed result.
-- **Claim**: pay (or not) to mint a drop. Whitelist, NFT-proof, and free
-  drops are supported.
+- **Blend**: burn NFTs (and optionally pay tokens) to mint a result.
+  Deterministic and random (fuse + claim) both supported.
+- **Claim**: pay (or not) to mint a drop. Whitelist, NFT-proof, and
+  free drops are all supported.
 - **Unpack**: open packs you already own. Cross-collection, two
   signatures (one to lock the pack, one to mint the resolved cards).
+- **Upgrade**: mutate NFTs you hold (image, colour, level, ...). The
+  NFT stays in your wallet, only its on-chain mutable_data changes.
 
 For Blend and Claim, you don't need to know any ID in advance: click
 *Discover* and pick from the list. You can also paste a `blend_id` or
@@ -94,6 +98,24 @@ safe** in the `atomicpacksx` contract. Refresh the page, pick the same
 pack again, and the contract will let you complete the second
 transaction.
 
+### Upgrade
+
+1. **Connect your wallet**.
+2. Pick a collection, click **Discover upgrades**, and select one
+   from the list. Or paste an `upgrade_id` manually.
+3. The info card shows: what NFT(s) get mutated, what attributes
+   change, what it costs (FT and/or NFT ingredients).
+4. **Pick which NFT to upgrade** from your wallet (one per spec).
+   The grid is filtered to assets matching the recipe's schema and
+   template requirements.
+5. Simulate, then **Sign & broadcast**. The NFT stays in your
+   wallet, only its on-chain `mutable_data` is rewritten.
+
+Upgrades flagged `RNG` (random results via ORNG) or `gated`
+(whitelist / ownership check required) are visible in the picker but
+not yet executable from the UI; the action builders are ready, the
+UI extension is on the roadmap.
+
 ## What this page does (and does NOT do)
 
 ```
@@ -110,6 +132,12 @@ transaction.
     - cross-collection discovery from the global atomicpacksx table
     - auto-wait between TX1 and TX2 (ORNG poll)
     - full odds + resolved template names in the info card
+[*] upgrades (up.nefty):
+    - per-collection discovery, alphabetical sort
+    - FT-cost upgrades (the common case): pay tokens, mutate one or
+      more of your NFTs in place
+    - per-spec NFT picker matches recipe requirements to your wallet
+    - clearly marks RNG / gated upgrades as not-yet-executable
 [*] live ABI read on boot, survives compatible contract upgrades
 [*] secure.nefty whitelist check when a blend has security_id != 0
 [*] zero backend, zero telemetry, zero stored secrets
@@ -119,9 +147,17 @@ transaction.
     works for unsecured + whitelist-secured random blends but the
     contract rejects ownership-gated ones. Picker tags the affected
     rows. A small UI extension would add this.
+[x] RNG upgrades: upgrades with non-IMMEDIATE results queue an ORNG
+    job, just like random blends. Detected and tagged `RNG` in the
+    picker but not yet executable.
+[x] gated upgrades: whitelist / ownership-gated upgradesec is
+    decoded but not yet executable from the UI. Tagged `gated`.
+[x] NFT-cost upgrades: when an upgrade also requires burning NFTs
+    (TEMPLATE / SCHEMA / COLLECTION ingredients), the cost is
+    decoded but the picker for the burned NFTs isn't wired yet.
 [x] authkey drops (claimdropkey): the drop creator must pre-sign a
     per-user message we cannot obtain.
-[x] persistent storage beyond your last-used collection name.
+[x] no persistent storage at all. Every page load is a clean boot.
 ```
 
 ## Transaction anatomy (reference)
@@ -162,6 +198,30 @@ exact action structures.
   ]
 }
 ```
+
+### Upgrade (1 transaction, FT-only case)
+
+```json
+{
+  "actions": [
+    { "account": "up.nefty",     "name": "openbal",
+      "data": { "owner": "<you>", "token_symbol": "8,WAX" } },
+    { "account": "eosio.token",  "name": "transfer",
+      "data": { "from": "<you>", "to": "up.nefty",
+                "quantity": "10.00000000 WAX", "memo": "deposit" } },
+    { "account": "up.nefty",     "name": "upgrade",
+      "data": { "claimer": "<you>", "upgrade_id": <id>,
+                "transferred_assets": [],
+                "own_assets": [],
+                "assets_to_upgrade": ["<asset_id>"] } }
+  ]
+}
+```
+
+When the upgrade requires burning NFTs too, the leg adds an
+`up.nefty::announcedepo` + `atomicassets::transfer` between the
+token transfer and the `upgrade` call, with the burned NFTs in
+`transferred_assets`.
 
 ### Pack unbox (two separate transactions)
 

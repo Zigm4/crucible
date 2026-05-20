@@ -480,10 +480,15 @@ section.about > h2 { margin-bottom: 10px; }
  * opens, so we just provide sane defaults here.
  */
 .picker-panel {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0; right: 0;
-  z-index: 50;
+  /*
+   * `position: fixed` + a high z-index so the dropdown always paints
+   * above the cards below, even though each card creates its own
+   * stacking context via backdrop-filter. The exact `top`, `left`, and
+   * `width` are set inline by positionOpenPickers() in app.ts to track
+   * the toggle as the viewport scrolls or resizes.
+   */
+  position: fixed;
+  z-index: 1000;
   background-color: #02060c;
   background-image:
     linear-gradient(180deg, rgba(56, 189, 248, 0.04), rgba(0, 0, 0, 0)),
@@ -501,8 +506,6 @@ section.about > h2 { margin-bottom: 10px; }
  * bottom of the viewport). Keeps the same look, just anchors to the top
  * edge of the toggle instead of the bottom. */
 .picker-panel[data-position="above"] {
-  top: auto;
-  bottom: calc(100% + 4px);
   box-shadow:
     0 -12px 32px rgba(0, 0, 0, 0.7),
     0 0 22px rgba(56, 189, 248, 0.22),

@@ -312,9 +312,14 @@ function shapeAndFilter(raw: RawBlend[], includeInactive: boolean): DiscoveredBl
     if (shaped) out.push(shaped);
   }
   const filtered = includeInactive ? out : out.filter((b) => b.status === 'active');
+  // Active first, then alphabetical by name within each status bucket
+  // (case-insensitive, locale-aware). Falls back to blend_id desc when
+  // two blends share the exact same name, so duplicates stay stable.
   filtered.sort((a, b) => {
     const p = statusPriority(a.status) - statusPriority(b.status);
     if (p !== 0) return p;
+    const byName = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    if (byName !== 0) return byName;
     return Number(b.blend_id) - Number(a.blend_id);
   });
   return filtered;

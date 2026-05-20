@@ -222,9 +222,14 @@ export async function listDrops(
   if (!opts.includeInactive) {
     drops = drops.filter((d) => d.status === 'active');
   }
+  // Active first, then alphabetical by name within each status bucket
+  // (case-insensitive, locale-aware). Falls back to drop_id desc when
+  // two drops share the same name, keeping the order stable.
   drops.sort((a, b) => {
     const p = statusPriority(a.status) - statusPriority(b.status);
     if (p !== 0) return p;
+    const byName = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    if (byName !== 0) return byName;
     return Number(b.drop_id) - Number(a.drop_id);
   });
 
