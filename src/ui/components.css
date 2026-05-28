@@ -494,6 +494,98 @@ section.about > h2 { margin-bottom: 10px; }
   color: var(--accent);
 }
 
+/* ─── collection-author manage panel (inline, BLEND zone 3) ───────────── */
+.manage-section {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(245, 179, 64, 0.45);
+  border-left: 2px solid #f5b340;
+  border-radius: 2px;
+  background: rgba(245, 179, 64, 0.05);
+}
+.manage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.manage-title {
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #f5b340;
+  font-weight: 600;
+}
+.manage-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 8px 0;
+  border-top: 1px solid rgba(245, 179, 64, 0.15);
+  margin-top: 8px;
+}
+.manage-row.danger { border-top-color: rgba(255, 85, 119, 0.3); }
+.manage-label {
+  flex: 0 0 120px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  padding-top: 8px;
+}
+.manage-ctl { flex: 1; min-width: 0; }
+.manage-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.manage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+  background: rgba(4, 12, 22, 0.6);
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.manage-chip button {
+  border: none;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.manage-chip button:hover { color: #ff8aa0; }
+.manage-sec-select { flex: 1; min-width: 220px; }
+.danger-btn {
+  border: 1px solid rgba(255, 85, 119, 0.5);
+  color: var(--danger);
+  background: rgba(255, 85, 119, 0.06);
+}
+.danger-btn:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: rgba(255, 85, 119, 0.16);
+  box-shadow: 0 0 10px rgba(255, 85, 119, 0.25);
+}
+.manage-section textarea {
+  width: 100%;
+  padding: 8px 10px;
+  background: rgba(4, 12, 22, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+
 /* a drop picker is a regular picker, distinct class only to scope outside-click */
 .drop-picker { /* inherits .picker */ }
 .picker-price {

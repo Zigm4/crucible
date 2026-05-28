@@ -73,6 +73,24 @@ import {
   type WaxdaoIngredient,
 } from '../waxdao/blends';
 import { buildWaxdaoBlendActions, executeWaxdaoBlend } from '../waxdao/blendExecute';
+import { canManageCollection } from '../atomic/collections';
+import {
+  buildSetBlendHide,
+  buildSetBlendTime,
+  buildDelBlend,
+  buildSetBlendMax,
+  buildSetBlendLim,
+  buildSetBlendData,
+  buildSetBlendSec,
+  buildAddToWhitelist,
+  buildEraseFromWhitelist,
+  buildClearWhitelist,
+  buildAddWhitelist,
+  executeAdminAction,
+  readWhitelistMembers,
+  readCollectionSecurities,
+  type SecurityRow,
+} from '../nefty/admin';
 import {
   readKnownClaimIds,
   waitForClaim,
@@ -331,6 +349,37 @@ interface AppState {
    * paint of the same template is instant.
    */
   templateNames: Map<number, string>;
+
+  /** Collection-author admin controls (BLEND tab, inline in zone 3). */
+  manage: ManageState;
+}
+
+interface ManageState {
+  /**
+   * Opt-in safety switch. The destructive / parameter controls are
+   * collapsed and inert until the author flips this, so nobody
+   * fat-fingers a delete while blending normally. Off by default.
+   */
+  enabled: boolean;
+  /**
+   * collection_name -> whether the connected actor can manage it.
+   * `undefined` means "not checked yet" (an async lookup is pending).
+   */
+  authByCollection: Map<string, boolean | undefined>;
+  /** Members of the loaded blend's whitelist (security_id), when any. */
+  whitelistMembers?: string[];
+  /** The loaded blend's collection security definitions (attach dropdown). */
+  securities: import('../nefty/admin').SecurityRow[];
+  /** True while an admin tx is in flight. */
+  busy: boolean;
+  /** Inline form inputs (kept in state so they survive re-renders). */
+  addAccountsInput: string;
+  newWhitelistName: string;
+  newNameInput: string;
+  newMaxInput: string;
+  newLimitInput: string;
+  newCooldownInput: string;
+  attachSecurityInput: string;
 }
 
 type RngPhase =
@@ -472,6 +521,19 @@ const state: AppState = {
     return r.id ? { view: r.view, id: r.id } : undefined;
   })(),
   templateNames: new Map(),
+  manage: {
+    enabled: false,
+    authByCollection: new Map(),
+    securities: [],
+    busy: false,
+    addAccountsInput: '',
+    newWhitelistName: '',
+    newNameInput: '',
+    newMaxInput: '',
+    newLimitInput: '',
+    newCooldownInput: '',
+    attachSecurityInput: '',
+  },
 };
 
 /**
@@ -1571,6 +1633,10 @@ async function onLoadBlend() {
     state.collection = state.blend.collection_name;
     // Reflect the picked blend in the URL so the user can share it.
     writeHashRoute('nefty', 'blends', String(state.blend.blend_id));
+    // Fire off the admin-detection + whitelist/security reads in the
+    // background. They only matter for collection authors; failures
+    // are swallowed and the Manage section just stays hidden.
+    void refreshManageContext(state.blend);
     // Reset any pending RNG state from a previous blend.
     state.rngPhase = 'idle';
     state.rngPhaseMessage = undefined;
@@ -1895,6 +1961,226 @@ function onResetRng() {
   state.rngClaim = undefined;
   state.rngWaitElapsedMs = 0;
   render();
+}
+
+// ─── BLEND admin (collection-author) handlers ────────────────────────── //
+
+/**
+ * After a blend loads, work out whether the connected wallet can
+ * manage that collection and, if so, pre-load the whitelist members +
+ * the collection's security definitions for the Manage panel.
+ */
+async function refreshManageContext(blend: BlendRow) {
+  const m = state.manage;
+  m.whitelistMembers = undefined;
+  m.securities = [];
+  const session = getCurrentSession();
+  const actor = session ? String(session.actor) : '';
+  const collection = blend.collection_name;
+  if (!actor) {
+    m.authByCollection.set(collection, false);
+    render();
+    return;
+  }
+  // Auth check (cached in atomic/collections.ts).
+  try {
+    const can = await canManageCollection(actor, collection);
+    m.authByCollection.set(collection, can);
+    render();
+    if (!can) return;
+  } catch {
+    m.authByCollection.set(collection, false);
+    render();
+    return;
+  }
+  // We're authorized: load whitelist members (if the blend is gated)
+  // and the collection's securities for the attach dropdown.
+  const sid = blend.security_id !== undefined ? String(blend.security_id) : '0';
+  await Promise.all([
+    sid !== '0'
+      ? readWhitelistMembers(sid).then((a) => { m.whitelistMembers = a; }).catch(() => {})
+      : Promise.resolve(),
+    readCollectionSecurities(collection).then((s) => { m.securities = s; }).catch(() => {}),
+  ]);
+  render();
+}
+
+function manageActor(): string | undefined {
+  const s = getCurrentSession();
+  return s ? String(s.actor) : undefined;
+}
+
+function onToggleManageEnabled(checked: boolean) {
+  state.manage.enabled = checked;
+  render();
+}
+
+/**
+ * Runs a single admin action: confirm (always, since these are
+ * powerful), sign, then reload the blend so the UI reflects the new
+ * on-chain state.
+ */
+async function runAdminAction(action: import('../nefty/execute').BuiltAction, confirmMsg: string) {
+  const session = getCurrentSession();
+  if (!session) return;
+  if (!confirm(confirmMsg)) return;
+  state.manage.busy = true;
+  render();
+  try {
+    setStatus(`Awaiting signature: ${action.account}::${action.name}…`, 'info');
+    const result = await executeAdminAction(session, action);
+    const trxId =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    setStatus(`${action.name} broadcast: ${trxId}`, 'ok');
+    // Reload the blend so name / status / whitelist reflect the change.
+    if (state.blend) {
+      state.blendId = String(state.blend.blend_id);
+      await onLoadBlend();
+    }
+  } catch (err) {
+    setStatus(`${action.name} failed: ${(err as Error).message}`, 'err');
+  } finally {
+    state.manage.busy = false;
+    render();
+  }
+}
+
+function onManageHide(hide: boolean) {
+  const actor = manageActor();
+  if (!actor || !state.blend) return;
+  void runAdminAction(
+    buildSetBlendHide(actor, state.blend.blend_id, hide),
+    `${hide ? 'Hide' : 'Unhide'} blend #${state.blend.blend_id}?`,
+  );
+}
+
+function onManageEndNow() {
+  const actor = manageActor();
+  if (!actor || !state.blend) return;
+  const now = Math.floor(Date.now() / 1000);
+  // Keep the original start_time, set end_time to now so the blend
+  // immediately reads as "ended" without deleting it.
+  const start = Number(state.blend.start_time ?? 0);
+  void runAdminAction(
+    buildSetBlendTime(actor, state.blend.blend_id, start, now),
+    `End blend #${state.blend.blend_id} now? It stays on-chain but can no longer be executed.`,
+  );
+}
+
+function onManageDelete() {
+  const actor = manageActor();
+  if (!actor || !state.blend) return;
+  void runAdminAction(
+    buildDelBlend(actor, state.blend.blend_id),
+    `DELETE blend #${state.blend.blend_id}? This is permanent and cannot be undone.`,
+  );
+}
+
+function onManageSetMax() {
+  const actor = manageActor();
+  if (!actor || !state.blend) return;
+  const v = Number(state.manage.newMaxInput);
+  if (!Number.isFinite(v) || v < 0) { setStatus('Enter a valid max uses (0 = unlimited).', 'err'); return; }
+  void runAdminAction(
+    buildSetBlendMax(actor, state.blend.blend_id, v),
+    `Set max uses of blend #${state.blend.blend_id} to ${v} (0 = unlimited)?`,
+  );
+}
+
+function onManageSetLimits() {
+  const actor = manageActor();
+  if (!actor || !state.blend) return;
+  const lim = Number(state.manage.newLimitInput);
+  const cd = Number(state.manage.newCooldownInput || '0');
+  if (!Number.isFinite(lim) || lim < 0) { setStatus('Enter a valid per-account limit (0 = none).', 'err'); return; }
+  void runAdminAction(
+    buildSetBlendLim(actor, state.blend.blend_id, lim, cd),
+    `Set per-account limit to ${lim} (cooldown ${cd}s) on blend #${state.blend.blend_id}?`,
+  );
+}
+
+function onManageSetName() {
+  const actor = manageActor();
+  if (!actor || !state.blend) return;
+  const newName = state.manage.newNameInput.trim();
+  if (!newName) { setStatus('Enter a name.', 'err'); return; }
+  // Preserve the rest of display_data (image, description) and just
+  // swap the name.
+  let dd: Record<string, unknown> = {};
+  try { dd = JSON.parse(state.blend.display_data || '{}'); } catch { dd = {}; }
+  dd.name = newName;
+  void runAdminAction(
+    buildSetBlendData(actor, state.blend.blend_id, JSON.stringify(dd)),
+    `Rename blend #${state.blend.blend_id} to "${newName}"?`,
+  );
+}
+
+function onManageAttachSecurity() {
+  const actor = manageActor();
+  if (!actor || !state.blend) return;
+  const sid = state.manage.attachSecurityInput;
+  if (sid === '') { setStatus('Pick a whitelist to attach (or 0 to remove).', 'err'); return; }
+  void runAdminAction(
+    buildSetBlendSec(actor, state.blend.blend_id, sid),
+    sid === '0'
+      ? `Remove the whitelist gate from blend #${state.blend.blend_id}?`
+      : `Attach whitelist #${sid} to blend #${state.blend.blend_id}?`,
+  );
+}
+
+function onManageAddAccounts() {
+  const actor = manageActor();
+  if (!actor || !state.blend) return;
+  const sid = state.blend.security_id !== undefined ? String(state.blend.security_id) : '0';
+  if (sid === '0') { setStatus('This blend has no whitelist. Attach or create one first.', 'err'); return; }
+  const accounts = parseAccountList(state.manage.addAccountsInput);
+  if (accounts.length === 0) { setStatus('Enter at least one account.', 'err'); return; }
+  void runAdminAction(
+    buildAddToWhitelist(actor, state.blend.collection_name, sid, accounts),
+    `Add ${accounts.length} account(s) to whitelist #${sid}?\n\n${accounts.join(', ')}`,
+  );
+}
+
+function onManageRemoveAccount(account: string) {
+  const actor = manageActor();
+  if (!actor || !state.blend) return;
+  const sid = state.blend.security_id !== undefined ? String(state.blend.security_id) : '0';
+  if (sid === '0') return;
+  void runAdminAction(
+    buildEraseFromWhitelist(actor, state.blend.collection_name, sid, [account]),
+    `Remove ${account} from whitelist #${sid}?`,
+  );
+}
+
+function onManageClearWhitelist() {
+  const actor = manageActor();
+  if (!actor || !state.blend) return;
+  const sid = state.blend.security_id !== undefined ? String(state.blend.security_id) : '0';
+  if (sid === '0') return;
+  void runAdminAction(
+    buildClearWhitelist(actor, state.blend.collection_name, sid),
+    `Clear ALL accounts from whitelist #${sid}? This cannot be undone.`,
+  );
+}
+
+function onManageCreateWhitelist() {
+  const actor = manageActor();
+  if (!actor || !state.blend) return;
+  const name = state.manage.newWhitelistName.trim();
+  if (!name) { setStatus('Enter a whitelist name.', 'err'); return; }
+  void runAdminAction(
+    buildAddWhitelist(actor, state.blend.collection_name, name, ''),
+    `Create a new whitelist "${name}" on ${state.blend.collection_name}? You can then attach it to this (or any) blend.`,
+  );
+}
+
+/** Splits a textarea of accounts (comma / whitespace / newline separated). */
+function parseAccountList(raw: string): string[] {
+  return raw
+    .split(/[\s,]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 // ─── UPGRADE view handlers ───────────────────────────────────────────── //
@@ -2595,8 +2881,140 @@ function renderBlendInfo(): string {
       </div>
       ${det.ok ? `<h3>Expected mint</h3>${renderExpectedMint()}` : renderRngOdds(b)}
       ${wl?.required && !wl.allowed ? `<p class="status-line err">${escapeHtml(wl.reason ?? '')}</p>` : ''}
+      ${renderBlendManage(b)}
     </div>
   `;
+}
+
+/**
+ * Inline collection-author admin panel. Renders nothing unless the
+ * connected wallet is detected as an authorized manager of the blend's
+ * collection. Powered-off by default behind an "enable management
+ * controls" opt-in so destructive buttons are never one tap away.
+ */
+function renderBlendManage(b: BlendRow): string {
+  const m = state.manage;
+  const can = m.authByCollection.get(b.collection_name);
+  if (can !== true) return ''; // undefined (checking) or false → hide entirely
+
+  const sid = b.security_id !== undefined ? String(b.security_id) : '0';
+  const disabled = m.busy ? 'disabled' : '';
+
+  if (!m.enabled) {
+    return `
+      <div class="manage-section">
+        <div class="manage-head">
+          <span class="manage-title">⚙ MANAGE · you're an authorized account for ${escapeHtml(b.collection_name)}</span>
+          <label class="inline-toggle">
+            <input id="manageEnable" type="checkbox" data-action="toggleManageEnable" />
+            <span>enable management controls</span>
+          </label>
+        </div>
+      </div>`;
+  }
+
+  // Whitelist sub-panel (only when the blend is gated, or to attach/create).
+  const securityOptions = [
+    `<option value="">attach a whitelist…</option>`,
+    `<option value="0"${sid === '0' ? ' selected' : ''}>0 · no whitelist (open)</option>`,
+    ...m.securities.map((s: SecurityRow) =>
+      `<option value="${escapeHtml(s.id)}"${sid === s.id ? ' selected' : ''}>#${escapeHtml(s.id)} · ${escapeHtml(s.name || '(unnamed)')}</option>`,
+    ),
+  ].join('');
+
+  const whitelistBlock = sid !== '0'
+    ? `
+      <div class="manage-row">
+        <span class="manage-label">whitelist #${escapeHtml(sid)}</span>
+        <div class="manage-ctl">
+          ${m.whitelistMembers
+            ? `<div class="manage-members">${
+                m.whitelistMembers.length === 0
+                  ? '<span class="term">empty</span>'
+                  : m.whitelistMembers.slice(0, 200).map((acc) =>
+                      `<span class="manage-chip">${escapeHtml(acc)} <button data-action="manageRemoveAccount" data-account="${escapeHtml(acc)}" title="remove" ${disabled}>×</button></span>`,
+                    ).join('')
+              }${m.whitelistMembers.length > 200 ? `<span class="term">+ ${m.whitelistMembers.length - 200} more…</span>` : ''}</div>`
+            : '<span class="term">loading members…</span>'}
+          <div class="row" style="gap:8px; margin-top:8px; align-items:flex-start">
+            <textarea id="manageAddAccounts" placeholder="accounts to add (comma / space / newline separated)" rows="2" style="flex:1; min-width:220px">${escapeHtml(m.addAccountsInput)}</textarea>
+            <button data-action="manageAddAccounts" ${disabled}>Add</button>
+            <button class="danger-btn" data-action="manageClearWhitelist" ${disabled}>Clear all</button>
+          </div>
+        </div>
+      </div>`
+    : '';
+
+  return `
+    <div class="manage-section">
+      <div class="manage-head">
+        <span class="manage-title">⚙ MANAGE · authorized for ${escapeHtml(b.collection_name)}</span>
+        <label class="inline-toggle">
+          <input id="manageEnable" type="checkbox" data-action="toggleManageEnable" checked />
+          <span>controls enabled</span>
+        </label>
+      </div>
+      ${m.busy ? '<p class="status-line">Broadcasting admin action…</p>' : ''}
+
+      <div class="manage-row">
+        <span class="manage-label">status</span>
+        <div class="manage-ctl row" style="gap:8px">
+          ${b.is_hidden
+            ? `<button data-action="manageUnhide" ${disabled}>Unhide</button>`
+            : `<button data-action="manageHide" ${disabled}>Hide</button>`}
+          <button data-action="manageEndNow" ${disabled}>End now</button>
+        </div>
+      </div>
+
+      <div class="manage-row">
+        <span class="manage-label">rename</span>
+        <div class="manage-ctl row" style="gap:8px">
+          <input id="manageName" type="text" placeholder="new display name" value="${escapeHtml(m.newNameInput)}" style="flex:1; min-width:200px" />
+          <button data-action="manageSetName" ${disabled}>Apply</button>
+        </div>
+      </div>
+
+      <div class="manage-row">
+        <span class="manage-label">max uses</span>
+        <div class="manage-ctl row" style="gap:8px">
+          <input id="manageMax" type="number" min="0" placeholder="0 = unlimited" value="${escapeHtml(m.newMaxInput)}" style="width:140px" />
+          <button data-action="manageSetMax" ${disabled}>Apply</button>
+        </div>
+      </div>
+
+      <div class="manage-row">
+        <span class="manage-label">per-account limit</span>
+        <div class="manage-ctl row" style="gap:8px">
+          <input id="manageLimit" type="number" min="0" placeholder="0 = none" value="${escapeHtml(m.newLimitInput)}" style="width:120px" />
+          <input id="manageCooldown" type="number" min="0" placeholder="cooldown (s)" value="${escapeHtml(m.newCooldownInput)}" style="width:140px" />
+          <button data-action="manageSetLimits" ${disabled}>Apply</button>
+        </div>
+      </div>
+
+      <div class="manage-row">
+        <span class="manage-label">security</span>
+        <div class="manage-ctl">
+          <div class="row" style="gap:8px">
+            <select id="manageAttachSec" class="manage-sec-select">${securityOptions}</select>
+            <button data-action="manageAttachSecurity" ${disabled}>Attach</button>
+          </div>
+          <div class="row" style="gap:8px; margin-top:8px">
+            <input id="manageNewWl" type="text" placeholder="new whitelist name" value="${escapeHtml(m.newWhitelistName)}" style="flex:1; min-width:200px" />
+            <button data-action="manageCreateWhitelist" ${disabled}>Create whitelist</button>
+          </div>
+          <p class="term" style="margin-top:4px">A whitelist (security_id) can be shared by several blends; editing it affects all of them.</p>
+        </div>
+      </div>
+
+      ${whitelistBlock}
+
+      <div class="manage-row danger">
+        <span class="manage-label">danger</span>
+        <div class="manage-ctl">
+          <button class="danger-btn" data-action="manageDelete" ${disabled}>Delete blend permanently</button>
+        </div>
+      </div>
+    </div>`;
 }
 
 /**
@@ -4867,6 +5285,25 @@ function attachHandlers() {
   if (toggleWaxdaoInactive) {
     toggleWaxdaoInactive.addEventListener('change', () => onToggleWaxdaoShowInactive(toggleWaxdaoInactive.checked));
   }
+  // BLEND admin (Manage section) inputs.
+  const manageEnable = document.getElementById('manageEnable') as HTMLInputElement | null;
+  if (manageEnable) {
+    manageEnable.addEventListener('change', () => onToggleManageEnabled(manageEnable.checked));
+  }
+  const bindManageText = (id: string, set: (v: string) => void) => {
+    const el = document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;
+    if (el) el.addEventListener('input', (e) => set((e.target as HTMLInputElement).value));
+  };
+  bindManageText('manageName', (v) => { state.manage.newNameInput = v; });
+  bindManageText('manageMax', (v) => { state.manage.newMaxInput = v; });
+  bindManageText('manageLimit', (v) => { state.manage.newLimitInput = v; });
+  bindManageText('manageCooldown', (v) => { state.manage.newCooldownInput = v; });
+  bindManageText('manageNewWl', (v) => { state.manage.newWhitelistName = v; });
+  bindManageText('manageAddAccounts', (v) => { state.manage.addAccountsInput = v; });
+  const manageAttachSec = document.getElementById('manageAttachSec') as HTMLSelectElement | null;
+  if (manageAttachSec) {
+    manageAttachSec.addEventListener('change', () => { state.manage.attachSecurityInput = manageAttachSec.value; });
+  }
 
   rootEl().querySelectorAll<HTMLElement>('[data-action]').forEach((el) => {
     const action = el.dataset.action;
@@ -4877,7 +5314,8 @@ function attachHandlers() {
       action === 'toggleDropInactive' ||
       action === 'toggleDropOnlyEligible' ||
       action === 'toggleUpgradesInactive' ||
-      action === 'toggleWaxdaoInactive'
+      action === 'toggleWaxdaoInactive' ||
+      action === 'toggleManageEnable'
     ) return;
     el.addEventListener('click', (ev) => {
       switch (action) {
@@ -5037,6 +5475,42 @@ function attachHandlers() {
           break;
         case 'waxdaoExecute':
           onExecuteWaxdaoBlend();
+          break;
+        case 'manageHide':
+          onManageHide(true);
+          break;
+        case 'manageUnhide':
+          onManageHide(false);
+          break;
+        case 'manageEndNow':
+          onManageEndNow();
+          break;
+        case 'manageSetName':
+          onManageSetName();
+          break;
+        case 'manageSetMax':
+          onManageSetMax();
+          break;
+        case 'manageSetLimits':
+          onManageSetLimits();
+          break;
+        case 'manageAttachSecurity':
+          onManageAttachSecurity();
+          break;
+        case 'manageCreateWhitelist':
+          onManageCreateWhitelist();
+          break;
+        case 'manageAddAccounts':
+          onManageAddAccounts();
+          break;
+        case 'manageRemoveAccount':
+          onManageRemoveAccount(el.dataset.account ?? '');
+          break;
+        case 'manageClearWhitelist':
+          onManageClearWhitelist();
+          break;
+        case 'manageDelete':
+          onManageDelete();
           break;
       }
       ev.stopPropagation();
