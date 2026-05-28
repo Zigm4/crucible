@@ -564,6 +564,12 @@ section.about > h2 { margin-bottom: 10px; }
 }
 .manage-chip button:hover { color: #ff8aa0; }
 .manage-sec-select { flex: 1; min-width: 220px; }
+.manage-members-wrap { margin-top: 10px; }
+.manage-create {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(245, 179, 64, 0.25);
+}
 .danger-btn {
   border: 1px solid rgba(255, 85, 119, 0.5);
   color: var(--danger);

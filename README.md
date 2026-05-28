@@ -149,6 +149,31 @@ TX 2 - blend.nefty::claim  claim_id, roll_indexes
        (mints the resolved cards to your wallet)
 ```
 
+#### Manage panel · collection authors
+
+When the connected wallet is authorized on a blend's collection, the
+loaded blend exposes a **Manage** panel (off by default behind a safety
+switch). It signs `blend.nefty` author actions one at a time — name,
+status, max uses, per-account limit, cooldown, delete — plus full
+whitelist management:
+
+```
+[*] pick any whitelist on the collection from a dropdown
+    (the one gating the current blend is marked "attached")
+[*] see its wallets as chips, add wallets, remove one, or clear all
+    (addtowl / erasefromwl / clearwl)
+[*] create a new whitelist (addwhitelist) — this only NAMES an empty
+    list; you then add wallets to it below. The newest list is
+    auto-selected after creation so you can populate it right away
+[*] attach / detach a whitelist to the current blend (setblendsec)
+```
+
+A whitelist (`security_id`) lives on the collection and can gate several
+blends at once — editing its wallets affects all of them. "Attach" is
+what gates *this* blend behind the selected list. Naming a list and
+filling it with wallets are two separate steps: the name is a label
+(e.g. "OG holders"), never a wallet.
+
 ### CLAIM tab · `neftyblocksd`
 
 Drop claims. Same idea, different contract:
