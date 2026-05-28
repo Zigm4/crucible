@@ -30,6 +30,27 @@ export const ATOMIC_API_ENDPOINTS = [
   'https://aa-wax-public1.neftyblocks.com',
 ];
 
+// Per-request deadlines. Without these a host that accepts the connection
+// but never responds would block the whole failover loop forever (the UI
+// then "searches without ever advancing"). On timeout we move to the next
+// endpoint, and ultimately to the on-chain fallback.
+const RPC_TIMEOUT_MS = 8_000;
+const ATOMIC_TIMEOUT_MS = 7_000;
+
+/**
+ * Rejects with a timeout error if `p` doesn't settle within `ms`. Used to
+ * bound RPC calls whose underlying client offers no timeout of its own.
+ */
+function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 let cachedClient: APIClient | undefined;
 
 export function getApiClient(): APIClient {
@@ -49,7 +70,7 @@ export async function withFailover<T>(
   let lastErr: unknown;
   for (const url of WAX_RPC_ENDPOINTS) {
     try {
-      const result = await fn(new APIClient({ url }));
+      const result = await withDeadline(fn(new APIClient({ url })), RPC_TIMEOUT_MS, url);
       // promote the working endpoint as default for subsequent calls
       cachedClient = new APIClient({ url });
       return result;
@@ -125,9 +146,11 @@ export async function getAccount(name: string) {
 export async function atomicFetch<T = unknown>(path: string): Promise<T> {
   let lastErr: unknown;
   for (const base of ATOMIC_API_ENDPOINTS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ATOMIC_TIMEOUT_MS);
     try {
       const url = base + path;
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: ctrl.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
       const body = (await res.json()) as { success?: boolean; data?: T; message?: string };
       if (body.success === false) {
@@ -136,7 +159,9 @@ export async function atomicFetch<T = unknown>(path: string): Promise<T> {
       // atomicassets convention: { success: true, data: ..., query_time: ... }
       return (body.data ?? body) as T;
     } catch (err) {
-      lastErr = err;
+      lastErr = ctrl.signal.aborted ? new Error(`${base} timed out after ${ATOMIC_TIMEOUT_MS}ms`) : err;
+    } finally {
+      clearTimeout(timer);
     }
   }
   throw new Error(
