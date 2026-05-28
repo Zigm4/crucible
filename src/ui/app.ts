@@ -366,10 +366,22 @@ interface ManageState {
    * `undefined` means "not checked yet" (an async lookup is pending).
    */
   authByCollection: Map<string, boolean | undefined>;
-  /** Members of the loaded blend's whitelist (security_id), when any. */
+  /** Members of the currently-selected whitelist, when one is selected. */
   whitelistMembers?: string[];
-  /** The loaded blend's collection security definitions (attach dropdown). */
+  /** The loaded blend's collection security definitions (the dropdown). */
   securities: import('../nefty/admin').SecurityRow[];
+  /**
+   * The whitelist the member editor currently targets. May differ from
+   * the blend's attached security_id (the author can manage any of the
+   * collection's whitelists). `undefined` means "none selected".
+   */
+  selectedSecurityId?: string;
+  /**
+   * Set right before a "create whitelist" tx so the next context
+   * refresh auto-selects the newest whitelist — letting the author add
+   * wallets to the list they just made without hunting for it.
+   */
+  autoSelectNewest: boolean;
   /** True while an admin tx is in flight. */
   busy: boolean;
   /** Inline form inputs (kept in state so they survive re-renders). */
@@ -379,7 +391,6 @@ interface ManageState {
   newMaxInput: string;
   newLimitInput: string;
   newCooldownInput: string;
-  attachSecurityInput: string;
 }
 
 type RngPhase =
@@ -525,6 +536,7 @@ const state: AppState = {
     enabled: false,
     authByCollection: new Map(),
     securities: [],
+    autoSelectNewest: false,
     busy: false,
     addAccountsInput: '',
     newWhitelistName: '',
@@ -532,7 +544,6 @@ const state: AppState = {
     newMaxInput: '',
     newLimitInput: '',
     newCooldownInput: '',
-    attachSecurityInput: '',
   },
 };
 
@@ -1993,15 +2004,57 @@ async function refreshManageContext(blend: BlendRow) {
     render();
     return;
   }
-  // We're authorized: load whitelist members (if the blend is gated)
-  // and the collection's securities for the attach dropdown.
-  const sid = blend.security_id !== undefined ? String(blend.security_id) : '0';
-  await Promise.all([
-    sid !== '0'
-      ? readWhitelistMembers(sid).then((a) => { m.whitelistMembers = a; }).catch(() => {})
-      : Promise.resolve(),
-    readCollectionSecurities(collection).then((s) => { m.securities = s; }).catch(() => {}),
-  ]);
+  // We're authorized: load the collection's securities (the whitelist
+  // dropdown) and decide which one the member editor should target.
+  try {
+    m.securities = await readCollectionSecurities(collection);
+  } catch {
+    m.securities = [];
+  }
+
+  // Default selection: the blend's attached whitelist. After a "create"
+  // we instead jump to the newest security so the author can populate
+  // it immediately.
+  const attached = blend.security_id !== undefined ? String(blend.security_id) : '0';
+  if (m.autoSelectNewest && m.securities.length > 0) {
+    const newest = m.securities.reduce((a, b) => (Number(b.id) > Number(a.id) ? b : a));
+    m.selectedSecurityId = newest.id;
+    m.autoSelectNewest = false;
+  } else {
+    m.selectedSecurityId = attached !== '0' ? attached : undefined;
+  }
+
+  await loadSelectedWhitelistMembers();
+  render();
+}
+
+/**
+ * Reads the members of the currently-selected whitelist into
+ * state.manage.whitelistMembers. No-op when nothing is selected.
+ */
+async function loadSelectedWhitelistMembers() {
+  const m = state.manage;
+  if (!m.selectedSecurityId || m.selectedSecurityId === '0') {
+    m.whitelistMembers = undefined;
+    return;
+  }
+  try {
+    m.whitelistMembers = await readWhitelistMembers(m.selectedSecurityId);
+  } catch {
+    m.whitelistMembers = [];
+  }
+}
+
+/**
+ * The author picked a different whitelist to manage from the dropdown.
+ * Loads its members. Selecting "0" (none) clears the editor.
+ */
+async function onManageSelectSecurity(security_id: string) {
+  const m = state.manage;
+  m.selectedSecurityId = security_id && security_id !== '0' ? security_id : undefined;
+  m.whitelistMembers = undefined;
+  render();
+  await loadSelectedWhitelistMembers();
   render();
 }
 
@@ -2020,7 +2073,19 @@ function onToggleManageEnabled(checked: boolean) {
  * powerful), sign, then reload the blend so the UI reflects the new
  * on-chain state.
  */
-async function runAdminAction(action: import('../nefty/execute').BuiltAction, confirmMsg: string) {
+/**
+ * Runs a single admin action: confirm, sign, then refresh. By default
+ * the whole blend is reloaded (so name/status/security reflect the
+ * change). For whitelist MEMBER edits, pass `refresh: 'members'` so we
+ * only re-read the selected whitelist instead of reloading the blend,
+ * which would otherwise reset the author's selected (possibly
+ * unattached) whitelist back to the blend's attached one.
+ */
+async function runAdminAction(
+  action: import('../nefty/execute').BuiltAction,
+  confirmMsg: string,
+  opts: { refresh?: 'blend' | 'members' } = {},
+) {
   const session = getCurrentSession();
   if (!session) return;
   if (!confirm(confirmMsg)) return;
@@ -2033,8 +2098,11 @@ async function runAdminAction(action: import('../nefty/execute').BuiltAction, co
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
     setStatus(`${action.name} broadcast: ${trxId}`, 'ok');
-    // Reload the blend so name / status / whitelist reflect the change.
-    if (state.blend) {
+    if ((opts.refresh ?? 'blend') === 'members') {
+      // Whitelist membership changed but the blend didn't: just re-read
+      // the selected whitelist's members, keep everything else.
+      await loadSelectedWhitelistMembers();
+    } else if (state.blend) {
       state.blendId = String(state.blend.blend_id);
       await onLoadBlend();
     }
@@ -2119,8 +2187,9 @@ function onManageSetName() {
 function onManageAttachSecurity() {
   const actor = manageActor();
   if (!actor || !state.blend) return;
-  const sid = state.manage.attachSecurityInput;
-  if (sid === '') { setStatus('Pick a whitelist to attach (or 0 to remove).', 'err'); return; }
+  // Attach the currently-selected whitelist to this blend. Selecting
+  // "none" in the dropdown (selectedSecurityId undefined) detaches it.
+  const sid = state.manage.selectedSecurityId ?? '0';
   void runAdminAction(
     buildSetBlendSec(actor, state.blend.blend_id, sid),
     sid === '0'
@@ -2132,35 +2201,39 @@ function onManageAttachSecurity() {
 function onManageAddAccounts() {
   const actor = manageActor();
   if (!actor || !state.blend) return;
-  const sid = state.blend.security_id !== undefined ? String(state.blend.security_id) : '0';
-  if (sid === '0') { setStatus('This blend has no whitelist. Attach or create one first.', 'err'); return; }
+  const sid = state.manage.selectedSecurityId;
+  if (!sid || sid === '0') { setStatus('Select or create a whitelist first.', 'err'); return; }
   const accounts = parseAccountList(state.manage.addAccountsInput);
   if (accounts.length === 0) { setStatus('Enter at least one account.', 'err'); return; }
+  state.manage.addAccountsInput = '';
   void runAdminAction(
     buildAddToWhitelist(actor, state.blend.collection_name, sid, accounts),
     `Add ${accounts.length} account(s) to whitelist #${sid}?\n\n${accounts.join(', ')}`,
+    { refresh: 'members' },
   );
 }
 
 function onManageRemoveAccount(account: string) {
   const actor = manageActor();
   if (!actor || !state.blend) return;
-  const sid = state.blend.security_id !== undefined ? String(state.blend.security_id) : '0';
-  if (sid === '0') return;
+  const sid = state.manage.selectedSecurityId;
+  if (!sid || sid === '0') return;
   void runAdminAction(
     buildEraseFromWhitelist(actor, state.blend.collection_name, sid, [account]),
     `Remove ${account} from whitelist #${sid}?`,
+    { refresh: 'members' },
   );
 }
 
 function onManageClearWhitelist() {
   const actor = manageActor();
   if (!actor || !state.blend) return;
-  const sid = state.blend.security_id !== undefined ? String(state.blend.security_id) : '0';
-  if (sid === '0') return;
+  const sid = state.manage.selectedSecurityId;
+  if (!sid || sid === '0') return;
   void runAdminAction(
     buildClearWhitelist(actor, state.blend.collection_name, sid),
     `Clear ALL accounts from whitelist #${sid}? This cannot be undone.`,
+    { refresh: 'members' },
   );
 }
 
@@ -2168,10 +2241,14 @@ function onManageCreateWhitelist() {
   const actor = manageActor();
   if (!actor || !state.blend) return;
   const name = state.manage.newWhitelistName.trim();
-  if (!name) { setStatus('Enter a whitelist name.', 'err'); return; }
+  if (!name) { setStatus('Name the whitelist first (a label like "OG holders"), then add wallets to it below.', 'err'); return; }
+  // After creation, refreshManageContext auto-selects the newest
+  // whitelist so the author can immediately add wallets to it.
+  state.manage.autoSelectNewest = true;
+  state.manage.newWhitelistName = '';
   void runAdminAction(
     buildAddWhitelist(actor, state.blend.collection_name, name, ''),
-    `Create a new whitelist "${name}" on ${state.blend.collection_name}? You can then attach it to this (or any) blend.`,
+    `Create a new whitelist "${name}" on ${state.blend.collection_name}?\n\nThis just makes an empty list. You'll then add wallets to it and (optionally) attach it to a blend.`,
   );
 }
 
@@ -2913,37 +2990,51 @@ function renderBlendManage(b: BlendRow): string {
       </div>`;
   }
 
-  // Whitelist sub-panel (only when the blend is gated, or to attach/create).
-  const securityOptions = [
-    `<option value="">attach a whitelist…</option>`,
-    `<option value="0"${sid === '0' ? ' selected' : ''}>0 · no whitelist (open)</option>`,
-    ...m.securities.map((s: SecurityRow) =>
-      `<option value="${escapeHtml(s.id)}"${sid === s.id ? ' selected' : ''}>#${escapeHtml(s.id)} · ${escapeHtml(s.name || '(unnamed)')}</option>`,
-    ),
+  // ── whitelist / security management ──
+  // The member editor operates on the SELECTED whitelist, which may or
+  // may not be the one attached to this blend. The dropdown lets the
+  // author pick which whitelist to manage (or one they just created).
+  const attachedSid = sid; // the blend's currently-attached security_id
+  const selectedSid = m.selectedSecurityId ?? '';
+  const selectOptions = [
+    `<option value=""${selectedSid === '' ? ' selected' : ''}>none selected…</option>`,
+    ...m.securities.map((s: SecurityRow) => {
+      const isAttached = s.id === attachedSid;
+      const label = `#${s.id}${s.name ? ' · ' + s.name : ''}${isAttached ? '  ← attached to this blend' : ''}`;
+      return `<option value="${escapeHtml(s.id)}"${selectedSid === s.id ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+    }),
   ].join('');
 
-  const whitelistBlock = sid !== '0'
+  const selectedIsAttached = selectedSid !== '' && selectedSid === attachedSid;
+  const attachBtn = selectedSid === ''
+    ? (attachedSid !== '0'
+        ? `<button data-action="manageAttachSecurity" ${disabled}>Detach current whitelist</button>`
+        : '')
+    : selectedIsAttached
+      ? `<span class="term">already attached to this blend</span>`
+      : `<button data-action="manageAttachSecurity" ${disabled}>Attach #${escapeHtml(selectedSid)} to this blend</button>`;
+
+  // Member editor for the selected whitelist.
+  const memberEditor = selectedSid !== ''
     ? `
-      <div class="manage-row">
-        <span class="manage-label">whitelist #${escapeHtml(sid)}</span>
-        <div class="manage-ctl">
+        <div class="manage-members-wrap">
+          <div class="term" style="margin-bottom:4px">members of whitelist #${escapeHtml(selectedSid)}:</div>
           ${m.whitelistMembers
             ? `<div class="manage-members">${
                 m.whitelistMembers.length === 0
-                  ? '<span class="term">empty</span>'
-                  : m.whitelistMembers.slice(0, 200).map((acc) =>
+                  ? '<span class="term">empty, add wallets below</span>'
+                  : m.whitelistMembers.slice(0, 300).map((acc) =>
                       `<span class="manage-chip">${escapeHtml(acc)} <button data-action="manageRemoveAccount" data-account="${escapeHtml(acc)}" title="remove" ${disabled}>×</button></span>`,
                     ).join('')
-              }${m.whitelistMembers.length > 200 ? `<span class="term">+ ${m.whitelistMembers.length - 200} more…</span>` : ''}</div>`
+              }${m.whitelistMembers.length > 300 ? `<span class="term">+ ${m.whitelistMembers.length - 300} more…</span>` : ''}</div>`
             : '<span class="term">loading members…</span>'}
           <div class="row" style="gap:8px; margin-top:8px; align-items:flex-start">
-            <textarea id="manageAddAccounts" placeholder="accounts to add (comma / space / newline separated)" rows="2" style="flex:1; min-width:220px">${escapeHtml(m.addAccountsInput)}</textarea>
-            <button data-action="manageAddAccounts" ${disabled}>Add</button>
+            <textarea id="manageAddAccounts" placeholder="wallets to add, e.g. zigm4.gm (comma / space / newline separated)" rows="2" style="flex:1; min-width:220px">${escapeHtml(m.addAccountsInput)}</textarea>
+            <button data-action="manageAddAccounts" ${disabled}>Add wallets</button>
             <button class="danger-btn" data-action="manageClearWhitelist" ${disabled}>Clear all</button>
           </div>
-        </div>
-      </div>`
-    : '';
+        </div>`
+    : '<p class="term">Pick a whitelist above to see and edit its wallets, or create a new one below.</p>';
 
   return `
     <div class="manage-section">
@@ -2992,21 +3083,23 @@ function renderBlendManage(b: BlendRow): string {
       </div>
 
       <div class="manage-row">
-        <span class="manage-label">security</span>
+        <span class="manage-label">whitelist</span>
         <div class="manage-ctl">
-          <div class="row" style="gap:8px">
-            <select id="manageAttachSec" class="manage-sec-select">${securityOptions}</select>
-            <button data-action="manageAttachSecurity" ${disabled}>Attach</button>
+          <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
+            <select id="manageWlSelect" class="manage-sec-select">${selectOptions}</select>
+            ${attachBtn}
           </div>
-          <div class="row" style="gap:8px; margin-top:8px">
-            <input id="manageNewWl" type="text" placeholder="new whitelist name" value="${escapeHtml(m.newWhitelistName)}" style="flex:1; min-width:200px" />
-            <button data-action="manageCreateWhitelist" ${disabled}>Create whitelist</button>
+          ${memberEditor}
+          <div class="manage-create">
+            <div class="term" style="margin-bottom:4px">create a new whitelist (this only names an empty list, you add wallets to it after):</div>
+            <div class="row" style="gap:8px">
+              <input id="manageNewWl" type="text" placeholder="whitelist name, e.g. &quot;OG holders&quot; (a label, NOT a wallet)" value="${escapeHtml(m.newWhitelistName)}" style="flex:1; min-width:220px" />
+              <button data-action="manageCreateWhitelist" ${disabled}>Create whitelist</button>
+            </div>
           </div>
-          <p class="term" style="margin-top:4px">A whitelist (security_id) can be shared by several blends; editing it affects all of them.</p>
+          <p class="term" style="margin-top:6px">A whitelist (security_id) can be shared by several blends; editing its wallets affects all of them. "Attach" gates THIS blend behind the selected whitelist.</p>
         </div>
       </div>
-
-      ${whitelistBlock}
 
       <div class="manage-row danger">
         <span class="manage-label">danger</span>
@@ -5300,9 +5393,9 @@ function attachHandlers() {
   bindManageText('manageCooldown', (v) => { state.manage.newCooldownInput = v; });
   bindManageText('manageNewWl', (v) => { state.manage.newWhitelistName = v; });
   bindManageText('manageAddAccounts', (v) => { state.manage.addAccountsInput = v; });
-  const manageAttachSec = document.getElementById('manageAttachSec') as HTMLSelectElement | null;
-  if (manageAttachSec) {
-    manageAttachSec.addEventListener('change', () => { state.manage.attachSecurityInput = manageAttachSec.value; });
+  const manageWlSelect = document.getElementById('manageWlSelect') as HTMLSelectElement | null;
+  if (manageWlSelect) {
+    manageWlSelect.addEventListener('change', () => { void onManageSelectSecurity(manageWlSelect.value); });
   }
 
   rootEl().querySelectorAll<HTMLElement>('[data-action]').forEach((el) => {
