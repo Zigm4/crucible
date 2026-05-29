@@ -35,7 +35,9 @@ export const ATOMIC_API_ENDPOINTS = [
 // then "searches without ever advancing"). On timeout we move to the next
 // endpoint, and ultimately to the on-chain fallback.
 const RPC_TIMEOUT_MS = 8_000;
-const ATOMIC_TIMEOUT_MS = 7_000;
+// Indexer (fast-path) deadline before we give up and fall back to the
+// on-chain scan. Generous so a slow-but-alive indexer still gets a chance.
+const ATOMIC_TIMEOUT_MS = 10_000;
 
 /**
  * Rejects with a timeout error if `p` doesn't settle within `ms`. Used to

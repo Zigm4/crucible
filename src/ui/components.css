@@ -286,6 +286,40 @@ section.about { background: transparent; border: none; padding: 0; box-shadow: n
 section.about::before, section.about::after { display: none; }
 section.about > h2 { margin-bottom: 10px; }
 
+/* Outer FAQ toggle — keeps the whole guide collapsed to one line by default. */
+.about-toc {
+  border: 1px solid var(--border-soft);
+  border-left: 2px solid var(--accent);
+  border-radius: 2px;
+  margin-bottom: 10px;
+  background: rgba(7, 16, 28, 0.55);
+}
+.about-toc[open] { border-color: var(--border); }
+.about-toc > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 11px 14px;
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--accent-hot);
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  outline: none;
+}
+.about-toc > summary::-webkit-details-marker { display: none; }
+.about-toc > summary::before {
+  content: '▸';
+  font-size: 9px;
+  color: var(--accent);
+  transition: transform 180ms;
+  display: inline-block;
+}
+.about-toc[open] > summary::before { transform: rotate(90deg); }
+.about-toc > summary:hover { color: var(--accent); text-shadow: 0 0 8px var(--accent); }
+.about-toc-body { padding: 4px 10px 10px; }
+
 .about-panel {
   border: 1px solid var(--border-soft);
   border-left: 2px solid var(--accent);
@@ -591,6 +625,87 @@ section.about > h2 { margin-bottom: 10px; }
   font-size: 13px;
   resize: vertical;
 }
+.manage-section input[type=text],
+.manage-section input[type=datetime-local] {
+  padding: 7px 9px;
+  background: rgba(4, 12, 22, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+
+/* ─── floating toast — action outcome visible regardless of scroll ────── */
+#crucible-toast.toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 9999;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 12px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--fg);
+  background: rgba(7, 16, 28, 0.96);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 180ms, transform 180ms;
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#crucible-toast.toast.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+#crucible-toast.toast-ok { border-left: 3px solid #36d399; }
+#crucible-toast.toast-err { border-left: 3px solid var(--danger); }
+
+/* ─── create-drop panel (cyan accent, distinct from amber Manage) ─────── */
+.create-section {
+  border-color: rgba(125, 211, 252, 0.4);
+  border-left-color: #7dd3fc;
+  background: rgba(125, 211, 252, 0.045);
+}
+.create-title { color: #7dd3fc; }
+.inline-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.create-btn {
+  border: 1px solid rgba(125, 211, 252, 0.6);
+  color: #7dd3fc;
+  background: rgba(125, 211, 252, 0.08);
+  font-weight: 600;
+}
+.create-btn:hover:not(:disabled) {
+  border-color: #7dd3fc;
+  background: rgba(125, 211, 252, 0.18);
+  box-shadow: 0 0 10px rgba(125, 211, 252, 0.25);
+}
+.create-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ─── red "risky / touchy" box — louder than the amber routine controls ─ */
+.risk-box {
+  margin-top: 10px;
+  padding: 8px 12px 10px;
+  border: 1px solid rgba(255, 85, 119, 0.55);
+  border-left: 3px solid var(--danger);
+  border-radius: 2px;
+  background: rgba(255, 85, 119, 0.06);
+}
+.risk-why {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #ff9bb0;
+  margin-bottom: 8px;
+}
+.risk-inline { color: #ff9bb0; }
 
 /* a drop picker is a regular picker, distinct class only to scope outside-click */
 .drop-picker { /* inherits .picker */ }

@@ -10,7 +10,30 @@
  * showing powerful controls to people who can't use them.
  */
 
-import { getTableRows } from '../chain/rpc';
+import { atomicFetch, getTableRows } from '../chain/rpc';
+
+export interface AuthorizedCollection {
+  collection_name: string;
+  /** Human-readable display name (falls back to the raw name). */
+  name: string;
+}
+
+/**
+ * Lists the collections the given account can manage (author or in
+ * authorized_accounts), via the AtomicAssets API's `authorized_account`
+ * filter. There is no on-chain reverse index for this, so it relies on the
+ * indexer; returns [] if the indexer is unreachable.
+ */
+export async function listAuthorizedCollections(actor: string): Promise<AuthorizedCollection[]> {
+  if (!actor) return [];
+  const data = await atomicFetch<{ collection_name: string; name?: string }[]>(
+    `/atomicassets/v1/collections?authorized_account=${encodeURIComponent(actor)}&limit=100&order=asc&sort=collection_name`,
+  );
+  return (data ?? []).map((c) => ({
+    collection_name: c.collection_name,
+    name: c.name || c.collection_name,
+  }));
+}
 
 export interface CollectionAuth {
   collection_name: string;

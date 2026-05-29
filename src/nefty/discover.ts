@@ -38,6 +38,7 @@ export const SUPPORTED_COLLECTIONS = [
   'underpunks55',
   'cigalepixeld',
   'northshireup',
+  'pearlhorizon',
 ] as const;
 export type SupportedCollection = (typeof SUPPORTED_COLLECTIONS)[number];
 

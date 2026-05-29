@@ -21,7 +21,6 @@ const PANELS: Panel[] = [
   {
     id: 'about',
     summary: 'WHAT IS CRUCIBLE?',
-    open: true,
     body: `
       <p>
         Nefty.io shut down its website, and the WaxDAO site is down too.
@@ -407,6 +406,69 @@ TX 2  atomicpacksx::claimunboxed  pack_asset_id, origin_roll_ids
       </p>
     `,
   },
+  {
+    id: 'author-manage-blends',
+    summary: 'AUTHOR TOOLS · MANAGE YOUR BLENDS & WHITELISTS',
+    body: `
+      <p>
+        If the connected wallet is an <strong>authorized account</strong>
+        of a collection (its author, or in the collection's
+        <code>authorized_accounts</code>), Crucible reveals inline
+        <strong>Manage</strong> controls — the contracts always allowed
+        this; only the website was missing.
+      </p>
+      <p>
+        On the <strong>BLEND</strong> tab, once you load a blend you own,
+        a "⚙ MANAGE" panel appears (behind a safety toggle). It can rename,
+        hide/unhide, set the time window, change max uses / per-account
+        limits, delete the blend, and manage <strong>whitelists</strong>:
+      </p>
+      <ul>
+        <li>blend whitelists are reusable named lists
+        (<code>secure.nefty</code> <code>security_id</code>) — you can
+        create one, fill it with wallets, and attach it to one or several
+        blends. Editing the list affects every blend it gates.</li>
+      </ul>
+      <p>
+        Every admin action carries an <code>authorized_account</code> the
+        contract re-checks, so the panel is just a convenience: the chain
+        is the real guard.
+      </p>
+    `,
+  },
+  {
+    id: 'author-drops',
+    summary: 'AUTHOR TOOLS · CREATE & MANAGE DROPS',
+    body: `
+      <p>
+        On the <strong>CLAIM</strong> tab, two opt-in panels let an
+        authorized account run a NeftyBlocks drop end to end:
+      </p>
+      <ul>
+        <li><strong>Create a drop</strong> (<code>neftyblocksd::createdrop</code>):
+        mint a drop from <em>existing templates</em>, with the standard
+        options — name/description/image, templates &amp; quantities,
+        price (or free), supply (or unlimited), per-account limit +
+        cooldown, start/end window, whitelist requirement, hidden, price
+        recipient, credit-card payments. Touchy options (the minted
+        templates, unlimited/free supply, the payout account) are boxed in
+        <strong>red</strong> with an explanation; routine controls stay in
+        the amber style.</li>
+        <li><strong>Manage a drop</strong>: load any drop you manage — by
+        picking it from "drops I can manage", or by id (works for hidden /
+        gated drops the claim list hides). Edit its whitelist (add / remove
+        / clear), toggle the whitelist requirement, hide/unhide, or delete.</li>
+      </ul>
+      <p>
+        Unlike blend whitelists, a <strong>drop's whitelist is per-drop</strong>:
+        <code>neftyblocksd</code> has no reusable named lists, so you add
+        wallets directly to that drop (table <code>whitelists</code>, scoped
+        by <code>drop_id</code>). A drop created with "whitelist required"
+        starts <strong>empty</strong> — nobody can claim until you add
+        accounts in Manage a drop.
+      </p>
+    `,
+  },
 ];
 
 /**
@@ -415,15 +477,22 @@ TX 2  atomicpacksx::claimunboxed  pack_asset_id, origin_roll_ids
  * first on the page; the rest of the app renders below.
  */
 export function renderAboutPanels(): string {
+  // Collapsed by default: the whole guide lives behind one line so it
+  // doesn't dominate the page. Click to expand the FAQ, then each topic
+  // expands on its own.
   return `
     <section class="about">
-      <h2>0 · About this tool</h2>
-      ${PANELS.map(
-        (p) => `
-        <details class="about-panel"${p.open ? ' open' : ''}>
-          <summary><span>${p.summary}</span></summary>
-          <div class="about-body">${p.body}</div>
-        </details>`,
-      ).join('')}
+      <details class="about-toc">
+        <summary><span>ℹ INFO &amp; FAQ — what Crucible is, how to use it, author tools</span></summary>
+        <div class="about-toc-body">
+          ${PANELS.map(
+            (p) => `
+            <details class="about-panel"${p.open ? ' open' : ''}>
+              <summary><span>${p.summary}</span></summary>
+              <div class="about-body">${p.body}</div>
+            </details>`,
+          ).join('')}
+        </div>
+      </details>
     </section>`;
 }

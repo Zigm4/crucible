@@ -73,7 +73,7 @@ import {
   type WaxdaoIngredient,
 } from '../waxdao/blends';
 import { buildWaxdaoBlendActions, executeWaxdaoBlend } from '../waxdao/blendExecute';
-import { canManageCollection } from '../atomic/collections';
+import { canManageCollection, listAuthorizedCollections } from '../atomic/collections';
 import {
   buildSetBlendHide,
   buildSetBlendTime,
@@ -91,6 +91,26 @@ import {
   readCollectionSecurities,
   type SecurityRow,
 } from '../nefty/admin';
+import {
+  buildCreateDrop,
+  buildDropDisplayData,
+  formatListing,
+  parseTemplateEntries,
+  entriesToAssets,
+  totalMints,
+  FREE_LISTING_PRICE,
+  FREE_SETTLEMENT_SYMBOL,
+} from '../nefty/createDrop';
+import {
+  buildDropAddToWhitelist,
+  buildDropEraseFromWhitelist,
+  buildSetDropAuth,
+  buildSetDropHidden,
+  buildEraseDrop,
+  readDropWhitelist,
+  readDropById,
+  extractNewDropId,
+} from '../nefty/dropAdmin';
 import {
   readKnownClaimIds,
   waitForClaim,
@@ -352,6 +372,77 @@ interface AppState {
 
   /** Collection-author admin controls (BLEND tab, inline in zone 3). */
   manage: ManageState;
+  /** Collection-author "create a drop" panel (CLAIM/drops tab). */
+  createDrop: CreateDropState;
+  /** Collection-author "manage a drop" panel (whitelist + settings). */
+  manageDrop: DropManageState;
+}
+
+interface ManageableDrop {
+  drop_id: string;
+  collection_name: string;
+  name: string;
+  status: string;
+}
+
+interface DropManageState {
+  /** Opt-in safety switch — its own, independent of the create panel. */
+  enabled: boolean;
+  /** Drops the connected account can manage, for the picker (lazy-loaded). */
+  myDrops?: ManageableDrop[];
+  myDropsLoading: boolean;
+  myDropsError?: string;
+  /** The drop_id typed/loaded for management. */
+  dropIdInput: string;
+  /** The loaded drop being managed (undefined until loaded). */
+  loaded?: import('../nefty/dropAdmin').DropAdminRow;
+  loading: boolean;
+  /** Whether the connected wallet can manage the loaded drop's collection. */
+  authorized?: boolean;
+  /** True while an admin tx is in flight. */
+  busy: boolean;
+  /** Accounts currently in the loaded drop's whitelist. */
+  whitelist?: string[];
+  /** Inline form input for adding whitelist accounts. */
+  addAccountsInput: string;
+}
+
+interface CreateDropState {
+  /** Opt-in safety switch — the form is collapsed until the author flips it. */
+  enabled: boolean;
+  /** Target collection; defaults to the drops-tab discovery collection. */
+  collection: string;
+  /** Auth lookup cache for `collection` (mirrors ManageState pattern). */
+  authChecked?: string;
+  authorized?: boolean;
+  authChecking: boolean;
+  /** True while the createdrop tx is in flight. */
+  busy: boolean;
+  /** Display data. */
+  name: string;
+  description: string;
+  image: string;
+  /** "templates to mint" free-form input, e.g. "877088 x20, 889127 x2". */
+  templatesInput: string;
+  /** Pricing. `free` overrides amount/token. */
+  free: boolean;
+  priceAmount: string;
+  priceToken: string;
+  priceDecimals: string;
+  /** Supply. `unlimited` sets max_claimable = 0. */
+  unlimited: boolean;
+  maxClaimable: string;
+  /** Per-account limit (0 = none) + cooldown seconds. */
+  accountLimit: string;
+  cooldown: string;
+  /** datetime-local strings; empty = now / never. */
+  startTime: string;
+  endTime: string;
+  /** Whitelist gate + visibility + payout. */
+  authRequired: boolean;
+  hidden: boolean;
+  priceRecipient: string;
+  allowCreditCard: boolean;
 }
 
 interface ManageState {
@@ -545,6 +636,38 @@ const state: AppState = {
     newLimitInput: '',
     newCooldownInput: '',
   },
+  createDrop: {
+    enabled: false,
+    collection: '',
+    authChecking: false,
+    busy: false,
+    name: '',
+    description: '',
+    image: '',
+    templatesInput: '',
+    free: false,
+    priceAmount: '',
+    priceToken: 'WAX',
+    priceDecimals: '8',
+    unlimited: false,
+    maxClaimable: '',
+    accountLimit: '',
+    cooldown: '',
+    startTime: '',
+    endTime: '',
+    authRequired: false,
+    hidden: false,
+    priceRecipient: '',
+    allowCreditCard: false,
+  },
+  manageDrop: {
+    enabled: false,
+    myDropsLoading: false,
+    dropIdInput: '',
+    loading: false,
+    busy: false,
+    addAccountsInput: '',
+  },
 };
 
 /**
@@ -650,7 +773,34 @@ function writePlatformToHash(p: Platform) {
 function setStatus(msg: string, kind: AppState['statusKind'] = 'info') {
   state.status = msg;
   state.statusKind = kind;
+  // Success/error outcomes also pop a floating toast, visible no matter
+  // where the user has scrolled (the status line lives at the top of the
+  // page, so an action triggered far down — e.g. adding a whitelist wallet
+  // — would otherwise give no visible confirmation). 'info'/progress
+  // messages stay in the top status line only, to avoid toast spam.
+  if (kind === 'ok' || kind === 'err') showToast(msg, kind);
   render();
+}
+
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+/**
+ * Shows a transient, fixed-position notification independent of render()
+ * (it lives outside #root so repaints don't wipe it). Auto-dismisses;
+ * errors linger longer than successes.
+ */
+function showToast(msg: string, kind: 'ok' | 'err') {
+  if (typeof document === 'undefined') return;
+  let el = document.getElementById('crucible-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'crucible-toast';
+    document.body.appendChild(el);
+    el.addEventListener('click', () => { el!.classList.remove('show'); });
+  }
+  el.className = `toast toast-${kind} show`;
+  el.textContent = msg;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el!.classList.remove('show'); }, kind === 'err' ? 9000 : 5000);
 }
 
 function rootEl(): HTMLElement {
@@ -2066,6 +2216,399 @@ function manageActor(): string | undefined {
 function onToggleManageEnabled(checked: boolean) {
   state.manage.enabled = checked;
   render();
+}
+
+// ─── create-drop handlers ─────────────────────────────────────────────── //
+
+function onToggleCreateEnabled(checked: boolean) {
+  const c = state.createDrop;
+  c.enabled = checked;
+  // Default the target collection to whatever the drops tab is browsing.
+  if (checked && !c.collection && state.discoveryCollection) {
+    c.collection = state.discoveryCollection;
+  }
+  render();
+  if (checked && c.collection) void refreshCreateDropAuth();
+}
+
+/**
+ * Looks up whether the connected wallet can manage the entered collection
+ * (same authorized_accounts check the Manage panel uses) and caches it on
+ * the create-drop state so the form can enable/disable the submit button.
+ */
+async function refreshCreateDropAuth() {
+  const c = state.createDrop;
+  const collection = c.collection.trim();
+  const session = getCurrentSession();
+  const actor = session ? String(session.actor) : '';
+  if (!collection || !actor) {
+    c.authChecked = collection;
+    c.authorized = false;
+    render();
+    return;
+  }
+  if (c.authChecked === collection && c.authorized !== undefined && !c.authChecking) return;
+  c.authChecking = true;
+  render();
+  try {
+    c.authorized = await canManageCollection(actor, collection);
+  } catch {
+    c.authorized = false;
+  } finally {
+    c.authChecked = collection;
+    c.authChecking = false;
+    render();
+  }
+}
+
+/** Parses a datetime-local string to unix seconds; '' → 0 (now/never). */
+function datetimeLocalToUnix(v: string): number {
+  if (!v.trim()) return 0;
+  const ms = new Date(v).getTime();
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
+}
+
+/**
+ * Validates and submits a createdrop transaction. Builds the action from the
+ * form, shows a full confirmation summary (these are consequential), signs a
+ * single action, then resets the form on success.
+ */
+async function onCreateDrop() {
+  const c = state.createDrop;
+  const session = getCurrentSession();
+  const actor = session ? String(session.actor) : '';
+  const collection = c.collection.trim();
+  if (!session || !actor) { setStatus('Connect a wallet first.', 'err'); return; }
+  if (!collection) { setStatus('Enter the collection to create the drop in.', 'err'); return; }
+  if (!(c.authChecked === collection && c.authorized)) {
+    setStatus('That account is not authorized for this collection (the contract would reject it).', 'err');
+    return;
+  }
+
+  const entries = parseTemplateEntries(c.templatesInput);
+  if (entries.length === 0) {
+    setStatus('Add at least one template id to mint (e.g. "877088 x20").', 'err');
+    return;
+  }
+  const assets = entriesToAssets(entries);
+  const mints = totalMints(entries);
+
+  // Pricing.
+  let listing_price: string;
+  let settlement_symbol: string;
+  if (c.free) {
+    listing_price = FREE_LISTING_PRICE;
+    settlement_symbol = FREE_SETTLEMENT_SYMBOL;
+  } else {
+    const amount = Number(c.priceAmount);
+    const decimals = Number(c.priceDecimals);
+    const token = c.priceToken.trim().toUpperCase();
+    if (!Number.isFinite(amount) || amount < 0) { setStatus('Enter a valid price amount (or tick "free").', 'err'); return; }
+    if (!token || !/^[A-Z]{1,7}$/.test(token)) { setStatus('Enter a valid token symbol code (e.g. WAX).', 'err'); return; }
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) { setStatus('Enter valid token decimals (WAX = 8).', 'err'); return; }
+    ({ listing_price, settlement_symbol } = formatListing(amount, token, decimals));
+  }
+
+  // Supply / limits.
+  const max_claimable = c.unlimited ? 0 : Math.max(0, Math.floor(Number(c.maxClaimable) || 0));
+  if (!c.unlimited && max_claimable === 0) {
+    setStatus('Set a max supply, or tick "unlimited".', 'err');
+    return;
+  }
+  const account_limit = Math.max(0, Math.floor(Number(c.accountLimit) || 0));
+  const account_limit_cooldown = Math.max(0, Math.floor(Number(c.cooldown) || 0));
+  const start_time = datetimeLocalToUnix(c.startTime);
+  const end_time = datetimeLocalToUnix(c.endTime);
+  if (end_time !== 0 && start_time !== 0 && end_time <= start_time) {
+    setStatus('End time must be after start time.', 'err');
+    return;
+  }
+
+  const price_recipient = (c.priceRecipient.trim() || actor).toLowerCase();
+  const display_data = buildDropDisplayData(c.name, c.description, c.image);
+
+  const action = buildCreateDrop({
+    authorized_account: actor,
+    collection_name: collection,
+    assets_to_mint: assets,
+    listing_price,
+    alternative_prices: [],
+    settlement_symbol,
+    price_recipient,
+    auth_required: c.authRequired,
+    is_hidden: c.hidden,
+    max_claimable,
+    account_limit,
+    account_limit_cooldown,
+    start_time,
+    end_time,
+    display_data,
+    distribution_id: 0,
+    allow_credit_card_payments: c.allowCreditCard,
+    referral_fee: 0,
+    referral_whitelist_id: 0,
+  });
+
+  const summary =
+    `Create a drop on ${collection}?\n\n` +
+    `• Mints: ${mints} NFT(s) from ${entries.length} template(s)\n` +
+    `• Price: ${c.free ? 'FREE' : listing_price}\n` +
+    `• Supply: ${c.unlimited ? 'unlimited' : max_claimable}\n` +
+    `• Per-account: ${account_limit === 0 ? 'no limit' : account_limit}${account_limit_cooldown ? ` (cooldown ${account_limit_cooldown}s)` : ''}\n` +
+    `• Window: ${start_time ? new Date(start_time * 1000).toLocaleString() : 'now'} → ${end_time ? new Date(end_time * 1000).toLocaleString() : 'never'}\n` +
+    `• Payments to: ${price_recipient}\n` +
+    `• Whitelist required: ${c.authRequired ? 'yes' : 'no'} · Hidden: ${c.hidden ? 'yes' : 'no'}\n\n` +
+    `This is an on-chain action that costs RAM and commits these mints.`;
+  if (!confirm(summary)) return;
+
+  c.busy = true;
+  render();
+  try {
+    setStatus(`Awaiting signature: neftyblocksd::createdrop…`, 'info');
+    const result = await executeAdminAction(session, action);
+    const trxId =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    const newDropId = extractNewDropId(result);
+    const gatedNote = c.authRequired
+      ? ' It is whitelist-gated and the whitelist is EMPTY — add the allowed accounts in "Manage a drop" below before anyone can claim.'
+      : '';
+    setStatus(
+      newDropId
+        ? `✓ Drop #${newDropId} created on ${collection}.${gatedNote} Tx: ${trxId}`
+        : `✓ Drop created on ${collection}.${gatedNote} Tx: ${trxId}`,
+      'ok',
+    );
+    // Reset the volatile form fields, keep the collection + safety toggle.
+    c.name = '';
+    c.description = '';
+    c.image = '';
+    c.templatesInput = '';
+    c.maxClaimable = '';
+    c.priceAmount = '';
+    c.accountLimit = '';
+    c.cooldown = '';
+    c.startTime = '';
+    c.endTime = '';
+    // Auto-load the freshly created drop into the Manage panel so the author
+    // can immediately populate the whitelist / tweak it — the step that used
+    // to be impossible.
+    if (newDropId) {
+      state.manageDrop.dropIdInput = newDropId;
+      void loadDropToManage(newDropId);
+    }
+  } catch (err) {
+    setStatus(`createdrop failed: ${(err as Error).message}`, 'err');
+  } finally {
+    c.busy = false;
+    render();
+  }
+}
+
+// ─── manage-drop handlers (whitelist + settings for an existing drop) ──── //
+
+/**
+ * Loads a drop by id straight from chain (works for hidden/gated drops the
+ * discovery scan skips), reads its whitelist, and checks whether the
+ * connected wallet can manage its collection.
+ */
+async function loadDropToManage(dropId: string) {
+  const m = state.manageDrop;
+  const id = dropId.trim();
+  if (!id) { setStatus('Enter a drop_id to manage.', 'err'); return; }
+  m.loading = true;
+  m.loaded = undefined;
+  m.whitelist = undefined;
+  m.authorized = undefined;
+  render();
+  try {
+    const row = await readDropById(id);
+    if (!row) { setStatus(`No drop #${id} found on-chain.`, 'err'); m.loading = false; render(); return; }
+    m.loaded = row;
+    const session = getCurrentSession();
+    const actor = session ? String(session.actor) : '';
+    m.authorized = actor ? await canManageCollection(actor, row.collection_name).catch(() => false) : false;
+    m.whitelist = await readDropWhitelist(id).catch(() => []);
+  } catch (err) {
+    setStatus(`Could not load drop #${id}: ${(err as Error).message}`, 'err');
+  } finally {
+    m.loading = false;
+    render();
+  }
+}
+
+function onManageDropLoad() {
+  void loadDropToManage(state.manageDrop.dropIdInput);
+}
+
+function onToggleManageDropEnabled(checked: boolean) {
+  state.manageDrop.enabled = checked;
+  render();
+}
+
+/**
+ * Builds the "drops I can manage" list: finds the collections the connected
+ * account is authorized on (indexer), then scans each for its drops
+ * (on-chain, cached). Lets the author pick a drop from a dropdown instead of
+ * hunting for its id.
+ */
+async function onFindMyDrops() {
+  const m = state.manageDrop;
+  const session = getCurrentSession();
+  const actor = session ? String(session.actor) : '';
+  if (!actor) { setStatus('Connect a wallet first.', 'err'); return; }
+  m.myDropsLoading = true;
+  m.myDropsError = undefined;
+  render();
+  try {
+    const collections = await listAuthorizedCollections(actor);
+    if (collections.length === 0) {
+      m.myDrops = [];
+      m.myDropsError = 'No collections found for this account (or the indexer is unreachable).';
+      return;
+    }
+    const all: ManageableDrop[] = [];
+    for (const col of collections) {
+      setStatus(`Scanning drops in ${col.collection_name}… (${all.length} found so far)`, 'info');
+      try {
+        const { drops } = await listDrops({ collection: col.collection_name, includeInactive: true });
+        for (const d of drops) {
+          all.push({ drop_id: d.drop_id, collection_name: col.collection_name, name: d.name || '(unnamed)', status: d.status });
+        }
+      } catch {
+        /* skip a collection that fails to scan */
+      }
+    }
+    all.sort((a, b) =>
+      a.collection_name === b.collection_name
+        ? Number(b.drop_id) - Number(a.drop_id)
+        : a.collection_name.localeCompare(b.collection_name),
+    );
+    m.myDrops = all;
+    setStatus(`Found ${all.length} drop(s) across ${collections.length} collection(s) you manage.`, 'ok');
+  } catch (err) {
+    m.myDropsError = `Could not list your drops: ${(err as Error).message}`;
+  } finally {
+    m.myDropsLoading = false;
+    render();
+  }
+}
+
+function onPickMyDrop(dropId: string) {
+  if (!dropId) return;
+  state.manageDrop.dropIdInput = dropId;
+  void loadDropToManage(dropId);
+}
+
+function manageDropActor(): string | undefined {
+  const s = getCurrentSession();
+  return s ? String(s.actor) : undefined;
+}
+
+/**
+ * Confirms, signs, then refreshes either the whole drop or just its
+ * whitelist members (so a membership edit doesn't reset other state).
+ */
+async function runDropAdminAction(
+  action: import('../nefty/execute').BuiltAction,
+  confirmMsg: string,
+  opts: { refresh?: 'drop' | 'whitelist' } = {},
+) {
+  const session = getCurrentSession();
+  const m = state.manageDrop;
+  if (!session || !m.loaded) return;
+  if (!confirm(confirmMsg)) return;
+  m.busy = true;
+  render();
+  try {
+    setStatus(`Awaiting signature: ${action.account}::${action.name}…`, 'info');
+    const result = await executeAdminAction(session, action);
+    const trxId =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    setStatus(`${action.name} broadcast: ${trxId}`, 'ok');
+    if ((opts.refresh ?? 'drop') === 'whitelist') {
+      m.whitelist = await readDropWhitelist(m.loaded.drop_id).catch(() => []);
+    } else {
+      const fresh = await readDropById(m.loaded.drop_id).catch(() => undefined);
+      if (fresh) m.loaded = fresh;
+    }
+  } catch (err) {
+    setStatus(`${action.name} failed: ${(err as Error).message}`, 'err');
+  } finally {
+    m.busy = false;
+    render();
+  }
+}
+
+function onManageDropAddAccounts() {
+  const actor = manageDropActor();
+  const m = state.manageDrop;
+  if (!actor || !m.loaded) return;
+  const accounts = parseAccountList(m.addAccountsInput);
+  if (accounts.length === 0) { setStatus('Enter at least one account.', 'err'); return; }
+  m.addAccountsInput = '';
+  void runDropAdminAction(
+    buildDropAddToWhitelist(actor, m.loaded.drop_id, accounts),
+    `Add ${accounts.length} account(s) to drop #${m.loaded.drop_id}'s whitelist?\n\n${accounts.join(', ')}`,
+    { refresh: 'whitelist' },
+  );
+}
+
+function onManageDropRemoveAccount(account: string) {
+  const actor = manageDropActor();
+  const m = state.manageDrop;
+  if (!actor || !m.loaded) return;
+  void runDropAdminAction(
+    buildDropEraseFromWhitelist(actor, m.loaded.drop_id, [account]),
+    `Remove ${account} from drop #${m.loaded.drop_id}'s whitelist?`,
+    { refresh: 'whitelist' },
+  );
+}
+
+function onManageDropClearWhitelist() {
+  const actor = manageDropActor();
+  const m = state.manageDrop;
+  if (!actor || !m.loaded || !m.whitelist || m.whitelist.length === 0) return;
+  void runDropAdminAction(
+    buildDropEraseFromWhitelist(actor, m.loaded.drop_id, m.whitelist.slice()),
+    `Clear ALL ${m.whitelist.length} account(s) from drop #${m.loaded.drop_id}'s whitelist?`,
+    { refresh: 'whitelist' },
+  );
+}
+
+function onManageDropToggleAuth() {
+  const actor = manageDropActor();
+  const m = state.manageDrop;
+  if (!actor || !m.loaded) return;
+  const next = !m.loaded.auth_required;
+  void runDropAdminAction(
+    buildSetDropAuth(actor, m.loaded.drop_id, next),
+    next
+      ? `Require a whitelist for drop #${m.loaded.drop_id}? Only whitelisted accounts will be able to claim.`
+      : `Remove the whitelist requirement from drop #${m.loaded.drop_id}? Anyone will be able to claim.`,
+  );
+}
+
+function onManageDropToggleHidden() {
+  const actor = manageDropActor();
+  const m = state.manageDrop;
+  if (!actor || !m.loaded) return;
+  const next = !m.loaded.is_hidden;
+  void runDropAdminAction(
+    buildSetDropHidden(actor, m.loaded.drop_id, next),
+    `${next ? 'Hide' : 'Unhide'} drop #${m.loaded.drop_id}?`,
+  );
+}
+
+function onManageDropDelete() {
+  const actor = manageDropActor();
+  const m = state.manageDrop;
+  if (!actor || !m.loaded) return;
+  void runDropAdminAction(
+    buildEraseDrop(actor, m.loaded.drop_id),
+    `DELETE drop #${m.loaded.drop_id}? This is permanent and cannot be undone.`,
+  );
 }
 
 /**
@@ -4270,7 +4813,338 @@ function renderBlendsView(): string {
 }
 
 function renderDropsView(): string {
-  return renderPickDrop() + renderDropInfo() + renderDropActions();
+  return renderPickDrop() + renderDropInfo() + renderDropActions() + renderDropCreate() + renderDropManage();
+}
+
+/**
+ * Manage an existing drop (whitelist + key settings). Shares the create
+ * panel's safety toggle. Loads any drop by id straight from chain — so the
+ * author can manage hidden / gated drops that the discovery list won't show
+ * (the exact case of a freshly created whitelist-gated drop).
+ */
+function renderDropManage(): string {
+  const m = state.manageDrop;
+  // Own safety toggle, independent of the create panel.
+  if (!m.enabled) {
+    return `
+      <div class="manage-section create-section" style="margin-top:14px">
+        <div class="manage-head">
+          <span class="manage-title create-title">✦ MANAGE A DROP · neftyblocksd</span>
+          <label class="inline-toggle">
+            <input id="manageDropEnable" type="checkbox" data-action="toggleManageDropEnable" />
+            <span>enable drop management</span>
+          </label>
+        </div>
+        <p class="term" style="margin-top:6px">Edit the whitelist, visibility and settings of a drop you manage (incl. hidden/gated ones).</p>
+      </div>`;
+  }
+  const actor = manageDropActor();
+  const disabled = m.busy ? 'disabled' : '';
+
+  // Picker: drops the connected account can manage (lazy — only on click).
+  const myDropsOptions = (m.myDrops ?? [])
+    .map((d) => `<option value="${escapeHtml(d.drop_id)}">${escapeHtml(d.collection_name)} · #${escapeHtml(d.drop_id)} ${escapeHtml(d.name)} (${escapeHtml(d.status)})</option>`)
+    .join('');
+  const picker = `
+    <div class="manage-row">
+      <span class="manage-label">my drops</span>
+      <div class="manage-ctl">
+        <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
+          <button data-action="findMyDrops" ${m.myDropsLoading ? 'disabled' : ''}>${m.myDropsLoading ? 'Scanning…' : 'Find drops I can manage'}</button>
+          ${m.myDrops
+            ? (m.myDrops.length
+                ? `<select id="myDropsSelect" class="manage-sec-select"><option value="">${m.myDrops.length} drop(s) — pick one…</option>${myDropsOptions}</select>`
+                : '<span class="term">no drops found</span>')
+            : '<span class="term">lists your collections’ drops so you don’t need the id</span>'}
+        </div>
+        ${m.myDropsError ? `<p class="status-line err" style="margin-top:4px">${escapeHtml(m.myDropsError)}</p>` : ''}
+      </div>
+    </div>`;
+
+  const loader = `
+    <div class="manage-row">
+      <span class="manage-label">or by id</span>
+      <div class="manage-ctl">
+        <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
+          <input id="manageDropId" type="text" inputmode="numeric" placeholder="drop_id to manage" value="${escapeHtml(m.dropIdInput)}" style="width:180px" />
+          <button data-action="manageDropLoad" ${m.loading ? 'disabled' : ''}>${m.loading ? 'Loading…' : 'Load drop'}</button>
+        </div>
+        <p class="term" style="margin-top:4px">Loads any drop by id — including hidden or whitelist-gated ones that don't appear in the claim list.</p>
+      </div>
+    </div>`;
+
+  let body = '';
+  if (m.loaded) {
+    const d = m.loaded;
+    if (!m.authorized) {
+      body = `<p class="status-line err" style="margin-top:8px">${escapeHtml(actor ?? '(no wallet)')} is not an authorized account of ${escapeHtml(d.collection_name)} — you can't manage drop #${escapeHtml(d.drop_id)}.</p>`;
+    } else {
+      const supply = d.max_claimable === 0 ? `${d.current_claimed}/∞` : `${d.current_claimed}/${d.max_claimable}`;
+      const wl = m.whitelist;
+      const whitelistEditor = `
+        <div class="manage-members-wrap">
+          <div class="term" style="margin-bottom:4px">whitelisted accounts for drop #${escapeHtml(d.drop_id)}:</div>
+          <p class="term" style="margin:-2px 0 6px">Note: a drop's whitelist is a list of accounts that belongs to <em>this drop only</em> — NeftyBlocks drops have no reusable/named whitelists (unlike blend whitelists), so you add wallets directly here.</p>
+          ${wl
+            ? `<div class="manage-members">${
+                wl.length === 0
+                  ? '<span class="term">empty — nobody can claim this gated drop until you add accounts below</span>'
+                  : wl.slice(0, 300).map((acc) =>
+                      `<span class="manage-chip">${escapeHtml(acc)} <button data-action="manageDropRemoveAccount" data-account="${escapeHtml(acc)}" title="remove" ${disabled}>×</button></span>`,
+                    ).join('')
+              }${wl.length > 300 ? `<span class="term">+ ${wl.length - 300} more…</span>` : ''}</div>`
+            : '<span class="term">loading members…</span>'}
+          <div class="row" style="gap:8px; margin-top:8px; align-items:flex-start">
+            <textarea id="manageDropAddAccounts" placeholder="accounts to add, e.g. zigm4.gm (comma / space / newline separated)" rows="2" style="flex:1; min-width:220px">${escapeHtml(m.addAccountsInput)}</textarea>
+            <button data-action="manageDropAddAccounts" ${disabled}>Add accounts</button>
+            <button class="danger-btn" data-action="manageDropClearWhitelist" ${disabled}>Clear all</button>
+          </div>
+        </div>`;
+
+      const gateWarn = d.auth_required && (wl?.length ?? 0) === 0
+        ? riskBox('This drop requires a whitelist but the whitelist is EMPTY — right now nobody can claim it. Add accounts below, or turn off "whitelist required".', '')
+        : '';
+
+      body = `
+        <div class="manage-row">
+          <span class="manage-label">drop #${escapeHtml(d.drop_id)}</span>
+          <div class="manage-ctl">
+            <div class="term">${escapeHtml(d.name || '(unnamed)')} · ${escapeHtml(d.collection_name)} · ${escapeHtml(d.listing_price)} · claimed ${escapeHtml(supply)}</div>
+            <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap">
+              <button data-action="manageDropToggleAuth" ${disabled}>${d.auth_required ? 'Disable whitelist requirement' : 'Require whitelist'}</button>
+              <button data-action="manageDropToggleHidden" ${disabled}>${d.is_hidden ? 'Unhide' : 'Hide'}</button>
+            </div>
+          </div>
+        </div>
+        ${gateWarn}
+        <div class="manage-row">
+          <span class="manage-label">whitelist</span>
+          <div class="manage-ctl">${whitelistEditor}</div>
+        </div>
+        <div class="manage-row danger">
+          <span class="manage-label">danger</span>
+          <div class="manage-ctl">
+            <button class="danger-btn" data-action="manageDropDelete" ${disabled}>Delete drop #${escapeHtml(d.drop_id)}</button>
+          </div>
+        </div>`;
+    }
+  }
+
+  return `
+    <div class="manage-section create-section" style="margin-top:14px">
+      <div class="manage-head">
+        <span class="manage-title create-title">✦ MANAGE A DROP · neftyblocksd</span>
+        <label class="inline-toggle">
+          <input id="manageDropEnable" type="checkbox" data-action="toggleManageDropEnable" checked />
+          <span>management enabled</span>
+        </label>
+      </div>
+      ${picker}
+      ${loader}
+      ${body}
+    </div>`;
+}
+
+// ─── create-drop panel (collection authors, CLAIM/drops tab) ──────────── //
+
+/**
+ * Wraps a touchy / risky control in a red-outlined box with a plain-language
+ * explanation of WHY it's risky. Visually distinct from the amber Manage
+ * panel so dangerous knobs read as "stop and think" rather than "routine".
+ */
+function riskBox(why: string, innerHtml: string): string {
+  return `
+    <div class="risk-box">
+      <div class="risk-why">⚠ ${escapeHtml(why)}</div>
+      ${innerHtml}
+    </div>`;
+}
+
+/**
+ * Inline "create a NeftyBlocks drop" form. Renders nothing unless management
+ * is enabled (opt-in) and the connected wallet is an authorized account of
+ * the chosen collection. Mirrors the Manage panel's auth model; the chain is
+ * the real guard (neftyblocksd verifies authorized_account).
+ */
+function renderDropCreate(): string {
+  const c = state.createDrop;
+  const session = getCurrentSession();
+  const actor = session ? String(session.actor) : '';
+
+  // Collapsed header + safety toggle (always visible so the author can find it).
+  if (!c.enabled) {
+    return `
+      <div class="manage-section create-section" style="margin-top:18px">
+        <div class="manage-head">
+          <span class="manage-title create-title">✦ CREATE A DROP · neftyblocksd</span>
+          <label class="inline-toggle">
+            <input id="createEnable" type="checkbox" data-action="toggleCreateEnable" />
+            <span>enable drop creation</span>
+          </label>
+        </div>
+        <p class="term" style="margin-top:6px">Mint a NeftyBlocks claim/drop from existing templates of a collection you manage.</p>
+      </div>`;
+  }
+
+  if (!actor) {
+    return `
+      <div class="manage-section create-section" style="margin-top:18px">
+        <div class="manage-head">
+          <span class="manage-title create-title">✦ CREATE A DROP · neftyblocksd</span>
+          <label class="inline-toggle">
+            <input id="createEnable" type="checkbox" data-action="toggleCreateEnable" checked />
+            <span>creation enabled</span>
+          </label>
+        </div>
+        <p class="status-line warn" style="margin-top:8px">Connect a wallet that's an authorized account of the collection to create a drop.</p>
+      </div>`;
+  }
+
+  // Auth banner for the entered collection.
+  let authBanner = '';
+  if (c.collection.trim()) {
+    if (c.authChecking) {
+      authBanner = `<p class="term" style="margin-top:6px">Checking whether ${escapeHtml(actor)} can manage ${escapeHtml(c.collection.trim())}…</p>`;
+    } else if (c.authChecked === c.collection.trim()) {
+      authBanner = c.authorized
+        ? `<p class="status-line ok" style="margin-top:6px">✓ ${escapeHtml(actor)} is authorized for ${escapeHtml(c.collection.trim())}.</p>`
+        : `<p class="status-line err" style="margin-top:6px">✗ ${escapeHtml(actor)} is NOT an authorized account of ${escapeHtml(c.collection.trim())}. The contract will reject createdrop.</p>`;
+    }
+  }
+  const authorized = c.authChecked === c.collection.trim() && c.authorized === true;
+
+  // Live preview of the parsed templates + total mint count.
+  const entries = parseTemplateEntries(c.templatesInput);
+  const mints = totalMints(entries);
+  const templatesSummary = entries.length
+    ? `<div class="term" style="margin-top:4px">→ ${entries.map((e) => `#${e.template_id}×${e.quantity}`).join(', ')} = <strong>${mints}</strong> NFT(s) total to mint</div>`
+    : `<div class="term" style="margin-top:4px">No valid template id parsed yet.</div>`;
+
+  const priceLabel = c.free
+    ? 'FREE'
+    : `${(Number(c.priceAmount) || 0)} ${escapeHtml(c.priceToken || 'WAX')}`;
+
+  const submitDisabled = (!authorized || c.busy) ? 'disabled' : '';
+
+  return `
+    <div class="manage-section create-section" style="margin-top:18px">
+      <div class="manage-head">
+        <span class="manage-title create-title">✦ CREATE A DROP · neftyblocksd</span>
+        <label class="inline-toggle">
+          <input id="createEnable" type="checkbox" data-action="toggleCreateEnable" checked />
+          <span>creation enabled</span>
+        </label>
+      </div>
+
+      <div class="manage-row">
+        <span class="manage-label">collection</span>
+        <div class="manage-ctl">
+          <input id="createCollection" type="text" placeholder="collection name you manage, e.g. underpunks55" value="${escapeHtml(c.collection)}" style="width:100%; max-width:320px" />
+          ${authBanner}
+        </div>
+      </div>
+
+      <div class="manage-row">
+        <span class="manage-label">display</span>
+        <div class="manage-ctl">
+          <input id="createName" type="text" placeholder="drop name (shown to claimers)" value="${escapeHtml(c.name)}" style="width:100%; max-width:420px" />
+          <textarea id="createDescription" placeholder="description (optional)" rows="2" style="width:100%; margin-top:6px">${escapeHtml(c.description)}</textarea>
+          <input id="createImage" type="text" placeholder="image: IPFS CID or https URL (optional)" value="${escapeHtml(c.image)}" style="width:100%; margin-top:6px" />
+        </div>
+      </div>
+
+      ${riskBox(
+        'These exact templates will be minted and handed to claimers, in this order. A wrong template id gives away the wrong NFTs, and the drop cannot mint templates that do not already exist on the collection.',
+        `<span class="manage-label" style="flex:none">templates to mint</span>
+         <textarea id="createTemplates" placeholder="template ids with optional quantity — e.g. 877088 x20, 889127 x2" rows="2" style="width:100%; margin-top:6px">${escapeHtml(c.templatesInput)}</textarea>
+         ${templatesSummary}`,
+      )}
+
+      <div class="manage-row">
+        <span class="manage-label">price</span>
+        <div class="manage-ctl">
+          <label class="inline-mini"><input id="createFree" type="checkbox" data-action="toggleCreateFree" ${c.free ? 'checked' : ''}/> <span>free drop (no payment)</span></label>
+          ${c.free
+            ? `<div class="term" style="margin-top:6px">listing: <strong>FREE</strong> (encoded on-chain as "0 NULL")</div>`
+            : `<div class="row" style="gap:8px; margin-top:6px; flex-wrap:wrap; align-items:center">
+                 <input id="createPriceAmount" type="text" inputmode="decimal" placeholder="amount, e.g. 1.5" value="${escapeHtml(c.priceAmount)}" style="width:140px" />
+                 <input id="createPriceToken" type="text" placeholder="token (WAX)" value="${escapeHtml(c.priceToken)}" style="width:120px" />
+                 <input id="createPriceDecimals" type="text" inputmode="numeric" placeholder="decimals (8)" value="${escapeHtml(c.priceDecimals)}" style="width:120px" title="token precision — WAX is 8" />
+                 <span class="term">→ ${escapeHtml(priceLabel)}</span>
+               </div>
+               <p class="term" style="margin-top:4px">Most WAX tokens use 8 decimals. Get the token's precision wrong and the price is off by orders of magnitude.</p>`}
+        </div>
+      </div>
+
+      ${c.free
+        ? riskBox(
+            'A free drop can be claimed without paying. Combined with unlimited supply, claimers can drain your minted NFTs at will. Set a per-account limit and/or a max supply if unsure.',
+            '',
+          )
+        : ''}
+
+      ${riskBox(
+        'Supply is how many times the drop can be claimed in total. "Unlimited" keeps minting until your templates are exhausted — only use it if that is genuinely what you want.',
+        `<div class="row" style="gap:12px; align-items:center; flex-wrap:wrap">
+           <span class="manage-label" style="flex:none">max supply</span>
+           <label class="inline-mini"><input id="createUnlimited" type="checkbox" data-action="toggleCreateUnlimited" ${c.unlimited ? 'checked' : ''}/> <span>unlimited</span></label>
+           ${c.unlimited ? '<span class="term">max_claimable = 0 (no cap)</span>'
+             : `<input id="createMax" type="text" inputmode="numeric" placeholder="e.g. 1000" value="${escapeHtml(c.maxClaimable)}" style="width:140px" />`}
+         </div>`,
+      )}
+
+      <div class="manage-row">
+        <span class="manage-label">per account</span>
+        <div class="manage-ctl">
+          <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
+            <input id="createAccountLimit" type="text" inputmode="numeric" placeholder="limit per account (0 = none)" value="${escapeHtml(c.accountLimit)}" style="width:200px" />
+            <input id="createCooldown" type="text" inputmode="numeric" placeholder="cooldown seconds (0 = none)" value="${escapeHtml(c.cooldown)}" style="width:200px" />
+          </div>
+        </div>
+      </div>
+
+      <div class="manage-row">
+        <span class="manage-label">schedule</span>
+        <div class="manage-ctl">
+          <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
+            <label class="inline-mini">start <input id="createStart" type="datetime-local" value="${escapeHtml(c.startTime)}" /></label>
+            <label class="inline-mini">end <input id="createEnd" type="datetime-local" value="${escapeHtml(c.endTime)}" /></label>
+          </div>
+          <p class="term" style="margin-top:4px">Leave start empty to begin immediately. ${c.endTime ? '' : '<span class="risk-inline">Leaving end empty means the drop never ends — it stays claimable indefinitely.</span>'}</p>
+        </div>
+      </div>
+
+      <div class="manage-row">
+        <span class="manage-label">options</span>
+        <div class="manage-ctl">
+          <label class="inline-mini"><input id="createAuthReq" type="checkbox" data-action="toggleCreateAuthReq" ${c.authRequired ? 'checked' : ''}/> <span>require whitelist (auth_required)</span></label>
+          <label class="inline-mini" style="margin-left:12px"><input id="createHidden" type="checkbox" data-action="toggleCreateHidden" ${c.hidden ? 'checked' : ''}/> <span>hidden</span></label>
+          <label class="inline-mini" style="margin-left:12px"><input id="createCC" type="checkbox" data-action="toggleCreateCC" ${c.allowCreditCard ? 'checked' : ''}/> <span>allow credit-card payments</span></label>
+        </div>
+      </div>
+
+      ${c.authRequired
+        ? riskBox(
+            'Two-step by design: createdrop only flips the "whitelist required" switch — it can\'t take the list of accounts. The drop is created with an EMPTY whitelist (nobody can claim yet). Right after creating, it loads into "Manage a drop" below and you add the allowed wallets there.',
+            '',
+          )
+        : ''}
+
+      ${riskBox(
+        'All payments go to this account. Double-check it — a typo sends every claim payment to the wrong (or a non-existent) account, and that is irreversible.',
+        `<span class="manage-label" style="flex:none">price recipient</span>
+         <input id="createRecipient" type="text" placeholder="defaults to your account: ${escapeHtml(actor)}" value="${escapeHtml(c.priceRecipient)}" style="width:100%; max-width:320px; margin-top:6px" />`,
+      )}
+
+      <div class="manage-row">
+        <span class="manage-label"></span>
+        <div class="manage-ctl">
+          <button class="create-btn" data-action="createDropSubmit" ${submitDisabled}>Create drop (${escapeHtml(priceLabel)}${c.unlimited ? ', ∞' : ''})</button>
+          ${authorized ? '' : '<p class="term" style="margin-top:6px">Enter a collection you manage to enable the button.</p>'}
+          <p class="term" style="margin-top:6px">Creating a drop is an on-chain action that costs RAM and commits these mints. Review every red box above before signing.</p>
+        </div>
+      </div>
+    </div>`;
 }
 
 // ─── UPGRADE view rendering ────────────────────────────────────────── //
@@ -5294,6 +6168,10 @@ function attachHandlers() {
     collectionSel.addEventListener('input', (e) => {
       const v = (e.target as HTMLInputElement).value.trim().toLowerCase();
       state.discoveryCollection = v;
+      // Re-render so the "Discover" button's enabled state tracks what's
+      // typed (it's gated on a valid name). Focus/caret are preserved by
+      // the render snapshot, and discovery itself is still on-demand.
+      render();
     });
     // Commit on blur (focus leaves the field) or Enter, standard UX for
     // "I'm done editing this, now act on it".
@@ -5398,6 +6276,55 @@ function attachHandlers() {
     manageWlSelect.addEventListener('change', () => { void onManageSelectSecurity(manageWlSelect.value); });
   }
 
+  // CREATE-DROP panel (CLAIM/drops tab) inputs.
+  const bindCreateText = (id: string, set: (v: string) => void) => {
+    const el = document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;
+    if (el) el.addEventListener('input', (e) => set((e.target as HTMLInputElement).value));
+  };
+  const createEnable = document.getElementById('createEnable') as HTMLInputElement | null;
+  if (createEnable) createEnable.addEventListener('change', () => onToggleCreateEnabled(createEnable.checked));
+  const createCollection = document.getElementById('createCollection') as HTMLInputElement | null;
+  if (createCollection) {
+    createCollection.addEventListener('input', (e) => { state.createDrop.collection = (e.target as HTMLInputElement).value; });
+    // Auth lookup on blur (avoids one RPC per keystroke).
+    createCollection.addEventListener('change', () => { void refreshCreateDropAuth(); });
+  }
+  bindCreateText('createName', (v) => { state.createDrop.name = v; });
+  bindCreateText('createDescription', (v) => { state.createDrop.description = v; });
+  bindCreateText('createImage', (v) => { state.createDrop.image = v; });
+  const createTemplates = document.getElementById('createTemplates') as HTMLTextAreaElement | null;
+  if (createTemplates) {
+    createTemplates.addEventListener('input', (e) => { state.createDrop.templatesInput = (e.target as HTMLTextAreaElement).value; });
+    // Refresh the parsed-count preview when the author clicks away.
+    createTemplates.addEventListener('change', () => render());
+  }
+  bindCreateText('createPriceAmount', (v) => { state.createDrop.priceAmount = v; });
+  bindCreateText('createPriceToken', (v) => { state.createDrop.priceToken = v; });
+  bindCreateText('createPriceDecimals', (v) => { state.createDrop.priceDecimals = v; });
+  bindCreateText('createMax', (v) => { state.createDrop.maxClaimable = v; });
+  bindCreateText('createAccountLimit', (v) => { state.createDrop.accountLimit = v; });
+  bindCreateText('createCooldown', (v) => { state.createDrop.cooldown = v; });
+  bindCreateText('createRecipient', (v) => { state.createDrop.priceRecipient = v; });
+  bindCreateText('createStart', (v) => { state.createDrop.startTime = v; });
+  bindCreateText('createEnd', (v) => { state.createDrop.endTime = v; });
+  const bindCreateToggle = (id: string, set: (b: boolean) => void) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    if (el) el.addEventListener('change', () => { set(el.checked); render(); });
+  };
+  bindCreateToggle('createFree', (b) => { state.createDrop.free = b; });
+  bindCreateToggle('createUnlimited', (b) => { state.createDrop.unlimited = b; });
+  bindCreateToggle('createAuthReq', (b) => { state.createDrop.authRequired = b; });
+  bindCreateToggle('createHidden', (b) => { state.createDrop.hidden = b; });
+  bindCreateToggle('createCC', (b) => { state.createDrop.allowCreditCard = b; });
+
+  // MANAGE-DROP panel inputs.
+  const manageDropEnable = document.getElementById('manageDropEnable') as HTMLInputElement | null;
+  if (manageDropEnable) manageDropEnable.addEventListener('change', () => onToggleManageDropEnabled(manageDropEnable.checked));
+  bindCreateText('manageDropId', (v) => { state.manageDrop.dropIdInput = v; });
+  bindCreateText('manageDropAddAccounts', (v) => { state.manageDrop.addAccountsInput = v; });
+  const myDropsSelect = document.getElementById('myDropsSelect') as HTMLSelectElement | null;
+  if (myDropsSelect) myDropsSelect.addEventListener('change', () => onPickMyDrop(myDropsSelect.value));
+
   rootEl().querySelectorAll<HTMLElement>('[data-action]').forEach((el) => {
     const action = el.dataset.action;
     // These actions are wired via 'change' listeners above, not click.
@@ -5408,7 +6335,14 @@ function attachHandlers() {
       action === 'toggleDropOnlyEligible' ||
       action === 'toggleUpgradesInactive' ||
       action === 'toggleWaxdaoInactive' ||
-      action === 'toggleManageEnable'
+      action === 'toggleManageEnable' ||
+      action === 'toggleCreateEnable' ||
+      action === 'toggleCreateFree' ||
+      action === 'toggleCreateUnlimited' ||
+      action === 'toggleCreateAuthReq' ||
+      action === 'toggleCreateHidden' ||
+      action === 'toggleCreateCC' ||
+      action === 'toggleManageDropEnable'
     ) return;
     el.addEventListener('click', (ev) => {
       switch (action) {
@@ -5604,6 +6538,33 @@ function attachHandlers() {
           break;
         case 'manageDelete':
           onManageDelete();
+          break;
+        case 'createDropSubmit':
+          void onCreateDrop();
+          break;
+        case 'manageDropLoad':
+          onManageDropLoad();
+          break;
+        case 'findMyDrops':
+          void onFindMyDrops();
+          break;
+        case 'manageDropAddAccounts':
+          onManageDropAddAccounts();
+          break;
+        case 'manageDropRemoveAccount':
+          onManageDropRemoveAccount(el.dataset.account ?? '');
+          break;
+        case 'manageDropClearWhitelist':
+          onManageDropClearWhitelist();
+          break;
+        case 'manageDropToggleAuth':
+          onManageDropToggleAuth();
+          break;
+        case 'manageDropToggleHidden':
+          onManageDropToggleHidden();
+          break;
+        case 'manageDropDelete':
+          onManageDropDelete();
           break;
       }
       ev.stopPropagation();

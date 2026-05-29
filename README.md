@@ -210,6 +210,53 @@ action is signed.
     from schema X") and know exactly what to buy
 ```
 
+#### Create & manage drops · collection authors
+
+If the connected wallet is authorized on a collection, the CLAIM tab
+exposes two opt-in author panels (each behind its own safety toggle).
+
+**Create a drop** (`neftyblocksd::createdrop`) mints a drop from
+*existing* templates with the standard options: name / description /
+image, templates to mint with per-template quantities, price (or free),
+max supply (or unlimited), per-account limit + cooldown, start/end
+window, whitelist requirement, hidden, price recipient, credit-card
+payments. Touchy options (the minted templates, unlimited/free supply,
+the payout account) are boxed in **red** with a plain-language reason;
+routine controls keep the calmer amber style.
+
+```
+[*] free drops encode as "0 NULL" / "0,NULL"; priced drops as
+    "<amount>.<decimals> SYM" / "<decimals>,SYM" (verified against
+    real on-chain drops)
+[*] on success the new drop_id is reported and the drop is auto-loaded
+    into "Manage a drop"
+```
+
+> **Whitelisting is a two-step flow, by contract design.** `createdrop`
+> only carries an `auth_required` flag — it takes no account list. The
+> allowed accounts live in a separate `whitelists` table keyed by
+> `drop_id`, which can only be written *after* the drop exists (you need
+> its id). So a drop created with "require whitelist" starts **empty**
+> (nobody can claim) until you add accounts in **Manage a drop**. The
+> create panel says this, and the drop is loaded there automatically.
+
+**Manage a drop** loads any drop you manage — picked from "drops I can
+manage" (it lists the drops across the collections you're authorized on,
+so you don't need the id) or typed by `drop_id` (works for hidden /
+gated drops the claim list hides). From there you can:
+
+```
+[*] edit the whitelist: add / remove accounts, or clear it
+    (addtowl / erasefromwl) — per-drop, scoped by drop_id
+[*] toggle the whitelist requirement (setdropauth)
+[*] hide / unhide (setdrophiddn)
+[*] delete the drop (erasedrop)
+```
+
+Unlike blend whitelists, a drop's whitelist is **per-drop**:
+`neftyblocksd` has no reusable named lists, so you add wallets directly
+to that drop.
+
 ### UNPACK tab · `atomicpacksx`
 
 Opening a pack is a commit-reveal dance with the ORNG oracle, so it
@@ -489,13 +536,16 @@ Same bundle, no single point of failure.
 ```
 src/
   chain/
-    rpc.ts             : APIClient + failover across 4 public WAX RPCs
+    rpc.ts             : APIClient + failover across 4 public WAX RPCs,
+                         per-request timeouts so a hung host can't stall
     session.ts         : WharfKit SessionKit (Anchor + WAX Cloud Wallet)
   nefty/
     abi.ts             : verifies blend.nefty ABI shape at startup
     blend.ts           : reads a blend's recipe, isDeterministic
     discover.ts        : lists blends per collection (indexer + on-chain)
     whitelist.ts       : checks secure.nefty whitelists
+    admin.ts           : author actions — blend settings + secure.nefty
+                         whitelists (the BLEND Manage panel)
     template.ts        : enriches expected mints (name, supply, flags)
     tokens.ts          : token symbol -> contract registry (159 tokens)
     execute.ts         : blend tx (openbal + transfer + nosecfuse)
@@ -503,6 +553,8 @@ src/
     rngWait.ts         : polls claimassets between fuse and claim
     drops.ts           : lists drops per collection + 4 auth flavours
     dropExecute.ts     : claim tx (assertprice + transfer + claim*)
+    createDrop.ts      : author action — build a createdrop tx
+    dropAdmin.ts       : author actions — drop whitelist + settings + reads
     packs.ts           : lists pack designs (global scan), pairs with wallet
     packExecute.ts     : unbox txs (transfer "unbox" + claimunboxed)
     packWait.ts        : polls unboxassets between TX1 and TX2
@@ -514,6 +566,8 @@ src/
   atomic/
     assets.ts          : lists a user's NFTs from AtomicAssets API
     matcher.ts         : matches blend ingredients to owned NFTs
+    collections.ts     : collection auth (can this wallet manage it?) +
+                         lists collections a wallet is authorized on
   ui/
     app.ts             : shell, state, render loop, event wiring
     about.ts           : collapsible in-page guide
@@ -557,6 +611,9 @@ public/
 [*] every entity has a shareable hash URL. The address bar updates
     as soon as you pick an entity, and the info card has a one-click
     "share link" button. No wallet required to READ a recipe.
+[*] action outcomes pop a floating toast (success / error) that's
+    visible wherever you've scrolled, so a tx fired from a panel low
+    on the page still gives a clear confirmation
 ```
 
 ---
@@ -591,7 +648,14 @@ Honesty up front:
   tool.
 - **CPU sponsorship**: Nefty's `neftybrespay` used to pay CPU for
   users. That account no longer signs, so users must stake ~5-10 WAX
-  in CPU themselves. Documented in the in-app guide.
+  in CPU themselves. Documented in the in-app guide. If the wallet
+  falls back to a resource provider (Greymass Fuel) that doesn't
+  cosign, the chain rejects with *"declares authority
+  greymassfuel@cosign … does not have signatures for it"* — staking
+  CPU (or signing with WAX Cloud Wallet) avoids it.
+- **Creating templates / schemas**: drops mint from templates that
+  already exist. Making new templates/schemas (a riskier flow) isn't
+  in the app yet — create them on AtomicHub, then build the drop here.
 - **Other NeftyBlocks contracts** (redemptions, NFT swaps,
   marketplace listings) aren't covered yet. PRs welcome.
 
