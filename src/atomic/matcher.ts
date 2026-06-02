@@ -39,6 +39,11 @@ export interface NftSlot extends BaseSlot {
   kind: 'TEMPLATE' | 'SCHEMA' | 'ATTRIBUTE' | 'COLLECTION';
   amount: number;
   eligible: AtomicAsset[];
+  /** For TEMPLATE slots: the required template + its collection, so the UI
+   *  can resolve and show the template's NAME even when the wallet holds
+   *  none of it. */
+  template_id?: number;
+  collection_name?: string;
 }
 export interface FtSlot extends BaseSlot {
   kind: 'FT';
@@ -69,6 +74,8 @@ export function buildSlots(
           label: `${p.amount}× template ${p.template_id} (${p.collection_name})`,
           eligible,
           rawType: type,
+          template_id: Number(p.template_id),
+          collection_name: p.collection_name,
         };
       }
       case 'SCHEMA_INGREDIENT': {

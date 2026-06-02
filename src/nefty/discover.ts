@@ -82,6 +82,11 @@ export interface DiscoveredBlend {
    * Same shape on-chain returns: `[VARIANT_TYPE, payload]` tuples.
    */
   ingredients?: import('./blend').IngredientVariant[];
+  /** First mint template this blend produces, if any — lets the picker show
+   *  a meaningful name when the blend has no display_data name. */
+  result_template_id?: number;
+  /** Result template's name, when the source already carried it (indexer). */
+  result_template_name?: string;
 }
 
 // ─── raw indexer / on-chain shape ──────────────────────────────────────── //
@@ -382,11 +387,28 @@ function isDeterministicRolls(rolls: RawRoll[] | undefined): boolean {
   return true;
 }
 
+/** Digs out the first result template (id + name when present) from rolls. */
+function firstResultTemplate(rolls: RawRoll[] | undefined): { template_id?: number; name?: string } {
+  for (const roll of rolls ?? []) {
+    for (const o of roll.outcomes ?? []) {
+      for (const r of o.results ?? []) {
+        const tid = r.template_id ?? r.template?.template_id;
+        if (tid != null && tid !== '') {
+          const name = r.template?.immutable_data?.name ?? r.name;
+          return { template_id: Number(tid), name: name ? String(name) : undefined };
+        }
+      }
+    }
+  }
+  return {};
+}
+
 function toDiscovered(b: RawBlend): DiscoveredBlend | undefined {
   if (b.blend_id === undefined || b.blend_id === null) return undefined;
   const dd = parseDisplayData(b.display_data);
   const id = String(b.blend_id);
   const security_id = b.security_id !== undefined ? String(b.security_id) : '0';
+  const res = firstResultTemplate(b.rolls);
   return {
     blend_id: id,
     collection_name: String(b.collection_name ?? ''),
@@ -396,6 +418,8 @@ function toDiscovered(b: RawBlend): DiscoveredBlend | undefined {
     is_random: !isDeterministicRolls(b.rolls),
     // whitelist_allowed left undefined until enrichWhitelist runs
     ingredients: b.ingredients as import('./blend').IngredientVariant[] | undefined,
+    result_template_id: res.template_id,
+    result_template_name: res.name,
   };
 }
 

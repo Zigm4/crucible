@@ -3250,7 +3250,7 @@ function renderPickerToggle(): string {
   } else if (state.discoveryError) {
     label = 'Discovery failed, use manual entry below';
   } else if (state.blend) {
-    label = `[#${state.blend.blend_id}] ${state.blend.collection_name}`;
+    label = `[#${state.blend.blend_id}] ${blendDisplayName(state.blend)}`;
   } else {
     const found = state.discovered.find((b) => b.blend_id === state.blendId);
     if (found) label = `[#${found.blend_id}] ${found.name}`;
@@ -3290,10 +3290,16 @@ function renderPickerPanel(): string {
       const rngBadge = b.is_random
         ? '<span class="picker-wl-badge pending" title="Random blend: 2 signatures (fuse + claim) instead of 1.">RNG</span>'
         : '';
+      // Prefer a meaningful name: the blend's own, else its result template's.
+      let rowName = b.name;
+      if (rowName.startsWith('Blend #')) {
+        if (b.result_template_name) rowName = b.result_template_name;
+        else if (b.result_template_id != null) rowName = displayTemplateName(b.result_template_id, b.collection_name);
+      }
       return `
         <div class="${classes.join(' ')}" ${disabled ? '' : `data-action="pickRow" data-blend="${escapeHtml(b.blend_id)}"`}>
           <span class="picker-id">#${escapeHtml(b.blend_id)}</span>
-          <span class="picker-name">${escapeHtml(b.name)}</span>
+          <span class="picker-name">${escapeHtml(rowName)}</span>
           ${rngBadge}
           ${wlBadge}
           <span class="status-chip status-${escapeHtml(b.status)}">${escapeHtml(statusLabel(b.status))}</span>
@@ -3668,7 +3674,11 @@ function renderRngOdds(b: BlendRow): string {
       const desc = (o.results ?? []).map((r) => {
         const kind = r[0];
         if (kind === 'ON_DEMAND_NFT_RESULT') {
-          return `<code>template ${escapeHtml(String((r[1] as { template_id?: number }).template_id))}</code>`;
+          const tid = (r[1] as { template_id?: number }).template_id;
+          const nm = displayTemplateName(tid, b.collection_name);
+          return nm.startsWith('template #')
+            ? `<code>template ${escapeHtml(String(tid))}</code>`
+            : `${escapeHtml(nm)} <code>#${escapeHtml(String(tid))}</code>`;
         }
         if (kind === 'POOL_NFT_RESULT') {
           return `<span class="term">pool draw</span>`;
@@ -3717,6 +3727,67 @@ function displayAssetName(a: AtomicAsset): string {
   return 'asset';
 }
 
+/**
+ * Resolves a template_id to a human name from the shared cache, firing a
+ * best-effort fetch (and a re-render) on a miss. Works from a raw id +
+ * collection, so it covers cases where we don't have a full asset object:
+ * blend ingredient headers, RNG outcome odds, the picker label, etc.
+ * Returns "template #<id>" until the name lands.
+ */
+function displayTemplateName(template_id: number | string | undefined, collection: string | undefined): string {
+  if (template_id == null || template_id === '') return 'template';
+  const n = Number(template_id);
+  const cached = state.templateNames.get(n);
+  if (cached) return cached;
+  if (collection) void enrichTemplateName(n, collection);
+  return `template #${n}`;
+}
+
+async function enrichTemplateName(n: number, collection: string): Promise<void> {
+  if (!Number.isFinite(n) || state.templateNames.has(n) || _templateFetchInflight.has(n)) return;
+  _templateFetchInflight.add(n);
+  try {
+    const name = await fetchTemplateName(collection, n);
+    if (name) {
+      state.templateNames.set(n, name);
+      render();
+    }
+  } catch {
+    // ignore: callers keep the "template #<id>" fallback
+  } finally {
+    _templateFetchInflight.delete(n);
+  }
+}
+
+/** First ON_DEMAND mint template a blend produces (its "result"), if any. */
+function primaryResultTemplateId(b: BlendRow): number | undefined {
+  for (const roll of b.rolls ?? []) {
+    for (const o of roll.outcomes ?? []) {
+      for (const r of o.results ?? []) {
+        if (r[0] === 'ON_DEMAND_NFT_RESULT') {
+          const tid = (r[1] as { template_id?: number }).template_id;
+          if (tid != null) return Number(tid);
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Best label for a loaded blend: its display name, else its result
+ *  template's name, else the collection as a last resort. */
+function blendDisplayName(b: BlendRow): string {
+  let ddName = '';
+  try { ddName = (JSON.parse(b.display_data || '{}') as { name?: string }).name ?? ''; } catch { /* ignore */ }
+  if (ddName) return ddName;
+  const tid = primaryResultTemplateId(b);
+  if (tid != null) {
+    const nm = displayTemplateName(tid, b.collection_name);
+    if (!nm.startsWith('template #')) return nm;
+  }
+  return b.collection_name;
+}
+
 const _templateFetchInflight = new Set<number>();
 async function enrichAssetTemplateName(a: AtomicAsset): Promise<void> {
   const tid = a.template?.template_id;
@@ -3760,10 +3831,19 @@ function renderNftSlot(slot: IngredientSlot): string {
         <span class="id">#${escapeHtml(a.asset_id)}${tid != null ? ' · tpl ' + escapeHtml(String(tid)) : ''}${a.template_mint ? ' · mint ' + escapeHtml(a.template_mint) : ''}</span>
       </div>`;
   });
+  // For a TEMPLATE slot, surface the template's NAME in the header too, so
+  // the author knows which NFT is required even with none in the wallet.
+  const slotName =
+    slot.kind === 'TEMPLATE' && slot.template_id != null
+      ? displayTemplateName(slot.template_id, slot.collection_name)
+      : '';
+  const slotHeading = slotName && !slotName.startsWith('template #')
+    ? `${escapeHtml(slotName)} <span class="term">· ${escapeHtml(slot.label)}</span>`
+    : escapeHtml(slot.label);
   return `
     <div class="slot">
       <div class="slot-header">
-        <div class="slot-label">${escapeHtml(slot.label)}</div>
+        <div class="slot-label">${slotHeading}</div>
         <div class="slot-progress">${picked.length}/${slot.amount} picked · ${slot.eligible.length} eligible</div>
       </div>
       ${
@@ -5180,10 +5260,15 @@ function renderUpgradeLegend(): string {
     </div>`;
 }
 
-function ingredientLabel(ing: UpgradeIngredient): string {
+function ingredientLabel(ing: UpgradeIngredient, collection?: string): string {
   switch (ing.kind) {
     case 'ft':           return `Pay ${escapeHtml(ing.quantity)}`;
-    case 'template':     return `Burn ${ing.amount} NFT(s) of template ${ing.template_id}`;
+    case 'template': {
+      const nm = displayTemplateName(ing.template_id, collection);
+      return nm.startsWith('template #')
+        ? `Burn ${ing.amount} NFT(s) of template ${ing.template_id}`
+        : `Burn ${ing.amount} NFT(s) of ${nm} (template ${ing.template_id})`;
+    }
     case 'schema':       return `Burn ${ing.amount} NFT(s) from schema ${escapeHtml(ing.schema_name)}`;
     case 'collection':   return `Burn ${ing.amount} NFT(s) from collection ${escapeHtml(ing.collection_name)}`;
     case 'attribute':    return `Burn ${ing.amount} NFT(s) matching specific attributes`;
@@ -5322,13 +5407,18 @@ function renderUpgradeInfo(): string {
 
   const ingredientsList = up.ingredients.length
     ? `<h3>Cost</h3><ul class="mint-info">${
-        up.ingredients.map((ing) => `<li>${escapeHtml(ingredientLabel(ing))}</li>`).join('')
+        up.ingredients.map((ing) => `<li>${escapeHtml(ingredientLabel(ing, up.collection_name))}</li>`).join('')
       }</ul>`
     : '';
 
   const specsBlock = up.specs.map((spec, i) => {
     const reqText = spec.requirements.map((req) => {
-      if (req.kind === 'template') return `template <code>${req.template_id}</code>`;
+      if (req.kind === 'template') {
+        const nm = displayTemplateName(req.template_id, up.collection_name);
+        return nm.startsWith('template #')
+          ? `template <code>${req.template_id}</code>`
+          : `${escapeHtml(nm)} <code>#${req.template_id}</code>`;
+      }
       if (req.kind === 'templates') return `one of templates [${req.template_ids.map((id) => `<code>${id}</code>`).join(', ')}]`;
       return `<span class="term">attribute-based requirement</span>`;
     }).join(' · ');
@@ -5371,8 +5461,12 @@ function renderUpgradeAssetSlot(spec: DiscoveredUpgrade['specs'][number], specId
   const u = state.upgrades;
   const owned = ownedAssetsForSpec(spec);
   const picked = u.selection.get(specIdx);
+  const reqCollection = state.upgrades.picked?.collection_name;
   const reqLabel = spec.requirements.map((req) => {
-    if (req.kind === 'template') return `template ${req.template_id}`;
+    if (req.kind === 'template') {
+      const nm = displayTemplateName(req.template_id, reqCollection);
+      return nm.startsWith('template #') ? `template ${req.template_id}` : `${nm} (template ${req.template_id})`;
+    }
     if (req.kind === 'templates') return `one of templates [${req.template_ids.join(', ')}]`;
     return 'attribute constraint';
   }).join(' · ');
