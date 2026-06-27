@@ -2656,6 +2656,17 @@ async function runDropAdminAction(
     m.lastResult = { ok: false, msg: `${action.name} failed: ${(err as Error).message}` };
   } finally {
     m.busy = false;
+    // Pin the author back to the CLAIM tab on the drop they were managing.
+    // A wallet round-trip can flip the active view from under us (e.g. the
+    // signing flow fires a hashchange), which otherwise bounced the author
+    // onto the default BLEND tab the moment the action returned. We know the
+    // intended context here, so restore it explicitly (state + URL).
+    state.platform = 'nefty';
+    state.view = 'drops';
+    // Drop any deep link a stray hashchange may have queued during signing,
+    // so applyPendingDeepLink can't re-flip us onto another entity afterwards.
+    state.pendingDeepLink = undefined;
+    if (m.loaded) writeHashRoute('nefty', 'drops', m.loaded.drop_id);
     render();
   }
 }
