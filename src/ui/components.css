@@ -452,6 +452,29 @@ section.about > h2 { margin-bottom: 10px; }
 }
 .tab.active .tab-sub { color: var(--fg-dim); }
 
+/* Mobile: 4 tabs (Blend/Claim/Unpack/Upgrade) must fit a narrow screen.
+   Let flex items shrink (min-width:0), tighten spacing, and drop the
+   contract sub-label so labels like UNPACK/UPGRADE don't overflow the card. */
+@media (max-width: 560px) {
+  .tabs-card { padding: 4px; }
+  .tab {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 9px 4px;
+    align-items: center;
+    text-align: center;
+    gap: 0;
+  }
+  .tab-label {
+    font-size: 11px;
+    letter-spacing: 1px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tab-sub { display: none; }
+}
+
 /* ─── platform pills (top of the tab bar) ─────────────────────────────── */
 .platform-card { padding: 6px; margin-bottom: 8px; }
 .platform-pills {
