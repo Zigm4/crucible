@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Crucible — on-chain blends and drops for WAX, without depending on the (defunct) NeftyBlocks website.",
+  "description": "Crucible - on-chain blends and drops for WAX, without depending on the (defunct) NeftyBlocks website.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

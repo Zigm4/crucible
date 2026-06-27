@@ -1,0 +1,507 @@
+/*!
+ * crucible / modern.css   (additive - third theme: "Sombre")
+ * =============================================================
+ * An elegant, modern DARK theme. A genuine re-skin, not the
+ * cyberpunk look recoloured:
+ *
+ *   - graphite/slate surfaces, soft violet accent
+ *   - NO neon glow, scanlines, glitch, corner brackets or "//" markers
+ *   - rounded, airy cards with soft shadows
+ *   - clean sans-serif (monospace kept only for code / payloads)
+ *   - the big outer #root frame is dropped for a calmer layout
+ *
+ * Self-contained and additive: theme.css / layout.css /
+ * components.css are NOT touched, and everything here is scoped to
+ * html[data-theme="modern"], so it is inert until that theme is
+ * chosen. The floating .theme-switch widget is styled in
+ * neutral.css (shared, token-driven) plus a small tweak at the
+ * bottom of this file. No application code is involved.
+ */
+
+
+/* =====================================================================
+ * MODERN ("Sombre") - scoped to html[data-theme="modern"]
+ * ===================================================================== */
+
+/* --- tokens ---------------------------------------------------------- */
+html[data-theme="modern"] {
+  color-scheme: dark;
+  --bg: #15171c;
+  --bg-2: #1c1f27;
+  --panel: #1e2128;
+  --panel-edge: #2a2e38;
+  --grid: rgba(139, 124, 240, 0.05);
+  --fg: #e6e8ee;
+  --fg-dim: #9aa1b0;
+  --muted: #6b7280;
+  --accent: #8b7cf0;
+  --accent-hot: #a79bf5;
+  --accent-deep: #6d5fd6;
+  --neon: #8b7cf0;
+  --danger: #f0617f;
+  --ok: #34d39a;
+  --warn: #f0b860;
+  --border: #2c313c;
+  --border-soft: #242832;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
+}
+html[data-theme="modern"] body { background: var(--bg); }
+
+/* keep real monospace where it actually helps readability */
+html[data-theme="modern"] code,
+html[data-theme="modern"] pre,
+html[data-theme="modern"] .term,
+html[data-theme="modern"] .picker-id,
+html[data-theme="modern"] .asset .id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* --- ambient: drop scanlines, keep a very soft violet wash ---------- */
+html[data-theme="modern"] body::before {
+  background:
+    radial-gradient(ellipse at 15% -10%, rgba(139, 124, 240, 0.10), transparent 55%),
+    linear-gradient(180deg, #15171c 0%, #14161b 100%);
+}
+html[data-theme="modern"] body::after { display: none; }
+
+/* --- header --------------------------------------------------------- */
+html[data-theme="modern"] header { border-bottom-color: var(--border); }
+html[data-theme="modern"] header::after {
+  background: var(--accent);
+  box-shadow: none;
+}
+html[data-theme="modern"] header h1 { letter-spacing: 1.5px; }
+html[data-theme="modern"] header h1 .logo-text {
+  background: linear-gradient(90deg, #c6bcff, var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: none;
+}
+html[data-theme="modern"] header h1 .logo-glyph {
+  color: var(--accent);
+  filter: none;
+}
+html[data-theme="modern"] .logo-spark { animation: none; opacity: 0.9; }
+html[data-theme="modern"] header .tagline code {
+  color: var(--accent-hot);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: var(--border);
+}
+
+/* --- cards: rounded, airy, soft-shadowed, no corner brackets -------- */
+html[data-theme="modern"] section,
+html[data-theme="modern"] .card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px 22px;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 30px rgba(0, 0, 0, 0.20);
+}
+html[data-theme="modern"] .card::before,
+html[data-theme="modern"] section::before,
+html[data-theme="modern"] .card::after,
+html[data-theme="modern"] section::after { display: none; }
+
+/* Drop the big outer frame around the whole app for a calmer layout. */
+html[data-theme="modern"] #root {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+}
+/* Keep the INFO & FAQ wrapper transparent (see neutral.css note). */
+html[data-theme="modern"] section.about {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* --- headings & labels: calm, no terminal "// " marker -------------- */
+html[data-theme="modern"] h2 {
+  color: var(--fg);
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  font-size: 14px;
+}
+html[data-theme="modern"] h2::before { content: ''; }
+html[data-theme="modern"] h3 { color: var(--accent-hot); letter-spacing: 0.5px; }
+html[data-theme="modern"] label { color: var(--fg-dim); letter-spacing: 0.6px; }
+
+/* --- footer --------------------------------------------------------- */
+html[data-theme="modern"] footer { border-top-color: var(--border); }
+html[data-theme="modern"] footer a {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+html[data-theme="modern"] footer a:hover {
+  color: var(--accent-hot);
+  border-bottom-color: var(--accent-hot);
+  text-shadow: none;
+}
+
+/* --- inline code ---------------------------------------------------- */
+html[data-theme="modern"] code {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: var(--border);
+  color: var(--accent-hot);
+}
+
+/* --- inputs, selects, pickers, textareas --------------------------- */
+html[data-theme="modern"] input[type=text],
+html[data-theme="modern"] input[type=number],
+html[data-theme="modern"] select,
+html[data-theme="modern"] .picker-toggle,
+html[data-theme="modern"] .manage-section textarea,
+html[data-theme="modern"] .manage-section input[type=text],
+html[data-theme="modern"] .manage-section input[type=datetime-local] {
+  background: #20232b;
+  border-color: var(--border);
+  color: var(--fg);
+}
+html[data-theme="modern"] input::placeholder { color: var(--muted); }
+html[data-theme="modern"] input[type=text]:focus,
+html[data-theme="modern"] input[type=number]:focus,
+html[data-theme="modern"] select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(139, 124, 240, 0.25);
+}
+html[data-theme="modern"] select option { background: #1e2128; color: var(--fg); }
+
+/* checkbox toggle */
+html[data-theme="modern"] .inline-toggle input[type=checkbox] {
+  background: #20232b;
+  border-color: var(--border);
+}
+html[data-theme="modern"] .inline-toggle input[type=checkbox]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: none;
+}
+html[data-theme="modern"] .inline-toggle input[type=checkbox]:checked::after {
+  border-color: #16121f;
+}
+
+/* --- collection chips ---------------------------------------------- */
+html[data-theme="modern"] .collection-chip {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: var(--border);
+  color: var(--accent-hot);
+}
+html[data-theme="modern"] .collection-chip:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: none;
+}
+html[data-theme="modern"] .collection-chip.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--fg);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* --- pack rows / rolls / unbox outcomes ---------------------------- */
+html[data-theme="modern"] .pack-row {
+  background: #20232b;
+  border-color: var(--border);
+  border-left-color: var(--accent);
+}
+html[data-theme="modern"] .pack-row:hover {
+  background: color-mix(in srgb, var(--accent) 10%, #20232b);
+  border-color: var(--accent);
+  box-shadow: none;
+}
+html[data-theme="modern"] .pack-row.active {
+  background: color-mix(in srgb, var(--accent) 16%, #20232b);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+html[data-theme="modern"] .pack-roll { background: #1a1d24; border-color: var(--border); }
+html[data-theme="modern"] .unbox-outcome {
+  background: #20232b;
+  border-color: var(--border);
+  border-left-color: var(--accent);
+}
+html[data-theme="modern"] .unbox-outcome.rolled { box-shadow: none; }
+html[data-theme="modern"] .unbox-outcome.claimed { box-shadow: none; }
+
+/* --- about panels --------------------------------------------------- */
+html[data-theme="modern"] .about-toc,
+html[data-theme="modern"] .about-panel {
+  background: #20232b;
+  border-color: var(--border);
+  border-left-color: var(--accent);
+}
+html[data-theme="modern"] .about-panel[open] {
+  background: #23262f;
+  border-color: var(--border);
+}
+html[data-theme="modern"] .about-toc > summary:hover,
+html[data-theme="modern"] .about-panel > summary:hover {
+  color: var(--accent-hot);
+  text-shadow: none;
+}
+html[data-theme="modern"] .about-body pre {
+  background: #181a20;
+  border-color: var(--border);
+  color: #cfd3dd;
+}
+html[data-theme="modern"] .about-body code {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: var(--border);
+  color: var(--accent-hot);
+}
+
+/* --- tabs / platform pills ----------------------------------------- */
+html[data-theme="modern"] .tab { border-bottom-color: var(--border); }
+html[data-theme="modern"] .tab.active {
+  color: var(--accent-hot);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+html[data-theme="modern"] .platform-pill { border-color: var(--border); }
+html[data-theme="modern"] .platform-pill:hover { border-color: var(--accent); }
+html[data-theme="modern"] .platform-pill.active {
+  color: var(--accent-hot);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* --- share button --------------------------------------------------- */
+html[data-theme="modern"] .share-btn {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: var(--border);
+  color: var(--accent-hot);
+}
+html[data-theme="modern"] .share-btn:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: none;
+  color: var(--accent-hot);
+}
+
+/* --- custom picker dropdown ---------------------------------------- */
+html[data-theme="modern"] .picker-toggle:hover:not(:disabled) {
+  border-color: var(--accent);
+  box-shadow: none;
+  color: var(--accent-hot);
+}
+html[data-theme="modern"] .picker-caret { color: var(--accent); }
+html[data-theme="modern"] .picker-panel {
+  background-color: #1e2128;
+  background-image: none;
+  border-color: var(--border);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55), inset 0 0 0 1px #1e2128;
+}
+html[data-theme="modern"] .picker-panel[data-position="above"] {
+  box-shadow: 0 -16px 40px rgba(0, 0, 0, 0.55), inset 0 0 0 1px #1e2128;
+}
+html[data-theme="modern"] .picker-rows { background-color: #1e2128; }
+html[data-theme="modern"] .picker-row { border-bottom-color: var(--border); }
+html[data-theme="modern"] .picker-row:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+html[data-theme="modern"] .picker-price {
+  color: var(--accent-hot);
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+/* --- legend --------------------------------------------------------- */
+html[data-theme="modern"] .legend { border-color: var(--border); }
+html[data-theme="modern"] .legend-disabled-swatch {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: var(--border);
+}
+
+/* --- skeletons / progress ------------------------------------------ */
+html[data-theme="modern"] .skeleton-bar {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.12) 50%, rgba(255, 255, 255, 0.04) 100%);
+  background-size: 200% 100%;
+}
+html[data-theme="modern"] .skeleton-inline {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.14) 50%, rgba(255, 255, 255, 0.05) 100%);
+  background-size: 200% 100%;
+}
+html[data-theme="modern"] .progress { background: rgba(255, 255, 255, 0.06); border-color: var(--border); }
+html[data-theme="modern"] .progress-fill {
+  background: linear-gradient(90deg, var(--accent-deep), var(--accent));
+  box-shadow: none;
+}
+
+/* --- buttons: filled violet primary, flat secondary, no shine ------ */
+html[data-theme="modern"] button {
+  background: #20232b;
+  border-color: var(--border);
+  color: var(--fg);
+  letter-spacing: 0.3px;
+  text-transform: none;
+  font-size: 13px;
+}
+html[data-theme="modern"] button:hover {
+  border-color: var(--accent);
+  box-shadow: none;
+  color: var(--accent-hot);
+  background: #262a34;
+}
+html[data-theme="modern"] button:disabled:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: #20232b;
+}
+html[data-theme="modern"] button.primary {
+  background: var(--accent);
+  color: #16121f;
+  border-color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 2px 10px rgba(139, 124, 240, 0.30);
+}
+html[data-theme="modern"] button.primary:hover {
+  background: var(--accent-hot);
+  box-shadow: 0 4px 16px rgba(139, 124, 240, 0.40);
+}
+html[data-theme="modern"] button.primary::after { display: none; animation: none; }
+
+/* --- tags ----------------------------------------------------------- */
+html[data-theme="modern"] .tag {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: var(--border);
+  color: var(--fg-dim);
+}
+html[data-theme="modern"] .tag.ok,
+html[data-theme="modern"] .tag.warn,
+html[data-theme="modern"] .tag.err { box-shadow: none; }
+html[data-theme="modern"] .tag.accent {
+  color: var(--accent-hot);
+  border-color: var(--accent);
+  box-shadow: none;
+}
+
+/* --- payload <pre>: graphite block, no "// payload" marker --------- */
+html[data-theme="modern"] pre {
+  background: #181a20;
+  border-color: var(--border);
+  color: #cfd3dd;
+}
+html[data-theme="modern"] pre::before { content: ''; display: none; }
+
+/* --- slots ---------------------------------------------------------- */
+html[data-theme="modern"] .slot {
+  background: #20232b;
+  border-color: var(--border);
+  border-left-color: var(--accent);
+}
+html[data-theme="modern"] .slot.unsupported { border-left-color: var(--danger); }
+html[data-theme="modern"] .slot.ft { border-left-color: var(--warn); }
+
+/* --- asset grid ----------------------------------------------------- */
+html[data-theme="modern"] .asset-grid { background: #1a1d24; border-color: var(--border); }
+html[data-theme="modern"] .asset { background: #20232b; border-color: var(--border); }
+html[data-theme="modern"] .asset:hover { border-color: var(--accent); }
+html[data-theme="modern"] .asset.selected {
+  background: color-mix(in srgb, var(--accent) 16%, #20232b);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* --- status line: softer, less "terminal" markers ------------------ */
+html[data-theme="modern"] .status-line::before { content: '\203A  '; color: var(--accent); }
+html[data-theme="modern"] .status-line.err::before { content: '\26A0  '; color: var(--danger); }
+html[data-theme="modern"] .status-line.ok::before { content: '\2713  '; color: var(--ok); }
+html[data-theme="modern"] .status-line.warn::before { content: '!  '; color: var(--warn); }
+
+/* --- kill the glitch fringe ---------------------------------------- */
+html[data-theme="modern"] .glitch::before,
+html[data-theme="modern"] .glitch::after { display: none; }
+
+/* --- toast ---------------------------------------------------------- */
+html[data-theme="modern"] #crucible-toast.toast {
+  background: #20232b;
+  border-color: var(--border);
+  color: var(--fg);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+}
+
+/* --- author panels (Manage = amber, Create = accent, danger = red) - */
+html[data-theme="modern"] .manage-section {
+  background: rgba(240, 184, 96, 0.07);
+  border-color: rgba(240, 184, 96, 0.32);
+  border-left-color: #f0b860;
+}
+html[data-theme="modern"] .manage-title { color: #f0b860; }
+html[data-theme="modern"] .manage-chip {
+  background: #20232b;
+  border-color: var(--border);
+  color: var(--fg-dim);
+}
+html[data-theme="modern"] .create-section {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: rgba(139, 124, 240, 0.32);
+  border-left-color: var(--accent);
+}
+html[data-theme="modern"] .create-title { color: var(--accent-hot); }
+html[data-theme="modern"] .create-btn {
+  border-color: var(--accent);
+  color: #16121f;
+  background: var(--accent);
+}
+html[data-theme="modern"] .create-btn:hover:not(:disabled) {
+  border-color: var(--accent-hot);
+  background: var(--accent-hot);
+  box-shadow: none;
+}
+html[data-theme="modern"] .risk-why,
+html[data-theme="modern"] .risk-inline { color: #f58aa0; }
+html[data-theme="modern"] .danger-btn {
+  color: var(--danger);
+  background: rgba(240, 97, 127, 0.08);
+  border-color: rgba(240, 97, 127, 0.40);
+}
+html[data-theme="modern"] .danger-btn:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: rgba(240, 97, 127, 0.16);
+  box-shadow: none;
+}
+
+/* --- consistent, softer corners (base theme uses sharp 2px) -------- */
+html[data-theme="modern"] .about-toc,
+html[data-theme="modern"] .about-panel,
+html[data-theme="modern"] .about-body pre,
+html[data-theme="modern"] .pack-row,
+html[data-theme="modern"] .pack-roll,
+html[data-theme="modern"] .unbox-outcome,
+html[data-theme="modern"] .slot,
+html[data-theme="modern"] .asset-grid,
+html[data-theme="modern"] .asset,
+html[data-theme="modern"] input[type=text],
+html[data-theme="modern"] input[type=number],
+html[data-theme="modern"] select,
+html[data-theme="modern"] textarea,
+html[data-theme="modern"] .picker-toggle,
+html[data-theme="modern"] .picker-panel,
+html[data-theme="modern"] .picker-rows,
+html[data-theme="modern"] button,
+html[data-theme="modern"] .tag,
+html[data-theme="modern"] .legend,
+html[data-theme="modern"] .manage-section,
+html[data-theme="modern"] .create-section,
+html[data-theme="modern"] .risk-box,
+html[data-theme="modern"] .collection-chip,
+html[data-theme="modern"] .share-btn,
+html[data-theme="modern"] pre {
+  border-radius: 10px;
+}
+html[data-theme="modern"] .status-chip { border-radius: 999px; }
+
+/* --- floating theme switch in this skin ---------------------------- */
+html[data-theme="modern"] .theme-switch {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.40);
+}

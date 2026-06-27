@@ -173,6 +173,12 @@ footer {
   letter-spacing: 1px;
 }
 footer p { margin: 4px 0; }
+footer .contracts-line {
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  opacity: 0.85;
+  line-height: 1.7;
+}
 footer .attribution {
   font-size: 10px;
   letter-spacing: 0.6px;

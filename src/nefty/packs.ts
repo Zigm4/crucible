@@ -21,7 +21,11 @@ const CHAIN_CHUNK_SIZE = 5_000n;
 const CHAIN_ROWS_PER_CALL = 1000;
 const CHAIN_MAX_CHUNKS = 16;
 
+export type PackSource = 'atomicpacksx' | 'neftyblocksp';
+
 export interface PackDesign {
+  /** Which contract this pack lives on (drives the open/claim flow). */
+  source: PackSource;
   pack_id: string;
   collection_name: string;
   /** AtomicAssets template_id whose NFTs ARE packs of this design. */
@@ -157,6 +161,7 @@ function toDesign(r: RawPackRow): PackDesign {
   const id = String(r.pack_id);
   const dd = parseDisplayData(r.display_data);
   return {
+    source: 'atomicpacksx',
     pack_id: id,
     collection_name: r.collection_name,
     pack_template_id: Number(r.pack_template_id),

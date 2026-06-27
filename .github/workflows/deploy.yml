@@ -3,7 +3,7 @@
 # How it works:
 #   1. checkout the repo
 #   2. install Node + dependencies
-#   3. run `npm run build` (tsc + vite) — outputs to dist/
+#   3. run `npm run build` (tsc + vite) - outputs to dist/
 #   4. upload dist/ as a Pages artifact
 #   5. deploy that artifact to the Pages environment
 #

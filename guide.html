@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crucible · User Guide</title>
+    <meta name="description" content="How to use Crucible — the open-source UI for NeftyBlocks and WaxDAO smart contracts on WAX: blends, drops, packs, upgrades, plus collection-author tools." />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/ui/style.css" />
+    <!-- Theme bootstrap: same mechanism as the app, so the guide opens in the
+         skin the visitor already chose (default "Sombre"/modern). -->
+    <script>
+      (function () {
+        var theme = 'modern';
+        try {
+          var saved = localStorage.getItem('crucible-theme');
+          if (saved === 'cyber' || saved === 'neutral' || saved === 'modern') theme = saved;
+        } catch (e) {}
+        if (theme === 'neutral' || theme === 'modern') {
+          document.documentElement.setAttribute('data-theme', theme);
+        }
+      })();
+    </script>
+    <style>
+      /* Guide-specific layout, built on the active theme's CSS variables so
+         it adapts to all three skins. */
+      .guide { max-width: 880px; margin: 0 auto; padding: 0 4px 64px; }
+      .guide-top {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; flex-wrap: wrap; margin: 8px 0 6px;
+      }
+      .guide-back {
+        font-size: 12px; letter-spacing: 1px; text-decoration: none;
+        color: var(--accent); border: 1px solid var(--border);
+        padding: 6px 12px; border-radius: 4px;
+      }
+      .guide-back:hover { border-color: var(--accent); color: var(--accent-hot); }
+      .guide h1.guide-title {
+        font-size: 22px; letter-spacing: 3px; margin: 18px 0 2px; color: var(--accent);
+      }
+      .guide .lead { color: var(--fg-dim); margin: 0 0 18px; font-size: 14px; line-height: 1.6; }
+      .guide section.gcard {
+        border: 1px solid var(--border-soft);
+        border-left: 2px solid var(--accent);
+        border-radius: 3px;
+        background: var(--card-bg, rgba(255,255,255,0.02));
+        padding: 16px 18px; margin: 14px 0;
+      }
+      .guide section.gcard > h2 {
+        font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
+        color: var(--accent); margin: 0 0 10px;
+      }
+      .guide h3 { font-size: 13px; margin: 14px 0 4px; color: var(--fg); }
+      .guide p, .guide li { font-size: 13.5px; line-height: 1.65; color: var(--fg-dim); }
+      .guide strong { color: var(--fg); }
+      .guide code {
+        font-family: inherit; font-size: 0.92em; padding: 1px 5px; border-radius: 3px;
+        background: rgba(125,211,252,0.10); color: var(--accent);
+      }
+      .guide ul { margin: 6px 0 6px; padding-left: 20px; }
+      .guide .steps { counter-reset: step; list-style: none; padding-left: 0; }
+      .guide .steps > li { position: relative; padding: 4px 0 4px 30px; }
+      .guide .steps > li::before {
+        counter-increment: step; content: counter(step);
+        position: absolute; left: 0; top: 3px;
+        width: 20px; height: 20px; border-radius: 50%;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 11px; color: var(--accent);
+        border: 1px solid var(--border); background: rgba(125,211,252,0.08);
+      }
+      .guide .note {
+        border-left: 3px solid #f5b340; background: rgba(245,179,64,0.07);
+        padding: 8px 12px; border-radius: 3px; margin: 10px 0; font-size: 12.5px;
+      }
+      .guide .toc { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 6px; }
+      .guide .toc a {
+        font-size: 11.5px; letter-spacing: 0.5px; text-decoration: none;
+        color: var(--fg-dim); border: 1px solid var(--border-soft);
+        padding: 4px 10px; border-radius: 999px;
+      }
+      .guide .toc a:hover { color: var(--accent); border-color: var(--accent); }
+      .guide footer { text-align: center; margin-top: 28px; font-size: 11px; color: var(--muted); }
+      .guide footer a { color: var(--accent); text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <div class="theme-switch" role="group" aria-label="Theme">
+      <button type="button" class="theme-opt" data-set-theme="cyber">Neon</button>
+      <button type="button" class="theme-opt" data-set-theme="neutral">Clair</button>
+      <button type="button" class="theme-opt" data-set-theme="modern">Sombre</button>
+    </div>
+
+    <main class="guide">
+      <div class="guide-top">
+        <span style="letter-spacing:4px; font-weight:700; color:var(--accent)">CRUCIBLE</span>
+        <a class="guide-back" href="./index.html">← Open the app</a>
+      </div>
+      <h1 class="guide-title">User Guide</h1>
+      <p class="lead">
+        Crucible is a single open-source page that talks <strong>directly</strong> to live WAX
+        smart contracts. The NeftyBlocks and WaxDAO <em>websites</em> went down, but the
+        <em>contracts</em> behind them never did — Crucible is the missing UI. Zero backend, no
+        tracking, no fee to anyone but the contracts' own (unchanged) fees. Your wallet signs
+        every transaction; the page never sees a key.
+      </p>
+
+      <div class="toc">
+        <a href="#start">Before you start</a>
+        <a href="#blend">Blend</a>
+        <a href="#claim">Claim</a>
+        <a href="#unpack">Unpack</a>
+        <a href="#upgrade">Upgrade</a>
+        <a href="#waxdao">WaxDAO</a>
+        <a href="#authors">Collection authors</a>
+        <a href="#links">Shareable links</a>
+        <a href="#safety">Privacy &amp; safety</a>
+      </div>
+
+      <section class="gcard" id="start">
+        <h2>Before you start</h2>
+        <ol class="steps">
+          <li><strong>Connect a wallet</strong> — Anchor or WAX Cloud Wallet. Connecting is read-only until you sign.</li>
+          <li><strong>Stake a little CPU/NET.</strong> Nefty used to sponsor your CPU; that sponsor no longer signs, so keep roughly <strong>5–10 WAX staked to CPU</strong> (and a little to NET) from your wallet's Resources tab.</li>
+          <li><strong>Pick a theme</strong> (top-right): Neon, Clair, or Sombre. Your choice is remembered.</li>
+        </ol>
+        <div class="note">
+          <strong>“greymassfuel@cosign … does not have signatures for it”?</strong> That's your wallet
+          trying to borrow CPU through Greymass Fuel and not getting cosigned — stake a few WAX to CPU,
+          or sign with WAX Cloud Wallet, and it goes away. It is not a Crucible bug.
+        </div>
+      </section>
+
+      <section class="gcard" id="blend">
+        <h2>Blend · <code>blend.nefty</code></h2>
+        <p>Burn NFTs (and optionally pay tokens) to mint a result. Type a collection, click
+          <strong>Discover blends</strong>, pick one, choose the NFTs for each ingredient slot, and sign.</p>
+        <ul>
+          <li><strong>Deterministic</strong> blends mint in a single signature.</li>
+          <li><strong>Random</strong> blends (more than one possible outcome) take two: one to commit, then — after the on-chain oracle resolves — one to claim. Crucible waits in between and shows you the resolved result before step 2.</li>
+          <li><strong>Whitelisted</strong> blends are detected automatically; the picker marks whether your wallet is allowed before you try.</li>
+        </ul>
+      </section>
+
+      <section class="gcard" id="claim">
+        <h2>Claim · <code>neftyblocksd</code></h2>
+        <p>Drops — pay (or not) to mint. Crucible signs public, whitelist, and NFT-proof drops:</p>
+        <ul>
+          <li><strong>Public</strong> — open to anyone.</li>
+          <li><strong>Whitelist</strong> — your account must be on the drop's allow-list.</li>
+          <li><strong>NFT proof</strong> — you must hold specific NFTs; the page auto-selects matching ones and tells you exactly what's required even if you don't have them.</li>
+        </ul>
+        <p>Free drops skip the payment step. Key-gated (<code>claimdropkey</code>) drops need a per-user secret only the creator can issue, so no third-party tool can sign them.</p>
+      </section>
+
+      <section class="gcard" id="unpack">
+        <h2>Unpack · <code>atomicpacksx</code> + <code>neftyblocksp</code></h2>
+        <p>Opens packs from <strong>both</strong> pack contracts — AtomicHub
+          (<code>atomicpacksx</code>) and NeftyBlocks (<code>neftyblocksp</code>) — merged into one
+          list. It's a two-signature, oracle-randomised flow:</p>
+        <ol class="steps">
+          <li>Send the pack to the contract (memo <code>unbox</code>).</li>
+          <li>Wait 5–30s while the ORNG oracle resolves the contents.</li>
+          <li>Sign once more to mint the revealed cards.</li>
+        </ol>
+        <p>Crucible scans both contracts globally and only lists collections where your wallet holds an openable pack, then uses the right open/claim flow for that pack automatically.</p>
+      </section>
+
+      <section class="gcard" id="upgrade">
+        <h2>Upgrade · <code>up.nefty</code></h2>
+        <p>Mutate NFTs you already own in place (e.g. recolour, level up) by paying the upgrade's
+          cost. Token-cost upgrades are signable today; random-result and whitelist/ownership-gated
+          upgrades are detected and clearly tagged as not-yet-executable.</p>
+      </section>
+
+      <section class="gcard" id="waxdao">
+        <h2>WaxDAO Blend · <code>waxdaomarket</code></h2>
+        <p>WaxDAO is a parallel ecosystem with its own blend contract. Switch to the
+          <strong>WAXDAO</strong> platform pill at the top; recipes are listed per collection and
+          built with WaxDAO's own action shape (one transfer per ingredient slot).</p>
+      </section>
+
+      <section class="gcard" id="authors">
+        <h2>Collection authors</h2>
+        <p>If your connected wallet is an <strong>authorized account</strong> of a collection,
+          Crucible reveals inline management controls (each behind a safety toggle). The contracts
+          always allowed this — only the website was missing.</p>
+        <h3>Manage blends &amp; whitelists (BLEND tab)</h3>
+        <p>Rename, hide, set the time window, change limits, delete, and manage reusable named
+          whitelists (<code>secure.nefty</code>): create one, fill it with wallets, and attach it to
+          one or several blends.</p>
+        <h3>Create &amp; manage drops (CLAIM tab)</h3>
+        <ul>
+          <li><strong>Create a drop</strong> from existing templates with all the standard options. Risky choices (which templates get minted, unlimited/free supply, the payout account) are boxed in <strong>red</strong> with the reason.</li>
+          <li><strong>Manage a drop</strong> — load any drop you manage (pick it from “drops I can manage”, or by id) to edit its whitelist, toggle gating, hide, or delete it.</li>
+        </ul>
+        <div class="note">
+          A drop's whitelist is <strong>per-drop</strong>: creating a drop with “whitelist required”
+          starts it <strong>empty</strong> (nobody can claim) — add the wallets afterwards in
+          <em>Manage a drop</em>. The drop you just made loads there automatically.
+        </div>
+      </section>
+
+      <section class="gcard" id="links">
+        <h2>Shareable links</h2>
+        <p>Every entity has a hash URL you can paste to anyone (no wallet needed to read a recipe):</p>
+        <ul>
+          <li><code>#/nefty/blend/43444</code> — a blend</li>
+          <li><code>#/nefty/claim/237418</code> — a drop</li>
+          <li><code>#/nefty/upgrade/447</code> — an upgrade</li>
+          <li><code>#/waxdao/blend/1921</code> — a WaxDAO blend</li>
+        </ul>
+      </section>
+
+      <section class="gcard" id="safety">
+        <h2>Privacy &amp; safety</h2>
+        <ul>
+          <li><strong>No backend, no database, no tracking.</strong> One page that reads the chain and builds transactions.</li>
+          <li><strong>Your keys never leave your wallet.</strong> Anchor and WAX Cloud Wallet sign locally.</li>
+          <li><strong>0% cut.</strong> The blend/drop/upgrade fees that always existed still go where they always went.</li>
+          <li><strong>Open source.</strong> Read every line, fork it, host it yourself — that's the whole point.</li>
+        </ul>
+      </section>
+
+      <footer>
+        <a href="./index.html">← Open the app</a> ·
+        <a href="https://github.com/Zigm4/crucible" target="_blank" rel="noopener">source on GitHub</a> ·
+        MIT licensed
+      </footer>
+    </main>
+
+    <!-- Theme switch wiring (same as the app). -->
+    <script>
+      (function () {
+        function current() {
+          var a = document.documentElement.getAttribute('data-theme');
+          return (a === 'neutral' || a === 'modern') ? a : 'cyber';
+        }
+        function paint() {
+          var c = current();
+          var opts = document.querySelectorAll('.theme-opt');
+          for (var i = 0; i < opts.length; i++) {
+            opts[i].classList.toggle('active', opts[i].getAttribute('data-set-theme') === c);
+          }
+        }
+        function set(theme) {
+          if (theme === 'neutral' || theme === 'modern') {
+            document.documentElement.setAttribute('data-theme', theme);
+          } else {
+            document.documentElement.removeAttribute('data-theme');
+          }
+          try { localStorage.setItem('crucible-theme', theme); } catch (e) {}
+          paint();
+        }
+        document.addEventListener('click', function (e) {
+          var btn = e.target && e.target.closest && e.target.closest('[data-set-theme]');
+          if (btn) set(btn.getAttribute('data-set-theme'));
+        });
+        paint();
+      })();
+    </script>
+  </body>
+</html>

@@ -1,7 +1,7 @@
 /**
  * End-to-end test of the on-chain discovery fallback.
  *
- * Mirrors src/nefty/discover.ts::fetchFromChain — finds the head of the
+ * Mirrors src/nefty/discover.ts::fetchFromChain - finds the head of the
  * blends table, chunks [0, head] into parallel ranges, paginates each
  * range, filters by collection_name === underpunks55. Asserts that the
  * two known blends from our reference traces (#43444, #43802) appear in

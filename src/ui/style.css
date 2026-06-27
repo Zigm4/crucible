@@ -11,3 +11,6 @@
 @import './theme.css';
 @import './layout.css';
 @import './components.css';
+/* alternative themes + floating theme switch (inert until data-theme is set) */
+@import './neutral.css';
+@import './modern.css';

@@ -139,12 +139,19 @@ import {
   fetchTemplateName,
   type OwnedPack,
   type PackRoll,
+  type PackDesign,
 } from '../nefty/packs';
 import {
   executeUnboxAnnounce,
   executeUnboxClaim,
 } from '../nefty/packExecute';
 import { waitForUnboxAssets, type UnboxAssetRow } from '../nefty/packWait';
+import { listNeftyPackDesigns } from '../nefty/neftyPacks';
+import {
+  executeNeftyUnboxAnnounce,
+  executeNeftyUnboxClaim,
+} from '../nefty/neftyPackExecute';
+import { waitForNeftyClaim } from '../nefty/neftyPackWait';
 import { dryRunActions } from './dryrun';
 import { renderAboutPanels } from './about';
 
@@ -386,7 +393,7 @@ interface ManageableDrop {
 }
 
 interface DropManageState {
-  /** Opt-in safety switch — its own, independent of the create panel. */
+  /** Opt-in safety switch - its own, independent of the create panel. */
   enabled: boolean;
   /** Drops the connected account can manage, for the picker (lazy-loaded). */
   myDrops?: ManageableDrop[];
@@ -408,7 +415,7 @@ interface DropManageState {
 }
 
 interface CreateDropState {
-  /** Opt-in safety switch — the form is collapsed until the author flips it. */
+  /** Opt-in safety switch - the form is collapsed until the author flips it. */
   enabled: boolean;
   /** Target collection; defaults to the drops-tab discovery collection. */
   collection: string;
@@ -469,7 +476,7 @@ interface ManageState {
   selectedSecurityId?: string;
   /**
    * Set right before a "create whitelist" tx so the next context
-   * refresh auto-selects the newest whitelist — letting the author add
+   * refresh auto-selects the newest whitelist - letting the author add
    * wallets to the list they just made without hunting for it.
    */
   autoSelectNewest: boolean;
@@ -775,8 +782,8 @@ function setStatus(msg: string, kind: AppState['statusKind'] = 'info') {
   state.statusKind = kind;
   // Success/error outcomes also pop a floating toast, visible no matter
   // where the user has scrolled (the status line lives at the top of the
-  // page, so an action triggered far down — e.g. adding a whitelist wallet
-  // — would otherwise give no visible confirmation). 'info'/progress
+  // page, so an action triggered far down - e.g. adding a whitelist wallet
+  // - would otherwise give no visible confirmation). 'info'/progress
   // messages stay in the top status line only, to avoid toast spam.
   if (kind === 'ok' || kind === 'err') showToast(msg, kind);
   render();
@@ -1190,7 +1197,14 @@ async function loadPacks() {
     // No collection filter on either side: we want the complete picture.
     // Force-refresh the wallet inventory so a freshly-burned pack drops
     // out of the cached snapshot after every unbox.
-    const designsP = listPackDesigns();
+    // Both pack contracts: AtomicHub (atomicpacksx) AND NeftyBlocks
+    // (neftyblocksp). Their designs are matched against the same wallet
+    // inventory; each OwnedPack carries pack.source so the unbox flow can
+    // route to the right contract.
+    const designsP = Promise.all([
+      listPackDesigns().catch(() => [] as PackDesign[]),
+      listNeftyPackDesigns().catch(() => [] as PackDesign[]),
+    ]).then(([a, n]) => [...a, ...n]);
     const inventoryP = actor
       ? listAssetsForOwner({ owner: actor, force: true })
           .catch(() => [] as AtomicAsset[])
@@ -1289,6 +1303,12 @@ async function onPickPack(asset_id: string) {
   state.packPhaseMessage = undefined;
   render();
 
+  // neftyblocksp packs don't expose per-roll odds in a packrolls table
+  // (their outcomes come from a recipe and are only staged at unbox time),
+  // so skip the pre-open odds fetch - the resolved cards still show after
+  // the announce step.
+  if (pack.pack.source === 'neftyblocksp') return;
+
   try {
     const rolls = await loadPackRolls(pack.pack.pack_id);
     state.packRolls = rolls;
@@ -1323,11 +1343,15 @@ async function onPackAnnounce() {
   const session = getCurrentSession();
   const pack = state.selectedPack;
   if (!session || !pack) return;
+  const nefty = pack.pack.source === 'neftyblocksp';
+  const contract = nefty ? 'neftyblocksp' : 'atomicpacksx';
   state.packPhase = 'announcing';
-  state.packPhaseMessage = 'Awaiting wallet signature for step 1 (send pack to atomicpacksx)…';
+  state.packPhaseMessage = `Awaiting wallet signature for step 1 (send pack to ${contract})…`;
   render();
   try {
-    const result = await executeUnboxAnnounce(session, pack.asset_id);
+    const result = nefty
+      ? await executeNeftyUnboxAnnounce(session, pack.asset_id)
+      : await executeUnboxAnnounce(session, pack.asset_id);
     state.packTx1Id =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
@@ -1337,15 +1361,14 @@ async function onPackAnnounce() {
     state.packAbort = new AbortController();
     render();
 
-    const rows = await waitForUnboxAssets({
-      pack_asset_id: pack.asset_id,
-      onTick: (elapsedMs) => {
-        state.packWaitElapsedMs = elapsedMs;
-        // re-render the elapsed time without trashing other state
-        if (state.view === 'packs') render();
-      },
-      signal: state.packAbort.signal,
-    });
+    const onTick = (elapsedMs: number) => {
+      state.packWaitElapsedMs = elapsedMs;
+      // re-render the elapsed time without trashing other state
+      if (state.view === 'packs') render();
+    };
+    const rows = nefty
+      ? await waitForNeftyClaim({ pack_asset_id: pack.asset_id, onTick, signal: state.packAbort.signal })
+      : await waitForUnboxAssets({ pack_asset_id: pack.asset_id, onTick, signal: state.packAbort.signal });
     state.packUnboxAssets = rows;
     state.packPhase = 'ready';
     state.packPhaseMessage = `ORNG arrived. ${rows.length} card${rows.length === 1 ? '' : 's'} ready to mint.`;
@@ -1388,10 +1411,15 @@ async function onPackClaim() {
   state.packPhaseMessage = 'Awaiting wallet signature for step 2 (mint the cards)…';
   render();
   try {
-    const result = await executeUnboxClaim(session, {
-      pack_asset_id: pack.asset_id,
-      origin_roll_ids: state.packUnboxAssets.map((r) => r.origin_roll_id),
-    });
+    const result = pack.pack.source === 'neftyblocksp'
+      ? await executeNeftyUnboxClaim(session, {
+          claim_id: pack.asset_id, // neftyblocksp stages the claim under the pack's own asset_id
+          roll_count: state.packUnboxAssets.length,
+        })
+      : await executeUnboxClaim(session, {
+          pack_asset_id: pack.asset_id,
+          origin_roll_ids: state.packUnboxAssets.map((r) => r.origin_roll_id),
+        });
     state.packTx2Id =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
@@ -1917,6 +1945,7 @@ async function buildPlan(): Promise<BuiltAction[]> {
       blend_id: state.blend.blend_id,
       asset_ids,
       ft_payments,
+      secure: blendIsSecure(state.blend),
       security_check: defaultSecurityCheck(String(session.actor)),
     });
   }
@@ -1925,6 +1954,8 @@ async function buildPlan(): Promise<BuiltAction[]> {
     blend_id: state.blend.blend_id,
     asset_ids,
     ft_payments,
+    secure: blendIsSecure(state.blend),
+    security_check: defaultSecurityCheck(String(session.actor)),
   });
 }
 
@@ -1975,6 +2006,8 @@ async function onExecute() {
       blend_id: state.blend.blend_id,
       asset_ids: flattenNftSelection(state.slots, state.selection),
       ft_payments: ftSlots(state.slots).map((s) => s.quantity),
+      secure: blendIsSecure(state.blend),
+      security_check: defaultSecurityCheck(String(session.actor)),
     });
     const trxId =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
@@ -2001,6 +2034,13 @@ function defaultSecurityCheck(claimer: string): SecurityCheck {
   return { kind: 'whitelist', account_name: claimer };
 }
 
+/** True when the blend is gated by a security_id (whitelist/ownership). This
+ *  decides fuse (secure) vs nosecfuse (non-secure), independently of whether
+ *  the blend is random. */
+function blendIsSecure(b: BlendRow): boolean {
+  return b.security_id !== undefined && String(b.security_id) !== '0';
+}
+
 /**
  * Step 1 of the random-blend flow: announce, deposit, and request a
  * fuse. On success, snapshot the user's existing `claimassets` rows
@@ -2013,11 +2053,13 @@ async function onExecuteRng() {
   const claimer = String(session.actor);
   // Confirm with the user (same UX as deterministic execute).
   const security_check = defaultSecurityCheck(claimer);
+  const secure = blendIsSecure(state.blend);
   const actions = await buildFuseActions({
     claimer,
     blend_id: state.blend.blend_id,
     asset_ids: flattenNftSelection(state.slots, state.selection),
     ft_payments: ftSlots(state.slots).map((s) => s.quantity),
+    secure,
     security_check,
   });
   if (
@@ -2038,6 +2080,7 @@ async function onExecuteRng() {
       blend_id: state.blend.blend_id,
       asset_ids: flattenNftSelection(state.slots, state.selection),
       ft_payments: ftSlots(state.slots).map((s) => s.quantity),
+      secure,
       security_check,
     });
     state.rngTx1Id =
@@ -2371,7 +2414,7 @@ async function onCreateDrop() {
       String(result.resolved?.transaction.id ?? '');
     const newDropId = extractNewDropId(result);
     const gatedNote = c.authRequired
-      ? ' It is whitelist-gated and the whitelist is EMPTY — add the allowed accounts in "Manage a drop" below before anyone can claim.'
+      ? ' It is whitelist-gated and the whitelist is EMPTY - add the allowed accounts in "Manage a drop" below before anyone can claim.'
       : '';
     setStatus(
       newDropId
@@ -2391,7 +2434,7 @@ async function onCreateDrop() {
     c.startTime = '';
     c.endTime = '';
     // Auto-load the freshly created drop into the Manage panel so the author
-    // can immediately populate the whitelist / tweak it — the step that used
+    // can immediately populate the whitelist / tweak it - the step that used
     // to be impossible.
     if (newDropId) {
       state.manageDrop.dropIdInput = newDropId;
@@ -4898,7 +4941,7 @@ function renderDropsView(): string {
 
 /**
  * Manage an existing drop (whitelist + key settings). Shares the create
- * panel's safety toggle. Loads any drop by id straight from chain — so the
+ * panel's safety toggle. Loads any drop by id straight from chain - so the
  * author can manage hidden / gated drops that the discovery list won't show
  * (the exact case of a freshly created whitelist-gated drop).
  */
@@ -4921,7 +4964,7 @@ function renderDropManage(): string {
   const actor = manageDropActor();
   const disabled = m.busy ? 'disabled' : '';
 
-  // Picker: drops the connected account can manage (lazy — only on click).
+  // Picker: drops the connected account can manage (lazy - only on click).
   const myDropsOptions = (m.myDrops ?? [])
     .map((d) => `<option value="${escapeHtml(d.drop_id)}">${escapeHtml(d.collection_name)} · #${escapeHtml(d.drop_id)} ${escapeHtml(d.name)} (${escapeHtml(d.status)})</option>`)
     .join('');
@@ -4933,7 +4976,7 @@ function renderDropManage(): string {
           <button data-action="findMyDrops" ${m.myDropsLoading ? 'disabled' : ''}>${m.myDropsLoading ? 'Scanning…' : 'Find drops I can manage'}</button>
           ${m.myDrops
             ? (m.myDrops.length
-                ? `<select id="myDropsSelect" class="manage-sec-select"><option value="">${m.myDrops.length} drop(s) — pick one…</option>${myDropsOptions}</select>`
+                ? `<select id="myDropsSelect" class="manage-sec-select"><option value="">${m.myDrops.length} drop(s) - pick one…</option>${myDropsOptions}</select>`
                 : '<span class="term">no drops found</span>')
             : '<span class="term">lists your collections’ drops so you don’t need the id</span>'}
         </div>
@@ -4949,7 +4992,7 @@ function renderDropManage(): string {
           <input id="manageDropId" type="text" inputmode="numeric" placeholder="drop_id to manage" value="${escapeHtml(m.dropIdInput)}" style="width:180px" />
           <button data-action="manageDropLoad" ${m.loading ? 'disabled' : ''}>${m.loading ? 'Loading…' : 'Load drop'}</button>
         </div>
-        <p class="term" style="margin-top:4px">Loads any drop by id — including hidden or whitelist-gated ones that don't appear in the claim list.</p>
+        <p class="term" style="margin-top:4px">Loads any drop by id - including hidden or whitelist-gated ones that don't appear in the claim list.</p>
       </div>
     </div>`;
 
@@ -4957,18 +5000,18 @@ function renderDropManage(): string {
   if (m.loaded) {
     const d = m.loaded;
     if (!m.authorized) {
-      body = `<p class="status-line err" style="margin-top:8px">${escapeHtml(actor ?? '(no wallet)')} is not an authorized account of ${escapeHtml(d.collection_name)} — you can't manage drop #${escapeHtml(d.drop_id)}.</p>`;
+      body = `<p class="status-line err" style="margin-top:8px">${escapeHtml(actor ?? '(no wallet)')} is not an authorized account of ${escapeHtml(d.collection_name)} - you can't manage drop #${escapeHtml(d.drop_id)}.</p>`;
     } else {
       const supply = d.max_claimable === 0 ? `${d.current_claimed}/∞` : `${d.current_claimed}/${d.max_claimable}`;
       const wl = m.whitelist;
       const whitelistEditor = `
         <div class="manage-members-wrap">
           <div class="term" style="margin-bottom:4px">whitelisted accounts for drop #${escapeHtml(d.drop_id)}:</div>
-          <p class="term" style="margin:-2px 0 6px">Note: a drop's whitelist is a list of accounts that belongs to <em>this drop only</em> — NeftyBlocks drops have no reusable/named whitelists (unlike blend whitelists), so you add wallets directly here.</p>
+          <p class="term" style="margin:-2px 0 6px">Note: a drop's whitelist is a list of accounts that belongs to <em>this drop only</em> - NeftyBlocks drops have no reusable/named whitelists (unlike blend whitelists), so you add wallets directly here.</p>
           ${wl
             ? `<div class="manage-members">${
                 wl.length === 0
-                  ? '<span class="term">empty — nobody can claim this gated drop until you add accounts below</span>'
+                  ? '<span class="term">empty - nobody can claim this gated drop until you add accounts below</span>'
                   : wl.slice(0, 300).map((acc) =>
                       `<span class="manage-chip">${escapeHtml(acc)} <button data-action="manageDropRemoveAccount" data-account="${escapeHtml(acc)}" title="remove" ${disabled}>×</button></span>`,
                     ).join('')
@@ -4982,7 +5025,7 @@ function renderDropManage(): string {
         </div>`;
 
       const gateWarn = d.auth_required && (wl?.length ?? 0) === 0
-        ? riskBox('This drop requires a whitelist but the whitelist is EMPTY — right now nobody can claim it. Add accounts below, or turn off "whitelist required".', '')
+        ? riskBox('This drop requires a whitelist but the whitelist is EMPTY - right now nobody can claim it. Add accounts below, or turn off "whitelist required".', '')
         : '';
 
       body = `
@@ -5136,7 +5179,7 @@ function renderDropCreate(): string {
       ${riskBox(
         'These exact templates will be minted and handed to claimers, in this order. A wrong template id gives away the wrong NFTs, and the drop cannot mint templates that do not already exist on the collection.',
         `<span class="manage-label" style="flex:none">templates to mint</span>
-         <textarea id="createTemplates" placeholder="template ids with optional quantity — e.g. 877088 x20, 889127 x2" rows="2" style="width:100%; margin-top:6px">${escapeHtml(c.templatesInput)}</textarea>
+         <textarea id="createTemplates" placeholder="template ids with optional quantity - e.g. 877088 x20, 889127 x2" rows="2" style="width:100%; margin-top:6px">${escapeHtml(c.templatesInput)}</textarea>
          ${templatesSummary}`,
       )}
 
@@ -5149,7 +5192,7 @@ function renderDropCreate(): string {
             : `<div class="row" style="gap:8px; margin-top:6px; flex-wrap:wrap; align-items:center">
                  <input id="createPriceAmount" type="text" inputmode="decimal" placeholder="amount, e.g. 1.5" value="${escapeHtml(c.priceAmount)}" style="width:140px" />
                  <input id="createPriceToken" type="text" placeholder="token (WAX)" value="${escapeHtml(c.priceToken)}" style="width:120px" />
-                 <input id="createPriceDecimals" type="text" inputmode="numeric" placeholder="decimals (8)" value="${escapeHtml(c.priceDecimals)}" style="width:120px" title="token precision — WAX is 8" />
+                 <input id="createPriceDecimals" type="text" inputmode="numeric" placeholder="decimals (8)" value="${escapeHtml(c.priceDecimals)}" style="width:120px" title="token precision - WAX is 8" />
                  <span class="term">→ ${escapeHtml(priceLabel)}</span>
                </div>
                <p class="term" style="margin-top:4px">Most WAX tokens use 8 decimals. Get the token's precision wrong and the price is off by orders of magnitude.</p>`}
@@ -5164,7 +5207,7 @@ function renderDropCreate(): string {
         : ''}
 
       ${riskBox(
-        'Supply is how many times the drop can be claimed in total. "Unlimited" keeps minting until your templates are exhausted — only use it if that is genuinely what you want.',
+        'Supply is how many times the drop can be claimed in total. "Unlimited" keeps minting until your templates are exhausted - only use it if that is genuinely what you want.',
         `<div class="row" style="gap:12px; align-items:center; flex-wrap:wrap">
            <span class="manage-label" style="flex:none">max supply</span>
            <label class="inline-mini"><input id="createUnlimited" type="checkbox" data-action="toggleCreateUnlimited" ${c.unlimited ? 'checked' : ''}/> <span>unlimited</span></label>
@@ -5190,7 +5233,7 @@ function renderDropCreate(): string {
             <label class="inline-mini">start <input id="createStart" type="datetime-local" value="${escapeHtml(c.startTime)}" /></label>
             <label class="inline-mini">end <input id="createEnd" type="datetime-local" value="${escapeHtml(c.endTime)}" /></label>
           </div>
-          <p class="term" style="margin-top:4px">Leave start empty to begin immediately. ${c.endTime ? '' : '<span class="risk-inline">Leaving end empty means the drop never ends — it stays claimable indefinitely.</span>'}</p>
+          <p class="term" style="margin-top:4px">Leave start empty to begin immediately. ${c.endTime ? '' : '<span class="risk-inline">Leaving end empty means the drop never ends - it stays claimable indefinitely.</span>'}</p>
         </div>
       </div>
 
@@ -5205,13 +5248,13 @@ function renderDropCreate(): string {
 
       ${c.authRequired
         ? riskBox(
-            'Two-step by design: createdrop only flips the "whitelist required" switch — it can\'t take the list of accounts. The drop is created with an EMPTY whitelist (nobody can claim yet). Right after creating, it loads into "Manage a drop" below and you add the allowed wallets there.',
+            'Two-step by design: createdrop only flips the "whitelist required" switch - it can\'t take the list of accounts. The drop is created with an EMPTY whitelist (nobody can claim yet). Right after creating, it loads into "Manage a drop" below and you add the allowed wallets there.',
             '',
           )
         : ''}
 
       ${riskBox(
-        'All payments go to this account. Double-check it — a typo sends every claim payment to the wrong (or a non-existent) account, and that is irreversible.',
+        'All payments go to this account. Double-check it - a typo sends every claim payment to the wrong (or a non-existent) account, and that is irreversible.',
         `<span class="manage-label" style="flex:none">price recipient</span>
          <input id="createRecipient" type="text" placeholder="defaults to your account: ${escapeHtml(actor)}" value="${escapeHtml(c.priceRecipient)}" style="width:100%; max-width:320px; margin-top:6px" />`,
       )}

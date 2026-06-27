@@ -24,7 +24,7 @@ const PAGE_LIMIT = 100;
 const MAX_PAGES = 5;
 const CACHE_TTL_MS = 5 * 60_000;
 
-// On-chain scan parameters. Tuned to complete in ≤5–10s on a fast WAX node.
+// On-chain scan parameters. Tuned to complete in ≤5-10s on a fast WAX node.
 const CHAIN_CHUNK_SIZE = 5_000n; // blend_id range per parallel worker
 const CHAIN_ROWS_PER_CALL = 1000;
 const CHAIN_MAX_CHUNKS = 16; // ≤ 80K blend_ids end-to-end safety cap
@@ -82,7 +82,7 @@ export interface DiscoveredBlend {
    * Same shape on-chain returns: `[VARIANT_TYPE, payload]` tuples.
    */
   ingredients?: import('./blend').IngredientVariant[];
-  /** First mint template this blend produces, if any — lets the picker show
+  /** First mint template this blend produces, if any - lets the picker show
    *  a meaningful name when the blend has no display_data name. */
   result_template_id?: number;
   /** Result template's name, when the source already carried it (indexer). */

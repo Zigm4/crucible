@@ -153,8 +153,8 @@ TX 2 - blend.nefty::claim  claim_id, roll_indexes
 
 When the connected wallet is authorized on a blend's collection, the
 loaded blend exposes a **Manage** panel (off by default behind a safety
-switch). It signs `blend.nefty` author actions one at a time — name,
-status, max uses, per-account limit, cooldown, delete — plus full
+switch). It signs `blend.nefty` author actions one at a time - name,
+status, max uses, per-account limit, cooldown, delete - plus full
 whitelist management:
 
 ```
@@ -162,14 +162,14 @@ whitelist management:
     (the one gating the current blend is marked "attached")
 [*] see its wallets as chips, add wallets, remove one, or clear all
     (addtowl / erasefromwl / clearwl)
-[*] create a new whitelist (addwhitelist) — this only NAMES an empty
+[*] create a new whitelist (addwhitelist) - this only NAMES an empty
     list; you then add wallets to it below. The newest list is
     auto-selected after creation so you can populate it right away
 [*] attach / detach a whitelist to the current blend (setblendsec)
 ```
 
 A whitelist (`security_id`) lives on the collection and can gate several
-blends at once — editing its wallets affects all of them. "Attach" is
+blends at once - editing its wallets affects all of them. "Attach" is
 what gates *this* blend behind the selected list. Naming a list and
 filling it with wallets are two separate steps: the name is a label
 (e.g. "OG holders"), never a wallet.
@@ -233,21 +233,21 @@ routine controls keep the calmer amber style.
 ```
 
 > **Whitelisting is a two-step flow, by contract design.** `createdrop`
-> only carries an `auth_required` flag — it takes no account list. The
+> only carries an `auth_required` flag - it takes no account list. The
 > allowed accounts live in a separate `whitelists` table keyed by
 > `drop_id`, which can only be written *after* the drop exists (you need
 > its id). So a drop created with "require whitelist" starts **empty**
 > (nobody can claim) until you add accounts in **Manage a drop**. The
 > create panel says this, and the drop is loaded there automatically.
 
-**Manage a drop** loads any drop you manage — picked from "drops I can
+**Manage a drop** loads any drop you manage - picked from "drops I can
 manage" (it lists the drops across the collections you're authorized on,
 so you don't need the id) or typed by `drop_id` (works for hidden /
 gated drops the claim list hides). From there you can:
 
 ```
 [*] edit the whitelist: add / remove accounts, or clear it
-    (addtowl / erasefromwl) — per-drop, scoped by drop_id
+    (addtowl / erasefromwl) - per-drop, scoped by drop_id
 [*] toggle the whitelist requirement (setdropauth)
 [*] hide / unhide (setdrophiddn)
 [*] delete the drop (erasedrop)
@@ -257,25 +257,31 @@ Unlike blend whitelists, a drop's whitelist is **per-drop**:
 `neftyblocksd` has no reusable named lists, so you add wallets directly
 to that drop.
 
-### UNPACK tab · `atomicpacksx`
+### UNPACK tab · `atomicpacksx` + `neftyblocksp`
 
 Opening a pack is a commit-reveal dance with the ORNG oracle, so it
 takes **two wallet signatures** instead of one:
 
 ```
-TX 1 - atomicassets::transfer  to=atomicpacksx, memo="unbox"
+TX 1 - atomicassets::transfer  to=<pack contract>, memo="unbox"
        "Take this pack into custody, ask the oracle for randomness."
 
        ... 5..30 seconds while ORNG calls the contract back ...
 
-TX 2 - atomicpacksx::claimunboxed  pack_asset_id, origin_roll_ids
-       "Randomness is in, mint my cards."
+TX 2 - <pack contract>::<reveal>   "Randomness is in, mint my cards."
 ```
 
-The same contract handles every collection on WAX. Crucible scans
-`atomicpacksx` globally and only lists collections where your wallet
-currently holds at least one openable pack. You then pick: collection,
-pack type, specific mint (when you own more than one of the same).
+Crucible handles **both** pack contracts and merges them into one list:
+
+| Contract        | Reveal action                          | Result staged in            |
+| --------------- | -------------------------------------- | --------------------------- |
+| `atomicpacksx`  | `claimunboxed(pack_asset_id, roll_ids)`| `unboxassets` (by asset_id) |
+| `neftyblocksp`  | `claim(claim_id, roll_indexes)`        | `claimassets` (claim_id == pack asset_id) |
+
+Both are scanned globally; the tab only lists collections where your
+wallet currently holds an openable pack (from either contract). You then
+pick: collection, pack type, specific mint. Each pack carries its source,
+so the right open/claim flow is used automatically.
 
 ```
 [*] cross-collection pack discovery
@@ -544,7 +550,7 @@ src/
     blend.ts           : reads a blend's recipe, isDeterministic
     discover.ts        : lists blends per collection (indexer + on-chain)
     whitelist.ts       : checks secure.nefty whitelists
-    admin.ts           : author actions — blend settings + secure.nefty
+    admin.ts           : author actions - blend settings + secure.nefty
                          whitelists (the BLEND Manage panel)
     template.ts        : enriches expected mints (name, supply, flags)
     tokens.ts          : token symbol -> contract registry (159 tokens)
@@ -553,11 +559,14 @@ src/
     rngWait.ts         : polls claimassets between fuse and claim
     drops.ts           : lists drops per collection + 4 auth flavours
     dropExecute.ts     : claim tx (assertprice + transfer + claim*)
-    createDrop.ts      : author action — build a createdrop tx
-    dropAdmin.ts       : author actions — drop whitelist + settings + reads
-    packs.ts           : lists pack designs (global scan), pairs with wallet
-    packExecute.ts     : unbox txs (transfer "unbox" + claimunboxed)
+    createDrop.ts      : author action - build a createdrop tx
+    dropAdmin.ts       : author actions - drop whitelist + settings + reads
+    packs.ts           : lists atomicpacksx pack designs, pairs with wallet
+    packExecute.ts     : atomicpacksx unbox txs (transfer + claimunboxed)
     packWait.ts        : polls unboxassets between TX1 and TX2
+    neftyPacks.ts      : lists neftyblocksp (NeftyBlocks) pack designs
+    neftyPackExecute.ts: neftyblocksp unbox txs (transfer + claim)
+    neftyPackWait.ts   : polls neftyblocksp claimassets between TX1 and TX2
     upgrades.ts        : lists up.nefty upgrades per collection
     upgradeExecute.ts  : upgrade tx (openbal + transfer + upgrade)
   waxdao/
@@ -651,11 +660,11 @@ Honesty up front:
   in CPU themselves. Documented in the in-app guide. If the wallet
   falls back to a resource provider (Greymass Fuel) that doesn't
   cosign, the chain rejects with *"declares authority
-  greymassfuel@cosign … does not have signatures for it"* — staking
+  greymassfuel@cosign … does not have signatures for it"* - staking
   CPU (or signing with WAX Cloud Wallet) avoids it.
 - **Creating templates / schemas**: drops mint from templates that
   already exist. Making new templates/schemas (a riskier flow) isn't
-  in the app yet — create them on AtomicHub, then build the drop here.
+  in the app yet - create them on AtomicHub, then build the drop here.
 - **Other NeftyBlocks contracts** (redemptions, NFT swaps,
   marketplace listings) aren't covered yet. PRs welcome.
 

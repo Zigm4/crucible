@@ -3,15 +3,45 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Crucible, On-chain blends for blend.nefty</title>
-    <meta name="description" content="An open-source crucible for blend.nefty blends on WAX. The contract is still live on-chain, this page just builds the transaction and lets your wallet sign it." />
+    <title>Crucible - on-chain UI for NeftyBlocks &amp; WaxDAO (blends · drops · packs · upgrades)</title>
+    <meta name="description" content="An open-source UI for live WAX smart contracts: NeftyBlocks blend.nefty (blends), neftyblocksd (drops), atomicpacksx (packs), up.nefty (upgrades), and WaxDAO waxdaomarket (blends). The contracts are still on-chain - this page just builds the transactions and your wallet signs them." />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/src/ui/style.css" />
+    <!--
+      Theme bootstrap. Runs before first paint so the chosen skin is applied
+      with no flash. Three skins, all CSS-only:
+        (no attribute)        = "Neon"   the original cyberpunk theme
+        data-theme="neutral"  = "Clair"  calm light theme   (src/ui/neutral.css)
+        data-theme="modern"   = "Sombre" elegant dark theme (src/ui/modern.css)
+      Default for a first-time visitor is "Sombre"; any later choice is
+      remembered in localStorage and wins. Touches only <html>'s data-theme
+      attribute and a localStorage key. No application code is involved.
+    -->
+    <script>
+      (function () {
+        var theme = 'modern'; // default skin for first-time visitors
+        try {
+          var saved = localStorage.getItem('crucible-theme');
+          if (saved === 'cyber' || saved === 'neutral' || saved === 'modern') {
+            theme = saved;
+          }
+        } catch (e) {}
+        if (theme === 'neutral' || theme === 'modern') {
+          document.documentElement.setAttribute('data-theme', theme);
+        }
+        // theme === 'cyber' leaves the attribute unset (the Neon base theme).
+      })();
+    </script>
   </head>
   <body>
+    <div class="theme-switch" role="group" aria-label="Theme">
+      <button type="button" class="theme-opt" data-set-theme="cyber">Neon</button>
+      <button type="button" class="theme-opt" data-set-theme="neutral">Clair</button>
+      <button type="button" class="theme-opt" data-set-theme="modern">Sombre</button>
+    </div>
     <main id="app">
       <header>
         <h1>
@@ -40,22 +70,64 @@
           <span class="logo-text">CRUCIBLE</span>
         </h1>
         <p class="tagline">
-          An open-source crucible for <code>blend.nefty</code> blends on WAX.
-          The contract is still live on-chain, this page just builds the
-          transaction and lets your wallet sign it.
+          An open-source UI for live WAX contracts - NeftyBlocks
+          (<code>blend.nefty</code>, <code>neftyblocksd</code>,
+          <code>atomicpacksx</code>, <code>up.nefty</code>) and WaxDAO
+          (<code>waxdaomarket</code>). The contracts are still on-chain;
+          this page just builds the transactions and lets your wallet sign them.
         </p>
       </header>
       <section id="root"></section>
       <footer>
         <p>zero backend · audit the source before signing ·
-          <a href="./README.md" target="_blank">user guide</a> ·
-          <a href="https://waxblock.io/account/blend.nefty" target="_blank">contract: blend.nefty</a></p>
+          <a href="./guide.html">user guide</a></p>
+        <p class="contracts-line">contracts:
+          <a href="https://waxblock.io/account/blend.nefty" target="_blank">blend.nefty</a> ·
+          <a href="https://waxblock.io/account/neftyblocksd" target="_blank">neftyblocksd</a> ·
+          <a href="https://waxblock.io/account/atomicpacksx" target="_blank">atomicpacksx</a> ·
+          <a href="https://waxblock.io/account/up.nefty" target="_blank">up.nefty</a> ·
+          <a href="https://waxblock.io/account/secure.nefty" target="_blank">secure.nefty</a> ·
+          <a href="https://waxblock.io/account/waxdaomarket" target="_blank">waxdaomarket</a></p>
         <p class="attribution">
           Powered by <a href="https://github.com/Zigm4/crucible" target="_blank">Crucible</a> &middot;
           MIT licensed &middot; forks welcome (please keep this credit)
         </p>
       </footer>
     </main>
+    <!--
+      Theme switch wiring. Independent of the app module: it only flips the
+      data-theme attribute on <html> and remembers the choice. Removing this
+      block (and the .theme-switch markup above) cleanly disables the feature.
+    -->
+    <script>
+      (function () {
+        function current() {
+          var a = document.documentElement.getAttribute('data-theme');
+          return (a === 'neutral' || a === 'modern') ? a : 'cyber';
+        }
+        function paint() {
+          var c = current();
+          var opts = document.querySelectorAll('.theme-opt');
+          for (var i = 0; i < opts.length; i++) {
+            opts[i].classList.toggle('active', opts[i].getAttribute('data-set-theme') === c);
+          }
+        }
+        function set(theme) {
+          if (theme === 'neutral' || theme === 'modern') {
+            document.documentElement.setAttribute('data-theme', theme);
+          } else {
+            document.documentElement.removeAttribute('data-theme');
+          }
+          try { localStorage.setItem('crucible-theme', theme); } catch (e) {}
+          paint();
+        }
+        document.addEventListener('click', function (e) {
+          var btn = e.target && e.target.closest && e.target.closest('[data-set-theme]');
+          if (btn) set(btn.getAttribute('data-set-theme'));
+        });
+        paint();
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

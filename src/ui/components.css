@@ -286,7 +286,7 @@ section.about { background: transparent; border: none; padding: 0; box-shadow: n
 section.about::before, section.about::after { display: none; }
 section.about > h2 { margin-bottom: 10px; }
 
-/* Outer FAQ toggle — keeps the whole guide collapsed to one line by default. */
+/* Outer FAQ toggle - keeps the whole guide collapsed to one line by default. */
 .about-toc {
   border: 1px solid var(--border-soft);
   border-left: 2px solid var(--accent);
@@ -636,7 +636,7 @@ section.about > h2 { margin-bottom: 10px; }
   font-size: 13px;
 }
 
-/* ─── floating toast — action outcome visible regardless of scroll ────── */
+/* ─── floating toast - action outcome visible regardless of scroll ────── */
 #crucible-toast.toast {
   position: fixed;
   right: 16px;
@@ -690,7 +690,7 @@ section.about > h2 { margin-bottom: 10px; }
 }
 .create-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-/* ─── red "risky / touchy" box — louder than the amber routine controls ─ */
+/* ─── red "risky / touchy" box - louder than the amber routine controls ─ */
 .risk-box {
   margin-top: 10px;
   padding: 8px 12px 10px;

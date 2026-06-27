@@ -75,7 +75,16 @@ export interface RngPlanArgs {
   ft_payments: string[];
   /** NFTs we hold (not transferred) that the contract should consider. Usually []. */
   own_assets?: string[];
-  /** Mandatory: shape of the contract's security guard for this blend. */
+  /**
+   * Whether the blend is gated (`security_id` != 0). This - NOT whether the
+   * blend is random - decides the action: secure blends use `fuse` (which
+   * carries the security_check), non-secure blends use `nosecfuse`. Both
+   * handle random results the same way (stage a claim, then `claim`). Sending
+   * `fuse` on a NON-secure blend is rejected on-chain with
+   * "Non secure blends require a transfer or nosecfuse".
+   */
+  secure: boolean;
+  /** Security guard payload - only emitted for secure blends. */
   security_check: SecurityCheck;
 }
 
@@ -146,19 +155,35 @@ export async function buildFuseActions(args: RngPlanArgs): Promise<BuiltAction[]
     });
   }
 
-  // 5. fuse (instead of nosecfuse), with the mandatory security_check
-  actions.push({
-    account: 'blend.nefty',
-    name: 'fuse',
-    authorization: auth,
-    data: {
-      claimer: args.claimer,
-      blend_id: String(args.blend_id),
-      transferred_assets: args.asset_ids,
-      own_assets: args.own_assets ?? [],
-      security_check: encodeSecurityCheck(args.security_check),
-    },
-  });
+  // 5. the fuse leg. Secure blends -> `fuse` (carries the security_check);
+  //    non-secure blends -> `nosecfuse` (no security_check). The contract
+  //    stages the random claim either way.
+  if (args.secure) {
+    actions.push({
+      account: 'blend.nefty',
+      name: 'fuse',
+      authorization: auth,
+      data: {
+        claimer: args.claimer,
+        blend_id: String(args.blend_id),
+        transferred_assets: args.asset_ids,
+        own_assets: args.own_assets ?? [],
+        security_check: encodeSecurityCheck(args.security_check),
+      },
+    });
+  } else {
+    actions.push({
+      account: 'blend.nefty',
+      name: 'nosecfuse',
+      authorization: auth,
+      data: {
+        claimer: args.claimer,
+        blend_id: String(args.blend_id),
+        transferred_assets: args.asset_ids,
+        own_assets: args.own_assets ?? [],
+      },
+    });
+  }
 
   return actions;
 }

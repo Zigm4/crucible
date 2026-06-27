@@ -24,12 +24,31 @@ import {
   symbolFromQuantity,
 } from './tokens';
 
+import type { SecurityCheck } from './rngExecute';
+
+/** Encodes a SecurityCheck union into the ABI variant tuple. Mirrors the
+ *  one in rngExecute.ts; kept local to avoid a value import cycle. */
+function encodeSecurityCheck(s: SecurityCheck): [string, Record<string, unknown>] {
+  return s.kind === 'whitelist'
+    ? ['WHITELIST_CHECK', { account_name: s.account_name }]
+    : ['OWNERSHIP_CHECK', { account_name: s.account_name, asset_ids: s.asset_ids }];
+}
+
 export interface PlanArgs {
   claimer: string;
   blend_id: string | number;
   asset_ids: string[]; // NFTs to transfer (can be empty if FT-only blend)
   ft_payments: string[]; // asset strings like "105.00000000 UPMAX"
   own_assets?: string[];
+  /**
+   * Whether the blend is gated (`security_id` != 0). Secure blends fuse with
+   * `fuse` (carrying the security_check); non-secure with `nosecfuse`. A
+   * deterministic secure blend still mints in this single tx - only RANDOM
+   * blends add the wait + claim leg (handled by rngExecute.ts).
+   */
+  secure: boolean;
+  /** Security guard payload - only emitted for secure blends. */
+  security_check: SecurityCheck;
 }
 
 export interface BuiltAction {
@@ -119,18 +138,36 @@ export async function buildBlendActions(args: PlanArgs): Promise<BuiltAction[]> 
     });
   }
 
-  // 5. nosecfuse
-  actions.push({
-    account: 'blend.nefty',
-    name: 'nosecfuse',
-    authorization: auth,
-    data: {
-      claimer: args.claimer,
-      blend_id: String(args.blend_id),
-      transferred_assets: args.asset_ids,
-      own_assets: args.own_assets ?? [],
-    },
-  });
+  // 5. the fuse leg. Secure blends -> `fuse` (+security_check); non-secure
+  //    -> `nosecfuse`. A deterministic blend mints inline either way (no
+  //    claim leg). Sending nosecfuse on a SECURE blend is rejected on-chain
+  //    by the contract's checksecure step.
+  if (args.secure) {
+    actions.push({
+      account: 'blend.nefty',
+      name: 'fuse',
+      authorization: auth,
+      data: {
+        claimer: args.claimer,
+        blend_id: String(args.blend_id),
+        transferred_assets: args.asset_ids,
+        own_assets: args.own_assets ?? [],
+        security_check: encodeSecurityCheck(args.security_check),
+      },
+    });
+  } else {
+    actions.push({
+      account: 'blend.nefty',
+      name: 'nosecfuse',
+      authorization: auth,
+      data: {
+        claimer: args.claimer,
+        blend_id: String(args.blend_id),
+        transferred_assets: args.asset_ids,
+        own_assets: args.own_assets ?? [],
+      },
+    });
+  }
 
   return actions;
 }

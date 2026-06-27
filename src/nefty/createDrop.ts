@@ -3,7 +3,7 @@
  *
  * Like the blend/secure admin actions, this carries an `authorized_account`
  * that the contract checks against the collection's `authorized_accounts`
- * list — the UI only surfaces it when the connected wallet is detected as a
+ * list - the UI only surfaces it when the connected wallet is detected as a
  * manager, but the chain is the real guard.
  *
  * The struct is taken verbatim from the live `neftyblocksd` ABI:

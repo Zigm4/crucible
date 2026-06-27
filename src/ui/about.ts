@@ -312,24 +312,27 @@ const PANELS: Panel[] = [
     summary: 'UNPACK · OPEN PACKS WITH THE ORNG ORACLE',
     body: `
       <p>
-        Pack opening lives on a third contract,
-        <code>atomicpacksx</code>. It's a commit-reveal flow with the
-        on-chain ORNG randomness oracle, so opening a pack takes
-        <strong>two wallet signatures</strong>:
+        Packs live on <strong>two</strong> contracts -
+        <code>atomicpacksx</code> (AtomicHub) and
+        <code>neftyblocksp</code> (NeftyBlocks). Both are a commit-reveal
+        flow with the on-chain ORNG randomness oracle, so opening a pack
+        takes <strong>two wallet signatures</strong>:
       </p>
-<pre><code>TX 1  atomicassets::transfer  to=atomicpacksx, memo="unbox"
+<pre><code>TX 1  atomicassets::transfer  to=&lt;pack contract&gt;, memo="unbox"
       "Take this pack, ask the oracle for randomness."
 
       ... 5..30 seconds while ORNG calls the contract back ...
 
-TX 2  atomicpacksx::claimunboxed  pack_asset_id, origin_roll_ids
+TX 2  &lt;pack contract&gt;::&lt;reveal&gt;
       "Randomness is in, mint my cards."</code></pre>
       <p>
-        The <strong>UNPACK</strong> tab scans
-        <code>atomicpacksx</code> globally and lists only the
-        collections where your wallet currently holds at least one
-        openable pack. You then pick: collection, pack type, specific
-        mint (when you own more than one of the same).
+        The <strong>UNPACK</strong> tab scans <em>both</em> contracts
+        globally and lists only the collections where your wallet
+        currently holds at least one openable pack, from either one. You
+        pick collection, pack type, specific mint - and Crucible uses the
+        right open/claim flow for that pack's contract automatically
+        (<code>atomicpacksx::claimunboxed</code> vs
+        <code>neftyblocksp::claim</code>).
       </p>
       <p>
         Between TX1 and TX2, Crucible polls the
@@ -414,7 +417,7 @@ TX 2  atomicpacksx::claimunboxed  pack_asset_id, origin_roll_ids
         If the connected wallet is an <strong>authorized account</strong>
         of a collection (its author, or in the collection's
         <code>authorized_accounts</code>), Crucible reveals inline
-        <strong>Manage</strong> controls — the contracts always allowed
+        <strong>Manage</strong> controls - the contracts always allowed
         this; only the website was missing.
       </p>
       <p>
@@ -425,7 +428,7 @@ TX 2  atomicpacksx::claimunboxed  pack_asset_id, origin_roll_ids
       </p>
       <ul>
         <li>blend whitelists are reusable named lists
-        (<code>secure.nefty</code> <code>security_id</code>) — you can
+        (<code>secure.nefty</code> <code>security_id</code>) - you can
         create one, fill it with wallets, and attach it to one or several
         blends. Editing the list affects every blend it gates.</li>
       </ul>
@@ -447,14 +450,14 @@ TX 2  atomicpacksx::claimunboxed  pack_asset_id, origin_roll_ids
       <ul>
         <li><strong>Create a drop</strong> (<code>neftyblocksd::createdrop</code>):
         mint a drop from <em>existing templates</em>, with the standard
-        options — name/description/image, templates &amp; quantities,
+        options - name/description/image, templates &amp; quantities,
         price (or free), supply (or unlimited), per-account limit +
         cooldown, start/end window, whitelist requirement, hidden, price
         recipient, credit-card payments. Touchy options (the minted
         templates, unlimited/free supply, the payout account) are boxed in
         <strong>red</strong> with an explanation; routine controls stay in
         the amber style.</li>
-        <li><strong>Manage a drop</strong>: load any drop you manage — by
+        <li><strong>Manage a drop</strong>: load any drop you manage - by
         picking it from "drops I can manage", or by id (works for hidden /
         gated drops the claim list hides). Edit its whitelist (add / remove
         / clear), toggle the whitelist requirement, hide/unhide, or delete.</li>
@@ -464,7 +467,7 @@ TX 2  atomicpacksx::claimunboxed  pack_asset_id, origin_roll_ids
         <code>neftyblocksd</code> has no reusable named lists, so you add
         wallets directly to that drop (table <code>whitelists</code>, scoped
         by <code>drop_id</code>). A drop created with "whitelist required"
-        starts <strong>empty</strong> — nobody can claim until you add
+        starts <strong>empty</strong> - nobody can claim until you add
         accounts in Manage a drop.
       </p>
     `,
@@ -483,7 +486,7 @@ export function renderAboutPanels(): string {
   return `
     <section class="about">
       <details class="about-toc">
-        <summary><span>ℹ INFO &amp; FAQ — what Crucible is, how to use it, author tools</span></summary>
+        <summary><span>ℹ INFO &amp; FAQ - what Crucible is, how to use it, author tools</span></summary>
         <div class="about-toc-body">
           ${PANELS.map(
             (p) => `

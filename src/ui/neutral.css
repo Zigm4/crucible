@@ -1,0 +1,543 @@
+/*!
+ * crucible / neutral.css   (additive - second theme + theme switcher)
+ * ─────────────────────────────────────────────────────────────
+ * A calm, neutral, "less futuristic" alternative to the default
+ * cyberpunk skin. Self-contained and additive:
+ *
+ *   • The original theme.css / layout.css / components.css are NOT
+ *     touched. The cyberpunk look stays pixel-perfect.
+ *   • Everything in here that re-skins the app is scoped under
+ *     html[data-theme="neutral"], so it is completely inert until
+ *     the user picks the neutral theme.
+ *   • The .theme-switch widget below is the ONLY unscoped block -
+ *     it styles the floating theme toggle for both themes, reading
+ *     from the active theme's tokens so it always matches.
+ *
+ * No application code (app.ts, src/nefty, src/chain, …) is involved:
+ * the toggle just sets `data-theme` on <html> and persists the
+ * choice in localStorage (wired by the small script in index.html).
+ *
+ * To remove this feature entirely: delete this file, drop the
+ * @import in style.css, and revert the index.html additions.
+ */
+
+
+/* ─── floating theme switch (both themes) ─────────────────────────────── */
+.theme-switch {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 1100;
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.theme-opt {
+  padding: 5px 11px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  box-shadow: none;
+  transition: color 120ms, background 120ms, border-color 120ms;
+}
+.theme-opt:hover {
+  color: var(--accent-hot);
+  box-shadow: none;
+  transform: none;
+}
+.theme-opt.active {
+  color: var(--accent-hot);
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+@media (max-width: 600px) {
+  .theme-switch { top: 8px; right: 8px; }
+  .theme-opt { padding: 5px 8px; }
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+ * NEUTRAL THEME - everything below is scoped to html[data-theme="neutral"]
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* ─── tokens ──────────────────────────────────────────────────────────── */
+html[data-theme="neutral"] {
+  color-scheme: light;
+  --bg: #f4f6f9;
+  --bg-2: #eaeef3;
+  --panel: #ffffff;
+  --panel-edge: #e3e8ef;
+  --grid: rgba(2, 6, 23, 0.04);
+  --fg: #1f2733;
+  --fg-dim: #5a6573;
+  --muted: #9aa3b2;
+  --accent: #3b63e0;
+  --accent-hot: #2549c0;
+  --accent-deep: #1d3aa8;
+  --neon: #3b63e0;
+  --danger: #dc2b50;
+  --ok: #13a065;
+  --warn: #c47d05;
+  --border: #d7dde6;
+  --border-soft: #e7ebf1;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
+}
+html[data-theme="neutral"] body { background: var(--bg); }
+
+/* keep real monospace where it actually helps readability */
+html[data-theme="neutral"] code,
+html[data-theme="neutral"] pre,
+html[data-theme="neutral"] .term,
+html[data-theme="neutral"] .picker-id,
+html[data-theme="neutral"] .asset .id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ─── ambient layers: drop the neon glow + scanlines ──────────────────── */
+html[data-theme="neutral"] body::before {
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+}
+html[data-theme="neutral"] body::after { display: none; }
+
+/* ─── header ──────────────────────────────────────────────────────────── */
+html[data-theme="neutral"] header { border-bottom-color: var(--border); }
+html[data-theme="neutral"] header::after {
+  background: var(--accent);
+  box-shadow: none;
+}
+html[data-theme="neutral"] header h1 { letter-spacing: 2px; }
+html[data-theme="neutral"] header h1 .logo-text {
+  background: none;
+  -webkit-background-clip: initial;
+  background-clip: initial;
+  color: var(--fg);
+  filter: none;
+}
+html[data-theme="neutral"] header h1 .logo-glyph {
+  color: var(--accent);
+  filter: none;
+}
+html[data-theme="neutral"] .logo-spark { animation: none; opacity: 0.85; }
+html[data-theme="neutral"] header .tagline code {
+  color: var(--accent-hot);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: var(--border-soft);
+}
+
+/* ─── cards: flat, soft-shadowed, no corner brackets ──────────────────── */
+html[data-theme="neutral"] section,
+html[data-theme="neutral"] .card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+}
+html[data-theme="neutral"] .card::before,
+html[data-theme="neutral"] section::before,
+html[data-theme="neutral"] .card::after,
+html[data-theme="neutral"] section::after { display: none; }
+
+/*
+ * The INFO & FAQ guide lives in <section class="about">, which the base
+ * stylesheet keeps transparent/borderless. Our "section" rule above is more
+ * specific and was wrongly re-adding a card frame around it (the box that
+ * looked misplaced inside the rounded card). Restore the transparent wrapper.
+ */
+html[data-theme="neutral"] section.about {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* Consistent, softer corners (the base theme uses sharp 2px everywhere). */
+html[data-theme="neutral"] .about-toc,
+html[data-theme="neutral"] .about-panel,
+html[data-theme="neutral"] .about-body pre,
+html[data-theme="neutral"] .pack-row,
+html[data-theme="neutral"] .pack-roll,
+html[data-theme="neutral"] .unbox-outcome,
+html[data-theme="neutral"] .slot,
+html[data-theme="neutral"] .asset-grid,
+html[data-theme="neutral"] .asset,
+html[data-theme="neutral"] input[type=text],
+html[data-theme="neutral"] input[type=number],
+html[data-theme="neutral"] select,
+html[data-theme="neutral"] textarea,
+html[data-theme="neutral"] .picker-toggle,
+html[data-theme="neutral"] .picker-panel,
+html[data-theme="neutral"] .picker-rows,
+html[data-theme="neutral"] button,
+html[data-theme="neutral"] .tag,
+html[data-theme="neutral"] .legend,
+html[data-theme="neutral"] .manage-section,
+html[data-theme="neutral"] .create-section,
+html[data-theme="neutral"] .risk-box,
+html[data-theme="neutral"] .collection-chip,
+html[data-theme="neutral"] .share-btn,
+html[data-theme="neutral"] pre {
+  border-radius: 8px;
+}
+html[data-theme="neutral"] .status-chip { border-radius: 999px; }
+
+/* ─── headings & labels: calmer, no terminal "// " marker ─────────────── */
+html[data-theme="neutral"] h2 { color: var(--fg); letter-spacing: 1.5px; }
+html[data-theme="neutral"] h2::before { content: ''; }
+html[data-theme="neutral"] h3 { color: var(--accent-hot); letter-spacing: 1px; }
+html[data-theme="neutral"] label { color: var(--fg-dim); letter-spacing: 1px; }
+
+/* ─── footer ──────────────────────────────────────────────────────────── */
+html[data-theme="neutral"] footer { border-top-color: var(--border); }
+html[data-theme="neutral"] footer a {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+html[data-theme="neutral"] footer a:hover {
+  color: var(--accent-hot);
+  border-bottom-color: var(--accent-hot);
+  text-shadow: none;
+}
+
+/* ─── inline code ─────────────────────────────────────────────────────── */
+html[data-theme="neutral"] code {
+  background: rgba(2, 6, 23, 0.05);
+  border-color: var(--border-soft);
+  color: var(--accent-hot);
+}
+
+/* ─── inputs, selects, pickers, textareas ─────────────────────────────── */
+html[data-theme="neutral"] input[type=text],
+html[data-theme="neutral"] input[type=number],
+html[data-theme="neutral"] select,
+html[data-theme="neutral"] .picker-toggle,
+html[data-theme="neutral"] .manage-section textarea,
+html[data-theme="neutral"] .manage-section input[type=text],
+html[data-theme="neutral"] .manage-section input[type=datetime-local] {
+  background: #ffffff;
+  border-color: var(--border);
+  color: var(--fg);
+}
+html[data-theme="neutral"] input::placeholder { color: var(--muted); }
+html[data-theme="neutral"] input[type=text]:focus,
+html[data-theme="neutral"] input[type=number]:focus,
+html[data-theme="neutral"] select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(59, 99, 224, 0.15);
+}
+html[data-theme="neutral"] select option { background: #ffffff; color: var(--fg); }
+
+/* checkbox toggle */
+html[data-theme="neutral"] .inline-toggle input[type=checkbox] {
+  background: #ffffff;
+  border-color: var(--border);
+}
+html[data-theme="neutral"] .inline-toggle input[type=checkbox]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: none;
+}
+html[data-theme="neutral"] .inline-toggle input[type=checkbox]:checked::after {
+  border-color: #ffffff;
+}
+
+/* ─── collection chips ────────────────────────────────────────────────── */
+html[data-theme="neutral"] .collection-chip {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  border-color: var(--border);
+  color: var(--accent-hot);
+}
+html[data-theme="neutral"] .collection-chip:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: none;
+}
+html[data-theme="neutral"] .collection-chip.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-hot);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* ─── pack rows / rolls / unbox outcomes ──────────────────────────────── */
+html[data-theme="neutral"] .pack-row {
+  background: #ffffff;
+  border-color: var(--border);
+  border-left-color: var(--accent);
+}
+html[data-theme="neutral"] .pack-row:hover {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  border-color: var(--accent);
+  box-shadow: none;
+}
+html[data-theme="neutral"] .pack-row.active {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+html[data-theme="neutral"] .pack-roll { background: #fafbfc; border-color: var(--border); }
+html[data-theme="neutral"] .unbox-outcome {
+  background: #fafbfc;
+  border-color: var(--border);
+  border-left-color: var(--accent);
+}
+html[data-theme="neutral"] .unbox-outcome.rolled { box-shadow: none; }
+html[data-theme="neutral"] .unbox-outcome.claimed { box-shadow: none; }
+
+/* ─── about panels ────────────────────────────────────────────────────── */
+html[data-theme="neutral"] .about-toc,
+html[data-theme="neutral"] .about-panel {
+  background: #fafbfc;
+  border-color: var(--border);
+  border-left-color: var(--accent);
+}
+html[data-theme="neutral"] .about-panel[open] {
+  background: #f3f6fb;
+  border-color: var(--border);
+}
+html[data-theme="neutral"] .about-toc > summary:hover,
+html[data-theme="neutral"] .about-panel > summary:hover {
+  color: var(--accent);
+  text-shadow: none;
+}
+html[data-theme="neutral"] .about-body pre {
+  background: #f5f7fa;
+  border-color: var(--border);
+  color: #334155;
+}
+html[data-theme="neutral"] .about-body code {
+  background: rgba(2, 6, 23, 0.05);
+  border-color: var(--border-soft);
+  color: var(--accent-hot);
+}
+
+/* ─── tabs / platform pills ───────────────────────────────────────────── */
+html[data-theme="neutral"] .tab { border-bottom-color: var(--border); }
+html[data-theme="neutral"] .tab.active {
+  color: var(--accent-hot);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+html[data-theme="neutral"] .platform-pill { border-color: var(--border); }
+html[data-theme="neutral"] .platform-pill:hover { border-color: var(--accent); }
+html[data-theme="neutral"] .platform-pill.active {
+  color: var(--accent-hot);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* ─── share button ────────────────────────────────────────────────────── */
+html[data-theme="neutral"] .share-btn {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-color: var(--border);
+  color: var(--accent-hot);
+}
+html[data-theme="neutral"] .share-btn:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: none;
+  color: var(--accent);
+}
+
+/* ─── custom picker dropdown ──────────────────────────────────────────── */
+html[data-theme="neutral"] .picker-toggle:hover:not(:disabled) {
+  border-color: var(--accent);
+  box-shadow: none;
+  color: var(--accent-hot);
+}
+html[data-theme="neutral"] .picker-caret { color: var(--accent); }
+html[data-theme="neutral"] .picker-panel {
+  background-color: #ffffff;
+  background-image: none;
+  border-color: var(--border);
+  box-shadow: 0 12px 32px rgba(16, 24, 40, 0.16), inset 0 0 0 1px #ffffff;
+}
+html[data-theme="neutral"] .picker-panel[data-position="above"] {
+  box-shadow: 0 -12px 32px rgba(16, 24, 40, 0.16), inset 0 0 0 1px #ffffff;
+}
+html[data-theme="neutral"] .picker-rows { background-color: #ffffff; }
+html[data-theme="neutral"] .picker-row { border-bottom-color: var(--border-soft); }
+html[data-theme="neutral"] .picker-row:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+html[data-theme="neutral"] .picker-price {
+  color: var(--accent-hot);
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+/* ─── legend ──────────────────────────────────────────────────────────── */
+html[data-theme="neutral"] .legend { border-color: var(--border); }
+html[data-theme="neutral"] .legend-disabled-swatch {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-color: var(--border);
+}
+
+/* ─── skeletons / progress: neutral grays ─────────────────────────────── */
+html[data-theme="neutral"] .skeleton-bar {
+  background: linear-gradient(90deg, rgba(2, 6, 23, 0.05) 0%, rgba(2, 6, 23, 0.12) 50%, rgba(2, 6, 23, 0.05) 100%);
+  background-size: 200% 100%;
+}
+html[data-theme="neutral"] .skeleton-inline {
+  background: linear-gradient(90deg, rgba(2, 6, 23, 0.06) 0%, rgba(2, 6, 23, 0.14) 50%, rgba(2, 6, 23, 0.06) 100%);
+  background-size: 200% 100%;
+}
+html[data-theme="neutral"] .progress { background: rgba(2, 6, 23, 0.06); border-color: var(--border); }
+html[data-theme="neutral"] .progress-fill {
+  background: linear-gradient(90deg, var(--accent-deep), var(--accent));
+  box-shadow: none;
+}
+
+/* ─── buttons: flat, sentence-case, no neon shine ─────────────────────── */
+html[data-theme="neutral"] button {
+  background: #ffffff;
+  border-color: var(--border);
+  color: var(--fg);
+  letter-spacing: 0.4px;
+  text-transform: none;
+  font-size: 13px;
+}
+html[data-theme="neutral"] button:hover {
+  border-color: var(--accent);
+  box-shadow: none;
+  color: var(--accent-hot);
+  background: #f7f9fc;
+}
+html[data-theme="neutral"] button:disabled:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: #ffffff;
+}
+html[data-theme="neutral"] button.primary {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: var(--accent);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.10);
+}
+html[data-theme="neutral"] button.primary:hover {
+  background: var(--accent-hot);
+  box-shadow: 0 2px 8px rgba(37, 73, 192, 0.30);
+}
+html[data-theme="neutral"] button.primary::after { display: none; animation: none; }
+
+/* ─── tags ────────────────────────────────────────────────────────────── */
+html[data-theme="neutral"] .tag {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-color: var(--border);
+  color: var(--fg-dim);
+}
+html[data-theme="neutral"] .tag.ok,
+html[data-theme="neutral"] .tag.warn,
+html[data-theme="neutral"] .tag.err { box-shadow: none; }
+html[data-theme="neutral"] .tag.accent {
+  color: var(--accent-hot);
+  border-color: var(--accent);
+  box-shadow: none;
+}
+
+/* ─── payload <pre>: light code block, no "// payload" marker ─────────── */
+html[data-theme="neutral"] pre {
+  background: #f5f7fa;
+  border-color: var(--border);
+  color: #334155;
+}
+html[data-theme="neutral"] pre::before { content: ''; display: none; }
+
+/* ─── slots ───────────────────────────────────────────────────────────── */
+html[data-theme="neutral"] .slot {
+  background: #fafbfc;
+  border-color: var(--border);
+  border-left-color: var(--accent);
+}
+html[data-theme="neutral"] .slot.unsupported { border-left-color: var(--danger); }
+html[data-theme="neutral"] .slot.ft { border-left-color: var(--warn); }
+
+/* ─── asset grid ──────────────────────────────────────────────────────── */
+html[data-theme="neutral"] .asset-grid { background: #fafbfc; border-color: var(--border); }
+html[data-theme="neutral"] .asset { background: #ffffff; border-color: var(--border); }
+html[data-theme="neutral"] .asset:hover { border-color: var(--accent); }
+html[data-theme="neutral"] .asset.selected {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* ─── status line: softer, less "terminal" markers ────────────────────── */
+html[data-theme="neutral"] .status-line::before { content: '› '; color: var(--accent); }
+html[data-theme="neutral"] .status-line.err::before { content: '⚠ '; color: var(--danger); }
+html[data-theme="neutral"] .status-line.ok::before { content: '✓ '; color: var(--ok); }
+html[data-theme="neutral"] .status-line.warn::before { content: '! '; color: var(--warn); }
+
+/* ─── kill the glitch fringe ──────────────────────────────────────────── */
+html[data-theme="neutral"] .glitch::before,
+html[data-theme="neutral"] .glitch::after { display: none; }
+
+/* ─── toast ───────────────────────────────────────────────────────────── */
+html[data-theme="neutral"] #crucible-toast.toast {
+  background: #ffffff;
+  border-color: var(--border);
+  color: var(--fg);
+  box-shadow: 0 6px 24px rgba(16, 24, 40, 0.18);
+}
+
+/* ─── author panels (Manage = amber, Create = accent, danger = red) ───── */
+html[data-theme="neutral"] .manage-section {
+  background: rgba(196, 125, 5, 0.06);
+  border-color: rgba(196, 125, 5, 0.35);
+  border-left-color: #c47d05;
+}
+html[data-theme="neutral"] .manage-title { color: #b9760a; }
+html[data-theme="neutral"] .manage-chip {
+  background: #ffffff;
+  border-color: var(--border);
+  color: var(--fg-dim);
+}
+html[data-theme="neutral"] .create-section {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  border-color: rgba(59, 99, 224, 0.30);
+  border-left-color: var(--accent);
+}
+html[data-theme="neutral"] .create-title { color: var(--accent-hot); }
+html[data-theme="neutral"] .create-btn {
+  border-color: var(--accent);
+  color: #ffffff;
+  background: var(--accent);
+}
+html[data-theme="neutral"] .create-btn:hover:not(:disabled) {
+  border-color: var(--accent-hot);
+  background: var(--accent-hot);
+  box-shadow: none;
+}
+html[data-theme="neutral"] .risk-why,
+html[data-theme="neutral"] .risk-inline { color: #c02742; }
+html[data-theme="neutral"] .danger-btn {
+  color: var(--danger);
+  background: rgba(220, 43, 80, 0.06);
+  border-color: rgba(220, 43, 80, 0.45);
+}
+html[data-theme="neutral"] .danger-btn:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: rgba(220, 43, 80, 0.12);
+  box-shadow: none;
+}
+
+/* ─── theme switch in neutral skin ────────────────────────────────────── */
+html[data-theme="neutral"] .theme-switch {
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.10);
+}

@@ -186,7 +186,7 @@ for (const c of CASES) {
     const key = `${a.account}::${a.name}`;
     const expected = c.expected[key];
     if (!expected) {
-      log(`   ?  ${key} — no reference hex in trace, skipping diff`);
+      log(`   ?  ${key} - no reference hex in trace, skipping diff`);
       continue;
     }
     const match = hex.toLowerCase() === expected.toLowerCase();

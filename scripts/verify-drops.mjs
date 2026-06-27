@@ -18,7 +18,7 @@ const client = new APIClient({ url: 'https://wax.eosphere.io' });
 
 const CASES = [
   {
-    label: 'Drop 237418 — claimdrop (paid 50 WAX)',
+    label: 'Drop 237418 - claimdrop (paid 50 WAX)',
     claimer: 'zigm4.gm',
     drop_id: 237418,
     amount: 1,
@@ -37,7 +37,7 @@ const CASES = [
     },
   },
   {
-    label: 'Drop 237297 — claimwproof (paid 10000 GUILD, NFT proof)',
+    label: 'Drop 237297 - claimwproof (paid 10000 GUILD, NFT proof)',
     claimer: 'zigm4.gm',
     drop_id: 237297,
     amount: 1,
@@ -183,7 +183,7 @@ for (const c of CASES) {
     const ours = encode(a.account, a.name, a.data, abis.get(a.account));
     const key = `${a.account}::${a.name}`;
     const original = traceMap.get(key);
-    if (!original) { log(`   ?  ${key} — no original action found in trace`); allMatch = false; continue; }
+    if (!original) { log(`   ?  ${key} - no original action found in trace`); allMatch = false; continue; }
     const theirs = encode(a.account, a.name, original.data, abis.get(a.account));
     const match = ours.toLowerCase() === theirs.toLowerCase();
     log(`   ${match ? '✓' : '✗'} ${key}`);

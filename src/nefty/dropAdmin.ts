@@ -3,13 +3,13 @@
  *
  * Companion to createDrop.ts: once a drop exists, its author manages it with
  * these single actions. Every one carries an `authorized_account` the
- * contract checks against the collection's authorized_accounts — the UI only
+ * contract checks against the collection's authorized_accounts - the UI only
  * surfaces them for an authorized wallet, but the chain is the real guard.
  *
  * Whitelist: a gated drop (auth_required=true, claimed via claimdropwl) reads
  * its allowed accounts from the `whitelists` table SCOPED BY drop_id, rows
  * `{account, account_limit}`. addtowl/erasefromwl edit that list. Creating a
- * gated drop does NOT populate it — the author must add accounts here, which
+ * gated drop does NOT populate it - the author must add accounts here, which
  * is exactly the step that was missing.
  *
  * Structs are verbatim from the live neftyblocksd ABI.
@@ -169,7 +169,7 @@ interface RawDropRow {
 /**
  * Reads a single drop row by id straight from the `drops` table. Returns
  * undefined if no row with that exact id exists. Works for ANY drop the id
- * is known for — including hidden / gated ones the discovery scan skips.
+ * is known for - including hidden / gated ones the discovery scan skips.
  */
 export async function readDropById(drop_id: string | number): Promise<DropAdminRow | undefined> {
   const rows = await getTableRows<RawDropRow>({
