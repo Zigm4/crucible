@@ -114,6 +114,7 @@ import {
 import {
   readKnownClaimIds,
   waitForClaim,
+  waitForClaimConsumed,
   type ClaimAssetsRow,
 } from '../nefty/rngWait';
 import {
@@ -552,6 +553,13 @@ interface UpgradeViewState {
    * NFT). Value is the asset_id chosen for that spec slot.
    */
   selection: Map<number, string>;
+  /**
+   * NFTs picked to BURN as cost, keyed by ingredient index (for TEMPLATE /
+   * SCHEMA / COLLECTION cost ingredients). Each value is the list of chosen
+   * asset_ids (the ingredient's `amount` determines how many are needed).
+   * These become `transferred_assets` in the upgrade action.
+   */
+  costSelection: Map<number, string[]>;
   /** Per-FT-ingredient status: required vs balance, indexed by ingredient idx. */
   ftStatus: Map<number, { ticker: string; required: number; balance: number }>;
   /** Last broadcast trx_id (success). */
@@ -611,6 +619,7 @@ const state: AppState = {
     pickerOpen: false,
     showInactive: false,
     selection: new Map(),
+    costSelection: new Map(),
     ftStatus: new Map(),
     pending: false,
   },
@@ -2064,8 +2073,11 @@ async function onExecuteRng() {
   });
   if (
     !confirm(
-      `Sign ${actions.length} action(s)? Then a second signature will be required after the oracle resolves the result.\n\n` +
-        actions.map((a, i) => `${i + 1}. ${a.account}::${a.name}`).join('\n'),
+      `Sign ${actions.length} action(s) to blend?\n\n` +
+        actions.map((a, i) => `${i + 1}. ${a.account}::${a.name}`).join('\n') +
+        `\n\nThis is a random blend: the oracle resolves the result and Nefty's claim ` +
+        `service mints it to your wallet automatically a few seconds later — usually no ` +
+        `second signature is needed.`,
     )
   ) {
     return;
@@ -2073,7 +2085,7 @@ async function onExecuteRng() {
   // Snapshot before broadcasting so we can spot the freshly created row.
   const known = await readKnownClaimIds(claimer);
   state.rngPhase = 'announcing';
-  state.rngPhaseMessage = 'Awaiting wallet signature for step 1 (announce + fuse)…';
+  state.rngPhaseMessage = 'Awaiting wallet signature…';
   render();
   try {
     const result = await executeFuse(session, {
@@ -2086,25 +2098,70 @@ async function onExecuteRng() {
     state.rngTx1Id =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
+    const shortTx = state.rngTx1Id ? state.rngTx1Id.slice(0, 8) : '';
     state.rngPhase = 'waiting';
-    state.rngPhaseMessage = 'TX1 broadcast. Waiting for the contract to stage the result...';
+    state.rngPhaseMessage = 'Submitted. The oracle resolves the result, then it mints automatically — watching…';
     state.rngWaitElapsedMs = 0;
     state.rngAbort = new AbortController();
     render();
-    const row = await waitForClaim({
-      claimer,
-      blend_id: state.blend.blend_id,
-      knownClaimIds: known,
-      onTick: (elapsedMs) => {
-        state.rngWaitElapsedMs = elapsedMs;
-        if (state.view === 'blends') render();
-      },
+
+    const onTick = (elapsedMs: number) => {
+      state.rngWaitElapsedMs = elapsedMs;
+      if (state.view === 'blends') render();
+    };
+
+    // Try to catch the staged row. It is short-lived because setup.nefty
+    // auto-claims it; a timeout here almost always means it was already
+    // minted before our first poll — NOT a failure.
+    let row: ClaimAssetsRow | undefined;
+    try {
+      row = await waitForClaim({
+        claimer,
+        blend_id: state.blend.blend_id,
+        knownClaimIds: known,
+        timeoutMs: 45_000,
+        onTick,
+        signal: state.rngAbort.signal,
+      });
+    } catch (e) {
+      if (/aborted/i.test((e as Error).message)) throw e; // user cancelled
+      row = undefined; // timeout: most likely already auto-claimed
+    }
+
+    if (!row) {
+      state.rngPhase = 'done';
+      state.rngPhaseMessage =
+        `✓ Blend submitted${shortTx ? ` (tx ${shortTx}…)` : ''}. Your result is minted to your wallet ` +
+        `automatically by Nefty's claim service within ~30s — check your wallet. ` +
+        `If it doesn't arrive, reload the blend to claim it manually.`;
+      state.rngAbort = undefined;
+      render();
+      return;
+    }
+
+    // The row is staged. Watch whether the auto-claim service mints it.
+    state.rngClaim = row;
+    state.rngPhase = 'waiting';
+    state.rngPhaseMessage =
+      `Result resolved (${row.claims.length} card${row.claims.length === 1 ? '' : 's'}). ` +
+      `Nefty's claim service is minting it to your wallet…`;
+    render();
+    const consumed = await waitForClaimConsumed(claimer, row.claim_id, {
+      timeoutMs: 20_000,
+      onTick,
       signal: state.rngAbort.signal,
     });
-    state.rngClaim = row;
-    state.rngPhase = 'ready';
-    state.rngPhaseMessage = `Result staged. ${row.claims.length} card${row.claims.length === 1 ? '' : 's'} ready to mint.`;
     state.rngAbort = undefined;
+    if (consumed) {
+      state.rngPhase = 'done';
+      state.rngPhaseMessage = `✓ Done — ${row.claims.length} NFT(s) minted to your wallet automatically.`;
+    } else {
+      // Auto-claim service didn't mint it — let the user claim it themselves.
+      state.rngPhase = 'ready';
+      state.rngPhaseMessage =
+        `Result is staged (${row.claims.length} card${row.claims.length === 1 ? '' : 's'}) but hasn't auto-minted yet. ` +
+        `You can claim it yourself below.`;
+    }
     render();
   } catch (err) {
     state.rngPhase = 'error';
@@ -2133,11 +2190,19 @@ async function onClaimRng() {
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
     state.rngPhase = 'done';
-    state.rngPhaseMessage = `Pack opened. ${state.rngClaim.claims.length} NFT(s) minted to your wallet.`;
+    state.rngPhaseMessage = `✓ Claimed. ${state.rngClaim.claims.length} NFT(s) minted to your wallet.`;
     render();
   } catch (err) {
-    state.rngPhase = 'error';
-    state.rngPhaseMessage = (err as Error).message;
+    const msg = (err as Error).message;
+    // If setup.nefty's auto-claim service got there first, the row is gone —
+    // that's a success (the NFTs are already in the wallet), not an error.
+    if (/already|not exist|does not exist|not found|unable to find|no claim/i.test(msg)) {
+      state.rngPhase = 'done';
+      state.rngPhaseMessage = `✓ Already minted — Nefty's auto-claim service delivered your NFT(s) first.`;
+    } else {
+      state.rngPhase = 'error';
+      state.rngPhaseMessage = msg;
+    }
     render();
   }
 }
@@ -2911,6 +2976,7 @@ async function onPickUpgrade(upgrade_id: string) {
   u.picked = found;
   u.upgradeIdInput = upgrade_id;
   u.selection.clear();
+  u.costSelection.clear();
   u.lastDryRun = undefined;
   u.lastTrxId = undefined;
   writeHashRoute('nefty', 'upgrades', upgrade_id);
@@ -2940,6 +3006,7 @@ async function onLoadUpgradeManual() {
     }
     u.picked = up;
     u.selection.clear();
+  u.costSelection.clear();
     u.lastDryRun = undefined;
     u.lastTrxId = undefined;
     // If the upgrade's collection differs from the active one, switch
@@ -3037,6 +3104,69 @@ function ownedAssetsForSpec(spec: DiscoveredUpgrade['specs'][number]): AtomicAss
   });
 }
 
+/** NFT-cost ingredients (burn these as cost) that need an asset picker. */
+function isCostNftIngredient(ing: UpgradeIngredient): boolean {
+  return ing.kind === 'template' || ing.kind === 'schema' || ing.kind === 'collection';
+}
+function costIngredientAmount(ing: UpgradeIngredient): number {
+  return (ing as { amount?: number }).amount ?? 1;
+}
+
+/** Owned assets that satisfy an NFT-cost ingredient (to be burned). */
+function ownedAssetsForCostIngredient(ing: UpgradeIngredient): AtomicAsset[] {
+  const owned = state.discoveryOwnedAssets;
+  if (ing.kind === 'template') {
+    return owned.filter(
+      (a) => a.collection?.collection_name === ing.collection_name && String(a.template?.template_id) === String(ing.template_id),
+    );
+  }
+  if (ing.kind === 'schema') {
+    return owned.filter(
+      (a) => a.collection?.collection_name === ing.collection_name && a.schema?.schema_name === ing.schema_name,
+    );
+  }
+  if (ing.kind === 'collection') {
+    return owned.filter((a) => a.collection?.collection_name === ing.collection_name);
+  }
+  return [];
+}
+
+/** True if an asset is already committed to a spec slot or another cost slot. */
+function upgradeAssetUsedElsewhere(asset_id: string, exceptCostIdx: number): boolean {
+  const u = state.upgrades;
+  for (const id of u.selection.values()) if (id === asset_id) return true;
+  for (const [idx, ids] of u.costSelection.entries()) {
+    if (idx !== exceptCostIdx && ids.includes(asset_id)) return true;
+  }
+  return false;
+}
+
+function onPickUpgradeCostAsset(ingIdx: number, asset_id: string) {
+  const u = state.upgrades;
+  const ing = u.picked?.ingredients[ingIdx];
+  if (!ing || !isCostNftIngredient(ing)) return;
+  const amount = costIngredientAmount(ing);
+  const current = u.costSelection.get(ingIdx) ?? [];
+  if (current.includes(asset_id)) {
+    u.costSelection.set(ingIdx, current.filter((id) => id !== asset_id));
+  } else {
+    if (upgradeAssetUsedElsewhere(asset_id, ingIdx)) {
+      setStatus(`Asset ${asset_id} is already picked for another slot.`, 'warn');
+      return;
+    }
+    // At capacity (commonly amount=1): drop the oldest pick to make room.
+    u.costSelection.set(ingIdx, current.length >= amount ? [...current.slice(1), asset_id] : [...current, asset_id]);
+  }
+  render();
+}
+
+/** Flattened list of every NFT picked to burn as cost (the transferred_assets). */
+function collectUpgradeCostAssets(): string[] {
+  const out: string[] = [];
+  for (const ids of state.upgrades.costSelection.values()) out.push(...ids);
+  return out;
+}
+
 function readyToUpgrade(): boolean {
   const u = state.upgrades;
   if (!u.picked) return false;
@@ -3047,15 +3177,18 @@ function readyToUpgrade(): boolean {
   for (let i = 0; i < u.picked.specs.length; i++) {
     if (!u.selection.get(i)) return false;
   }
-  // Every FT ingredient must be covered.
+  // Every cost ingredient must be covered.
   for (let i = 0; i < u.picked.ingredients.length; i++) {
     const ing = u.picked.ingredients[i];
-    if (ing.kind !== 'ft') {
-      // NFT cost ingredients not supported via UI in v1.
+    if (ing.kind === 'ft') {
+      const st = u.ftStatus.get(i);
+      if (!st || st.balance < 0 || st.balance < st.required) return false;
+    } else if (isCostNftIngredient(ing)) {
+      if ((u.costSelection.get(i) ?? []).length < costIngredientAmount(ing)) return false;
+    } else {
+      // balance / attribute / unknown cost types aren't pickable yet.
       return false;
     }
-    const st = u.ftStatus.get(i);
-    if (!st || st.balance < 0 || st.balance < st.required) return false;
   }
   return true;
 }
@@ -3075,7 +3208,7 @@ async function buildUpgradePlan(): Promise<BuiltAction[]> {
     claimer: String(session.actor),
     upgrade_id: u.picked.upgrade_id,
     assets_to_upgrade,
-    transferred_assets: [],
+    transferred_assets: collectUpgradeCostAssets(),
     own_assets: [],
     ft_payments,
   });
@@ -3114,7 +3247,7 @@ async function onExecuteUpgrade() {
     const result = await executeUpgrade(session, {
       upgrade_id: u.picked.upgrade_id,
       assets_to_upgrade,
-      transferred_assets: [],
+      transferred_assets: collectUpgradeCostAssets(),
       own_assets: [],
       ft_payments,
     });
@@ -5534,10 +5667,41 @@ function renderUpgradeAssetSlot(spec: DiscoveredUpgrade['specs'][number], specId
     </div>`;
 }
 
+function renderUpgradeCostSlot(ing: UpgradeIngredient, ingIdx: number): string {
+  const u = state.upgrades;
+  const owned = ownedAssetsForCostIngredient(ing);
+  const picked = u.costSelection.get(ingIdx) ?? [];
+  const amount = costIngredientAmount(ing);
+  const label = ingredientLabel(ing, u.picked?.collection_name);
+  const items = owned.map((a) => {
+    const selected = picked.includes(a.asset_id) ? ' selected' : '';
+    const name = displayAssetName(a);
+    return `
+      <div class="asset${selected}" data-action="pickUpgradeCostAsset" data-cost="${ingIdx}" data-asset="${escapeHtml(a.asset_id)}">
+        <span>${escapeHtml(name)}</span>
+        <span class="id">#${escapeHtml(a.asset_id)}${a.template_mint ? ' · mint ' + escapeHtml(a.template_mint) : ''}</span>
+      </div>`;
+  });
+  return `
+    <div class="slot">
+      <div class="slot-header">
+        <div class="slot-label">${escapeHtml(label)}</div>
+        <div class="slot-progress">${picked.length}/${amount} picked · ${owned.length} eligible</div>
+      </div>
+      ${owned.length === 0
+        ? '<p class="status-line err">No matching NFT in your wallet to burn for this cost.</p>'
+        : `<div class="asset-grid">${items.join('')}</div>`}
+    </div>`;
+}
+
 function renderUpgradeSlots(): string {
   const u = state.upgrades;
   if (!u.picked) return '';
   const slots = u.picked.specs.map((spec, i) => renderUpgradeAssetSlot(spec, i)).join('');
+  // NFT-cost ingredients: pick which owned NFT(s) to burn.
+  const costBlocks = u.picked.ingredients
+    .map((ing, idx) => (isCostNftIngredient(ing) ? renderUpgradeCostSlot(ing, idx) : ''))
+    .join('');
   // FT ingredient status (cost / balance).
   const ftBlocks = u.picked.ingredients.map((ing, idx) => {
     if (ing.kind !== 'ft') return '';
@@ -5563,6 +5727,7 @@ function renderUpgradeSlots(): string {
     <div class="card">
       <h2>4 · Select NFTs to upgrade ${state.assetsLoading ? '<span class="term">(refreshing your wallet…)</span>' : ''}</h2>
       ${slots}
+      ${costBlocks}
       ${ftBlocks}
     </div>`;
 }
@@ -6606,6 +6771,9 @@ function attachHandlers() {
           break;
         case 'pickUpgradeAsset':
           onPickUpgradeAsset(Number(el.dataset.spec), el.dataset.asset ?? '');
+          break;
+        case 'pickUpgradeCostAsset':
+          onPickUpgradeCostAsset(Number(el.dataset.cost), el.dataset.asset ?? '');
           break;
         case 'upgradeDryRun':
           onUpgradeDryRun();

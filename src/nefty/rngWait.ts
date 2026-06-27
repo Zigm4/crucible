@@ -122,6 +122,42 @@ export async function waitForClaim(opts: RngWaitOpts): Promise<ClaimAssetsRow> {
   }
 }
 
+/**
+ * Watches whether a staged claim row gets CONSUMED. Most `blend.nefty`
+ * results are minted automatically by Nefty's on-chain claim service
+ * (`setup.nefty`), which removes the row from `claimassets`. Resolves
+ * `true` once the row is gone (auto-claimed → already in the wallet),
+ * `false` on timeout (still pending → the caller can offer a manual claim).
+ */
+export async function waitForClaimConsumed(
+  claimer: string,
+  claim_id: string | number,
+  opts: { timeoutMs?: number; intervalMs?: number; onTick?: (ms: number) => void; signal?: AbortSignal } = {},
+): Promise<boolean> {
+  const timeoutMs = opts.timeoutMs ?? 20_000;
+  const intervalMs = opts.intervalMs ?? 1_500;
+  const target = String(claim_id);
+  const start = Date.now();
+  while (true) {
+    if (opts.signal?.aborted) return false;
+    if (Date.now() - start > timeoutMs) return false;
+    opts.onTick?.(Date.now() - start);
+    let rows: ClaimAssetsRow[] = [];
+    try {
+      rows = await getTableRows<ClaimAssetsRow>({
+        code: 'blend.nefty',
+        scope: claimer,
+        table: 'claimassets',
+        limit: 500,
+      });
+    } catch {
+      // transient RPC error: retry
+    }
+    if (!rows.some((r) => String(r.claim_id) === target)) return true; // consumed
+    await sleep(intervalMs);
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
