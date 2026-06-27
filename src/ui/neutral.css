@@ -488,13 +488,6 @@ html[data-theme="neutral"] .status-line.warn::before { content: '! '; color: var
 html[data-theme="neutral"] .glitch::before,
 html[data-theme="neutral"] .glitch::after { display: none; }
 
-/* ─── toast ───────────────────────────────────────────────────────────── */
-html[data-theme="neutral"] #crucible-toast.toast {
-  background: #ffffff;
-  border-color: var(--border);
-  color: var(--fg);
-  box-shadow: 0 6px 24px rgba(16, 24, 40, 0.18);
-}
 
 /* ─── author panels (Manage = amber, Create = accent, danger = red) ───── */
 html[data-theme="neutral"] .manage-section {

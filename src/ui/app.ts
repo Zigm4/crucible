@@ -413,8 +413,6 @@ interface DropManageState {
   whitelist?: string[];
   /** Inline form input for adding whitelist accounts. */
   addAccountsInput: string;
-  /** Outcome of the last admin action, shown as an inline banner in the panel. */
-  lastResult?: { ok: boolean; msg: string };
 }
 
 interface CreateDropState {
@@ -816,7 +814,7 @@ function showToast(msg: string, kind: 'ok' | 'err') {
     el.addEventListener('click', () => { el!.classList.remove('show'); });
   }
   el.className = `toast toast-${kind} show`;
-  el.textContent = msg;
+  el.textContent = `${kind === 'ok' ? '✓' : '✕'}  ${msg}`;
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el!.classList.remove('show'); }, kind === 'err' ? 9000 : 5000);
 }
@@ -2530,7 +2528,6 @@ async function loadDropToManage(dropId: string) {
   m.loaded = undefined;
   m.whitelist = undefined;
   m.authorized = undefined;
-  m.lastResult = undefined;
   render();
   try {
     const row = await readDropById(id);
@@ -2635,7 +2632,6 @@ async function runDropAdminAction(
   if (!session || !m.loaded) return;
   if (!confirm(confirmMsg)) return;
   m.busy = true;
-  m.lastResult = undefined;
   render();
   try {
     setStatus(`Awaiting signature: ${action.account}::${action.name}…`, 'info');
@@ -2643,8 +2639,11 @@ async function runDropAdminAction(
     const trxId =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
-    setStatus(`${action.name} broadcast: ${trxId}`, 'ok');
-    m.lastResult = { ok: true, msg: `${action.name} confirmed${trxId ? ` · tx ${trxId.slice(0, 8)}…` : ''}` };
+    setStatus(`${action.name} confirmed${trxId ? ` · tx ${trxId.slice(0, 8)}…` : ''}`, 'ok');
+    // Give the RPC node a moment to index the new block before we re-read,
+    // otherwise the refresh can return the pre-action (stale) state and the
+    // panel would show outdated info right after a successful change.
+    await new Promise((r) => setTimeout(r, 1200));
     if ((opts.refresh ?? 'drop') === 'whitelist') {
       m.whitelist = await readDropWhitelist(m.loaded.drop_id).catch(() => []);
     } else {
@@ -2653,7 +2652,6 @@ async function runDropAdminAction(
     }
   } catch (err) {
     setStatus(`${action.name} failed: ${(err as Error).message}`, 'err');
-    m.lastResult = { ok: false, msg: `${action.name} failed: ${(err as Error).message}` };
   } finally {
     m.busy = false;
     // Pin the author back to the CLAIM tab on the drop they were managing.
@@ -5218,9 +5216,6 @@ function renderDropManage(): string {
         </label>
       </div>
       ${m.busy ? '<p class="status-line" style="margin-top:8px">Action in progress, confirm it in your wallet…</p>' : ''}
-      ${!m.busy && m.lastResult
-        ? `<p class="status-line ${m.lastResult.ok ? 'ok' : 'err'}" style="margin-top:8px">${escapeHtml(m.lastResult.msg)}</p>`
-        : ''}
       ${picker}
       ${loader}
       ${body}

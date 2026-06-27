@@ -422,13 +422,6 @@ html[data-theme="modern"] .status-line.warn::before { content: '!  '; color: var
 html[data-theme="modern"] .glitch::before,
 html[data-theme="modern"] .glitch::after { display: none; }
 
-/* --- toast ---------------------------------------------------------- */
-html[data-theme="modern"] #crucible-toast.toast {
-  background: #20232b;
-  border-color: var(--border);
-  color: var(--fg);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
-}
 
 /* --- author panels (Manage = amber, Create = accent, danger = red) - */
 html[data-theme="modern"] .manage-section {
