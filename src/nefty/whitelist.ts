@@ -52,13 +52,13 @@ export async function checkWhitelist(args: {
       allowed: present,
       reason: present
         ? undefined
-        : `Ce blend (security_id=${sid}) est protégé par whitelist et ${args.actor} n'y figure pas.`,
+        : `This blend (security_id=${sid}) is whitelist-gated and ${args.actor} is not on the list.`,
     };
   } catch (err) {
     return {
       required: true,
       allowed: false,
-      reason: `Impossible de lire la whitelist secure.nefty/${sid} : ${
+      reason: `Could not read the secure.nefty/${sid} whitelist: ${
         err instanceof Error ? err.message : String(err)
       }`,
     };

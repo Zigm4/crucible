@@ -413,6 +413,8 @@ interface DropManageState {
   whitelist?: string[];
   /** Inline form input for adding whitelist accounts. */
   addAccountsInput: string;
+  /** Outcome of the last admin action, shown as an inline banner in the panel. */
+  lastResult?: { ok: boolean; msg: string };
 }
 
 interface CreateDropState {
@@ -2076,7 +2078,7 @@ async function onExecuteRng() {
       `Sign ${actions.length} action(s) to blend?\n\n` +
         actions.map((a, i) => `${i + 1}. ${a.account}::${a.name}`).join('\n') +
         `\n\nThis is a random blend: the oracle resolves the result and Nefty's claim ` +
-        `service mints it to your wallet automatically a few seconds later — usually no ` +
+        `service mints it to your wallet automatically a few seconds later - usually no ` +
         `second signature is needed.`,
     )
   ) {
@@ -2100,7 +2102,7 @@ async function onExecuteRng() {
       String(result.resolved?.transaction.id ?? '');
     const shortTx = state.rngTx1Id ? state.rngTx1Id.slice(0, 8) : '';
     state.rngPhase = 'waiting';
-    state.rngPhaseMessage = 'Submitted. The oracle resolves the result, then it mints automatically — watching…';
+    state.rngPhaseMessage = 'Submitted. The oracle resolves the result, then it mints automatically - watching…';
     state.rngWaitElapsedMs = 0;
     state.rngAbort = new AbortController();
     render();
@@ -2112,7 +2114,7 @@ async function onExecuteRng() {
 
     // Try to catch the staged row. It is short-lived because setup.nefty
     // auto-claims it; a timeout here almost always means it was already
-    // minted before our first poll — NOT a failure.
+    // minted before our first poll - NOT a failure.
     let row: ClaimAssetsRow | undefined;
     try {
       row = await waitForClaim({
@@ -2132,7 +2134,7 @@ async function onExecuteRng() {
       state.rngPhase = 'done';
       state.rngPhaseMessage =
         `✓ Blend submitted${shortTx ? ` (tx ${shortTx}…)` : ''}. Your result is minted to your wallet ` +
-        `automatically by Nefty's claim service within ~30s — check your wallet. ` +
+        `automatically by Nefty's claim service within ~30s - check your wallet. ` +
         `If it doesn't arrive, reload the blend to claim it manually.`;
       state.rngAbort = undefined;
       render();
@@ -2154,9 +2156,9 @@ async function onExecuteRng() {
     state.rngAbort = undefined;
     if (consumed) {
       state.rngPhase = 'done';
-      state.rngPhaseMessage = `✓ Done — ${row.claims.length} NFT(s) minted to your wallet automatically.`;
+      state.rngPhaseMessage = `✓ Done - ${row.claims.length} NFT(s) minted to your wallet automatically.`;
     } else {
-      // Auto-claim service didn't mint it — let the user claim it themselves.
+      // Auto-claim service didn't mint it - let the user claim it themselves.
       state.rngPhase = 'ready';
       state.rngPhaseMessage =
         `Result is staged (${row.claims.length} card${row.claims.length === 1 ? '' : 's'}) but hasn't auto-minted yet. ` +
@@ -2194,11 +2196,11 @@ async function onClaimRng() {
     render();
   } catch (err) {
     const msg = (err as Error).message;
-    // If setup.nefty's auto-claim service got there first, the row is gone —
+    // If setup.nefty's auto-claim service got there first, the row is gone -
     // that's a success (the NFTs are already in the wallet), not an error.
     if (/already|not exist|does not exist|not found|unable to find|no claim/i.test(msg)) {
       state.rngPhase = 'done';
-      state.rngPhaseMessage = `✓ Already minted — Nefty's auto-claim service delivered your NFT(s) first.`;
+      state.rngPhaseMessage = `✓ Already minted - Nefty's auto-claim service delivered your NFT(s) first.`;
     } else {
       state.rngPhase = 'error';
       state.rngPhaseMessage = msg;
@@ -2528,11 +2530,17 @@ async function loadDropToManage(dropId: string) {
   m.loaded = undefined;
   m.whitelist = undefined;
   m.authorized = undefined;
+  m.lastResult = undefined;
   render();
   try {
     const row = await readDropById(id);
     if (!row) { setStatus(`No drop #${id} found on-chain.`, 'err'); m.loading = false; render(); return; }
     m.loaded = row;
+    // Pin the URL to the CLAIM tab + this drop. Without this the hash stays at
+    // its default and a wallet round-trip that reloads the page (e.g. WAX Cloud
+    // Wallet's redirect fallback when the popup is blocked) would boot the app
+    // back onto the default BLEND tab and lose the drop being managed.
+    writeHashRoute('nefty', 'drops', id);
     const session = getCurrentSession();
     const actor = session ? String(session.actor) : '';
     m.authorized = actor ? await canManageCollection(actor, row.collection_name).catch(() => false) : false;
@@ -2627,6 +2635,7 @@ async function runDropAdminAction(
   if (!session || !m.loaded) return;
   if (!confirm(confirmMsg)) return;
   m.busy = true;
+  m.lastResult = undefined;
   render();
   try {
     setStatus(`Awaiting signature: ${action.account}::${action.name}…`, 'info');
@@ -2635,6 +2644,7 @@ async function runDropAdminAction(
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
     setStatus(`${action.name} broadcast: ${trxId}`, 'ok');
+    m.lastResult = { ok: true, msg: `${action.name} confirmed${trxId ? ` · tx ${trxId.slice(0, 8)}…` : ''}` };
     if ((opts.refresh ?? 'drop') === 'whitelist') {
       m.whitelist = await readDropWhitelist(m.loaded.drop_id).catch(() => []);
     } else {
@@ -2643,6 +2653,7 @@ async function runDropAdminAction(
     }
   } catch (err) {
     setStatus(`${action.name} failed: ${(err as Error).message}`, 'err');
+    m.lastResult = { ok: false, msg: `${action.name} failed: ${(err as Error).message}` };
   } finally {
     m.busy = false;
     render();
@@ -5195,6 +5206,10 @@ function renderDropManage(): string {
           <span>management enabled</span>
         </label>
       </div>
+      ${m.busy ? '<p class="status-line" style="margin-top:8px">Action in progress, confirm it in your wallet…</p>' : ''}
+      ${!m.busy && m.lastResult
+        ? `<p class="status-line ${m.lastResult.ok ? 'ok' : 'err'}" style="margin-top:8px">${escapeHtml(m.lastResult.msg)}</p>`
+        : ''}
       ${picker}
       ${loader}
       ${body}

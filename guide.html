@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Crucible · User Guide</title>
-    <meta name="description" content="How to use Crucible — the open-source UI for NeftyBlocks and WaxDAO smart contracts on WAX: blends, drops, packs, upgrades, plus collection-author tools." />
+    <meta name="description" content="How to use Crucible - the open-source UI for NeftyBlocks and WaxDAO smart contracts on WAX: blends, drops, packs, upgrades, plus collection-author tools." />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -102,7 +102,7 @@
       <p class="lead">
         Crucible is a single open-source page that talks <strong>directly</strong> to live WAX
         smart contracts. The NeftyBlocks and WaxDAO <em>websites</em> went down, but the
-        <em>contracts</em> behind them never did — Crucible is the missing UI. Zero backend, no
+        <em>contracts</em> behind them never did - Crucible is the missing UI. Zero backend, no
         tracking, no fee to anyone but the contracts' own (unchanged) fees. Your wallet signs
         every transaction; the page never sees a key.
       </p>
@@ -122,13 +122,13 @@
       <section class="gcard" id="start">
         <h2>Before you start</h2>
         <ol class="steps">
-          <li><strong>Connect a wallet</strong> — Anchor or WAX Cloud Wallet. Connecting is read-only until you sign.</li>
-          <li><strong>Stake a little CPU/NET.</strong> Nefty used to sponsor your CPU; that sponsor no longer signs, so keep roughly <strong>5–10 WAX staked to CPU</strong> (and a little to NET) from your wallet's Resources tab.</li>
+          <li><strong>Connect a wallet</strong> - Anchor or WAX Cloud Wallet. Connecting is read-only until you sign.</li>
+          <li><strong>Stake a little CPU/NET.</strong> Nefty used to sponsor your CPU; that sponsor no longer signs, so keep roughly <strong>5-10 WAX staked to CPU</strong> (and a little to NET) from your wallet's Resources tab.</li>
           <li><strong>Pick a theme</strong> (top-right): Neon, Clair, or Sombre. Your choice is remembered.</li>
         </ol>
         <div class="note">
           <strong>“greymassfuel@cosign … does not have signatures for it”?</strong> That's your wallet
-          trying to borrow CPU through Greymass Fuel and not getting cosigned — stake a few WAX to CPU,
+          trying to borrow CPU through Greymass Fuel and not getting cosigned - stake a few WAX to CPU,
           or sign with WAX Cloud Wallet, and it goes away. It is not a Crucible bug.
         </div>
       </section>
@@ -139,30 +139,30 @@
           <strong>Discover blends</strong>, pick one, choose the NFTs for each ingredient slot, and sign.</p>
         <ul>
           <li><strong>Deterministic</strong> blends mint in a single signature.</li>
-          <li><strong>Random</strong> blends (more than one possible outcome) take two: one to commit, then — after the on-chain oracle resolves — one to claim. Crucible waits in between and shows you the resolved result before step 2.</li>
+          <li><strong>Random</strong> blends (more than one possible outcome) take two: one to commit, then - after the on-chain oracle resolves - one to claim. Crucible waits in between and shows you the resolved result before step 2.</li>
           <li><strong>Whitelisted</strong> blends are detected automatically; the picker marks whether your wallet is allowed before you try.</li>
         </ul>
       </section>
 
       <section class="gcard" id="claim">
         <h2>Claim · <code>neftyblocksd</code></h2>
-        <p>Drops — pay (or not) to mint. Crucible signs public, whitelist, and NFT-proof drops:</p>
+        <p>Drops - pay (or not) to mint. Crucible signs public, whitelist, and NFT-proof drops:</p>
         <ul>
-          <li><strong>Public</strong> — open to anyone.</li>
-          <li><strong>Whitelist</strong> — your account must be on the drop's allow-list.</li>
-          <li><strong>NFT proof</strong> — you must hold specific NFTs; the page auto-selects matching ones and tells you exactly what's required even if you don't have them.</li>
+          <li><strong>Public</strong> - open to anyone.</li>
+          <li><strong>Whitelist</strong> - your account must be on the drop's allow-list.</li>
+          <li><strong>NFT proof</strong> - you must hold specific NFTs; the page auto-selects matching ones and tells you exactly what's required even if you don't have them.</li>
         </ul>
         <p>Free drops skip the payment step. Key-gated (<code>claimdropkey</code>) drops need a per-user secret only the creator can issue, so no third-party tool can sign them.</p>
       </section>
 
       <section class="gcard" id="unpack">
         <h2>Unpack · <code>atomicpacksx</code> + <code>neftyblocksp</code></h2>
-        <p>Opens packs from <strong>both</strong> pack contracts — AtomicHub
-          (<code>atomicpacksx</code>) and NeftyBlocks (<code>neftyblocksp</code>) — merged into one
+        <p>Opens packs from <strong>both</strong> pack contracts - AtomicHub
+          (<code>atomicpacksx</code>) and NeftyBlocks (<code>neftyblocksp</code>) - merged into one
           list. It's a two-signature, oracle-randomised flow:</p>
         <ol class="steps">
           <li>Send the pack to the contract (memo <code>unbox</code>).</li>
-          <li>Wait 5–30s while the ORNG oracle resolves the contents.</li>
+          <li>Wait 5-30s while the ORNG oracle resolves the contents.</li>
           <li>Sign once more to mint the revealed cards.</li>
         </ol>
         <p>Crucible scans both contracts globally and only lists collections where your wallet holds an openable pack, then uses the right open/claim flow for that pack automatically.</p>
@@ -186,7 +186,7 @@
         <h2>Collection authors</h2>
         <p>If your connected wallet is an <strong>authorized account</strong> of a collection,
           Crucible reveals inline management controls (each behind a safety toggle). The contracts
-          always allowed this — only the website was missing.</p>
+          always allowed this - only the website was missing.</p>
         <h3>Manage blends &amp; whitelists (BLEND tab)</h3>
         <p>Rename, hide, set the time window, change limits, delete, and manage reusable named
           whitelists (<code>secure.nefty</code>): create one, fill it with wallets, and attach it to
@@ -194,11 +194,11 @@
         <h3>Create &amp; manage drops (CLAIM tab)</h3>
         <ul>
           <li><strong>Create a drop</strong> from existing templates with all the standard options. Risky choices (which templates get minted, unlimited/free supply, the payout account) are boxed in <strong>red</strong> with the reason.</li>
-          <li><strong>Manage a drop</strong> — load any drop you manage (pick it from “drops I can manage”, or by id) to edit its whitelist, toggle gating, hide, or delete it.</li>
+          <li><strong>Manage a drop</strong> - load any drop you manage (pick it from “drops I can manage”, or by id) to edit its whitelist, toggle gating, hide, or delete it.</li>
         </ul>
         <div class="note">
           A drop's whitelist is <strong>per-drop</strong>: creating a drop with “whitelist required”
-          starts it <strong>empty</strong> (nobody can claim) — add the wallets afterwards in
+          starts it <strong>empty</strong> (nobody can claim) - add the wallets afterwards in
           <em>Manage a drop</em>. The drop you just made loads there automatically.
         </div>
       </section>
@@ -207,10 +207,10 @@
         <h2>Shareable links</h2>
         <p>Every entity has a hash URL you can paste to anyone (no wallet needed to read a recipe):</p>
         <ul>
-          <li><code>#/nefty/blend/43444</code> — a blend</li>
-          <li><code>#/nefty/claim/237418</code> — a drop</li>
-          <li><code>#/nefty/upgrade/447</code> — an upgrade</li>
-          <li><code>#/waxdao/blend/1921</code> — a WaxDAO blend</li>
+          <li><code>#/nefty/blend/43444</code> - a blend</li>
+          <li><code>#/nefty/claim/237418</code> - a drop</li>
+          <li><code>#/nefty/upgrade/447</code> - an upgrade</li>
+          <li><code>#/waxdao/blend/1921</code> - a WaxDAO blend</li>
         </ul>
       </section>
 
@@ -220,7 +220,7 @@
           <li><strong>No backend, no database, no tracking.</strong> One page that reads the chain and builds transactions.</li>
           <li><strong>Your keys never leave your wallet.</strong> Anchor and WAX Cloud Wallet sign locally.</li>
           <li><strong>0% cut.</strong> The blend/drop/upgrade fees that always existed still go where they always went.</li>
-          <li><strong>Open source.</strong> Read every line, fork it, host it yourself — that's the whole point.</li>
+          <li><strong>Open source.</strong> Read every line, fork it, host it yourself - that's the whole point.</li>
         </ul>
       </section>
 

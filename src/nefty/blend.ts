@@ -142,13 +142,13 @@ export function isDeterministic(blend: BlendRow): {
     if (r.outcomes.length !== 1) {
       return {
         ok: false,
-        reason: `Roll #${i} a ${r.outcomes.length} issues possibles (blend aléatoire, utilisez secfuse, non supporté).`,
+        reason: `Roll #${i} has ${r.outcomes.length} possible outcomes (random blend, uses secfuse, not supported here).`,
       };
     }
     if (r.outcomes[0].odds !== r.total_odds) {
       return {
         ok: false,
-        reason: `Roll #${i} : odds=${r.outcomes[0].odds} != total_odds=${r.total_odds} (résultat non garanti).`,
+        reason: `Roll #${i}: odds=${r.outcomes[0].odds} != total_odds=${r.total_odds} (outcome not guaranteed).`,
       };
     }
     // Reject pool draws, by definition non-deterministic for the claimer
@@ -156,7 +156,7 @@ export function isDeterministic(blend: BlendRow): {
       if (res[0] === 'POOL_NFT_RESULT') {
         return {
           ok: false,
-          reason: `Roll #${i} tire dans un POOL_NFT, résultat aléatoire, non supporté.`,
+          reason: `Roll #${i} draws from a POOL_NFT, random outcome, not supported.`,
         };
       }
     }

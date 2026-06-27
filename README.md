@@ -310,11 +310,13 @@ changes (image, colour, level, etc.). The action set mirrors
                                                               in place
 ```
 
-Whitelist / ownership-gated upgrades use `upgradesec` (same shape +
-`security_check` variant). RNG upgrades use `up.nefty/orngjobs`,
-identical to the blend RNG flow. Both are detected and tagged in the
-picker; first-cut UI executes the deterministic FT-cost case (the
-common one).
+Deterministic upgrades with **FT and/or NFT costs** are fully signable
+(the NFT cost picker burns `TEMPLATE` / `SCHEMA` / `COLLECTION`
+ingredients, verified against trx `64054c0b…`). Whitelist / ownership
+-gated upgrades use `upgradesec` (same shape + a `security_check`
+variant); RNG upgrades resolve through `up.nefty/orngjobs`. Both are
+decoded and tagged in the picker but not yet executable from the UI —
+see [Limitations](#--limitations--).
 
 ```
 [*] per-collection discovery from up.nefty/upgrades
@@ -627,46 +629,97 @@ public/
 
 ---
 
+## --- Themes ---
+
+Three built-in skins, switched from the toggle in the top-right corner
+and remembered across visits (`localStorage`, still no cookies):
+
+- **Sombre** — the default. A calm, modern dark theme: graphite
+  surfaces, a soft violet accent, rounded cards, no chrome.
+- **Clair** — a clean light theme for bright environments.
+- **Neon** — the original cyberpunk skin (scanlines, neon cyan, mono).
+
+It's all CSS, living in `src/ui/neutral.css` and `src/ui/modern.css`,
+scoped under `html[data-theme=…]`; the base stylesheets stay untouched
+and a first-time visitor lands on **Sombre**. To re-skin or add a fourth
+theme, copy the pattern in those files — no application code is involved.
+
+---
+
 ## --- Limitations ---
 
-Honesty up front:
+Honesty up front. Grouped by *why* each one isn't done, so you know
+which are a few hours of UI work and which are impossible by design.
 
-- **Ownership-secured random blends**: a tiny minority of random
-  blends require the user to prove on-chain ownership of a specific
-  set of NFTs (`OWNERSHIP_CHECK` security). The current UI sends a
-  no-op `WHITELIST_CHECK`, which works for non-secured and
-  whitelist-secured random blends but the contract rejects ownership-
-  gated ones. A small UI extension would add this.
-- **RNG upgrades**: upgrades with non-IMMEDIATE results need the
-  `up.nefty/orngjobs` wait + claim flow (same shape as RNG blends).
-  Detected and tagged `RNG` in the picker. Adding the flow reuses
-  most of `rngWait.ts`.
-- **Gated upgrades**: whitelist / ownership-gated `upgradesec` is
-  decoded but not yet executable from the UI. Tagged `gated` in the
+### Builder is ready, only the UI is missing
+
+For these, the transaction builder already emits the exact on-chain
+shape — proven against real traces (trx ids given). What's missing is
+the front-end wiring, so they're the highest-value things to add next.
+
+- **Ownership-secured blends.** Random blends gated by `OWNERSHIP_CHECK`
+  ask you to prove you *hold* a specific NFT (which is **not** burned).
+  Far from rare: 28 of the 40 most recent `blend.nefty::fuse` actions
+  are ownership-gated. `rngExecute.ts` already encodes `OWNERSHIP_CHECK`,
+  but the UI still sends only the no-op `WHITELIST_CHECK` and can't tell
+  an ownership gate from a whitelist gate — so an ownership blend today
+  shows a misleading *"not on the whitelist"* message. To finish: read
+  the `secure.nefty/proofown` rule, show a proof-NFT picker, pass the
+  `asset_ids`. Traces: `e9720eaf…` (blend 36262), `432629ce…` (blend
+  30186).
+- **Gated upgrades** (`up.nefty::upgradesec`). Whitelist- and
+  ownership-gated upgrades. `buildUpgradeActions` already emits
+  `upgradesec` with the right `security_check`; the UI blocks them.
+  Whitelist is the easy half (reuse the blend whitelist check); ownership
+  reuses the same proof-NFT picker as above. Traces: `64054c0b…`
+  (whitelist, upgrade 37), `b5aa7b89…` (ownership, upgrade 994).
+- **RNG upgrades.** Upgrades whose result the oracle decides. Important
+  correction: `up.nefty` has **no `claim` action** — unlike RNG *blends*
+  there is no second signature. You sign the same `upgrade` /
+  `upgradesec` action and the ORNG callback rewrites the NFT's
+  `mutable_data` a few seconds later (a row in `up.nefty/orngjobs`
+  tracks the pending job). The UI only needs to stop blocking
+  `is_random` and show a short "applying…" wait. Tagged `RNG` in the
+  picker today.
+
+### Partial coverage (common cases work, exotic variants don't)
+
+- **Exotic blend ingredients.** `BALANCE_INGREDIENT` (chest/balance) and
+  `COOLDOWN_INGREDIENT` blends are decoded but flagged `UNSUPPORTED` by
+  the matcher. Signable ingredient kinds: TEMPLATE, SCHEMA, ATTRIBUTE,
+  COLLECTION, FT.
+- **Exotic upgrade costs.** FT plus NFT (TEMPLATE / SCHEMA / COLLECTION)
+  costs are signable. `BALANCE`, `ATTRIBUTE` and `TYPED_ATTRIBUTE` costs
+  are decoded but not pickable yet.
+- **Attribute-targeted upgrades.** Upgrade specs that select which NFTs
+  you can upgrade by *attribute* (rather than by template) aren't
+  matched yet; only `template` / `templates` requirements feed the
   picker.
-- **NFT-cost upgrades**: upgrades where you also burn NFTs as cost
-  (TEMPLATE / SCHEMA / COLLECTION ingredients) are decoded but the
-  UI doesn't yet offer a picker for them; only FT-only upgrades are
-  signable from v0.4.
-- **WaxDAO drops / packs / farms**: only WaxDAO blends are wired up
-  today. The rest of the `waxdao*` contract family (drops, farms,
-  pack openings on waxdaobacker, etc.) is on the roadmap.
-- **`claimdropkey` drops**: cryptographic-key gated drops need a per-
-  user pre-signed message from the drop creator. No client can
-  fabricate it, fundamentally outside the scope of any third-party
-  tool.
-- **CPU sponsorship**: Nefty's `neftybrespay` used to pay CPU for
-  users. That account no longer signs, so users must stake ~5-10 WAX
-  in CPU themselves. Documented in the in-app guide. If the wallet
-  falls back to a resource provider (Greymass Fuel) that doesn't
-  cosign, the chain rejects with *"declares authority
-  greymassfuel@cosign … does not have signatures for it"* - staking
-  CPU (or signing with WAX Cloud Wallet) avoids it.
-- **Creating templates / schemas**: drops mint from templates that
-  already exist. Making new templates/schemas (a riskier flow) isn't
-  in the app yet - create them on AtomicHub, then build the drop here.
-- **Other NeftyBlocks contracts** (redemptions, NFT swaps,
-  marketplace listings) aren't covered yet. PRs welcome.
+
+### Out of scope by design, or external
+
+- **`claimdropkey` drops.** Cryptographic-key gated: the creator must
+  sign a per-user message off-chain. No third-party client can fabricate
+  it. Genuinely impossible, not a TODO.
+- **CPU.** Nefty's `neftybrespay` used to pay CPU for users; that account
+  no longer signs, so you stake ~5-10 WAX of CPU yourself (or sign with
+  WAX Cloud Wallet). External to this tool. If the wallet falls back to a
+  resource provider (Greymass Fuel) that doesn't cosign, the chain
+  rejects with *"declares authority greymassfuel@cosign … does not have
+  signatures for it"* — staking CPU avoids it. The in-app guide explains
+  this.
+
+### On the roadmap
+
+- **WaxDAO drops / packs / farms.** Only WaxDAO *blends* are wired today.
+  The rest of the `waxdao*` family (drops, farms, pack openings on
+  waxdaobacker, etc.) follows the same ABI-driven method.
+- **Creating templates / schemas.** Drops mint from templates that
+  already exist. Making new templates/schemas (irreversible, riskier)
+  isn't in the app yet — create them on AtomicHub, then build the drop
+  here.
+- **Other NeftyBlocks contracts** (redemptions, NFT swaps, marketplace
+  listings) aren't covered yet. PRs welcome.
 
 ---
 
