@@ -786,15 +786,14 @@ function writePlatformToHash(p: Platform) {
   writeHashRoute(p, DEFAULT_VIEW_FOR_PLATFORM[p]);
 }
 
-function setStatus(msg: string, kind: AppState['statusKind'] = 'info') {
+function setStatus(msg: string, kind: AppState['statusKind'] = 'info', txId?: string) {
   state.status = msg;
   state.statusKind = kind;
-  // Success/error outcomes also pop a floating toast, visible no matter
-  // where the user has scrolled (the status line lives at the top of the
-  // page, so an action triggered far down - e.g. adding a whitelist wallet
-  // - would otherwise give no visible confirmation). 'info'/progress
-  // messages stay in the top status line only, to avoid toast spam.
-  if (kind === 'ok' || kind === 'err') showToast(msg, kind);
+  // Success/error outcomes pop the top banner, visible no matter where the
+  // user has scrolled. 'info'/progress and 'warn' hints stay in the inline
+  // status line only. When a tx id is supplied the banner offers a
+  // "copy tx link" button.
+  if (kind === 'ok' || kind === 'err') showToast(msg, kind, txId);
   render();
 }
 
@@ -804,19 +803,56 @@ let toastTimer: ReturnType<typeof setTimeout> | undefined;
  * (it lives outside #root so repaints don't wipe it). Auto-dismisses;
  * errors linger longer than successes.
  */
-function showToast(msg: string, kind: 'ok' | 'err') {
+function showToast(msg: string, kind: 'ok' | 'err', txId?: string) {
   if (typeof document === 'undefined') return;
   let el = document.getElementById('crucible-toast');
   if (!el) {
     el = document.createElement('div');
     el.id = 'crucible-toast';
     document.body.appendChild(el);
-    el.addEventListener('click', () => { el!.classList.remove('show'); });
   }
-  el.className = `toast toast-${kind} show`;
-  el.textContent = `${kind === 'ok' ? '✓' : '✕'}  ${msg}`;
+  const banner = el;
+  const dismiss = () => banner.classList.remove('show');
+  banner.className = `toast toast-${kind} show`;
+  banner.innerHTML = '';
+
+  const message = document.createElement('span');
+  message.className = 'toast-msg';
+  message.textContent = `${kind === 'ok' ? '✓' : '✕'}  ${msg}`;
+  banner.appendChild(message);
+
+  // "copy tx link" - only when we have a transaction id to point at.
+  if (txId) {
+    const url = `https://waxblock.io/transaction/${txId}`;
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'toast-btn';
+    copyBtn.textContent = 'copy tx link';
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      try {
+        void navigator.clipboard?.writeText(url);
+        copyBtn.textContent = 'copied!';
+      } catch {
+        copyBtn.textContent = 'copy failed';
+      }
+    });
+    banner.appendChild(copyBtn);
+  }
+
+  // Explicit confirm/close button (banner also dismisses on background click).
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'toast-btn toast-close';
+  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.textContent = 'OK ✕';
+  closeBtn.addEventListener('click', (e) => { e.stopPropagation(); dismiss(); });
+  banner.appendChild(closeBtn);
+
+  banner.onclick = dismiss;
+
   if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el!.classList.remove('show'); }, kind === 'err' ? 9000 : 5000);
+  toastTimer = setTimeout(dismiss, kind === 'err' ? 12000 : 6000);
 }
 
 function rootEl(): HTMLElement {
@@ -1799,7 +1835,7 @@ async function onDropExecute() {
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
     state.dropLastTrxId = trxId;
-    setStatus(`Drop claimed: ${trxId}`, 'ok');
+    setStatus(`Drop claimed: ${trxId}`, 'ok', trxId);
   } catch (err) {
     setStatus(`Claim failed: ${(err as Error).message}`, 'err');
   }
@@ -2022,7 +2058,7 @@ async function onExecute() {
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
     state.lastTrxId = trxId;
-    setStatus(`Transaction broadcast: ${trxId}`, 'ok');
+    setStatus(`Transaction broadcast: ${trxId}`, 'ok', trxId);
   } catch (err) {
     setStatus(`Transaction failed: ${(err as Error).message}`, 'err');
   }
@@ -2486,6 +2522,7 @@ async function onCreateDrop() {
         ? `✓ Drop #${newDropId} created on ${collection}.${gatedNote} Tx: ${trxId}`
         : `✓ Drop created on ${collection}.${gatedNote} Tx: ${trxId}`,
       'ok',
+      trxId,
     );
     // Reset the volatile form fields, keep the collection + safety toggle.
     c.name = '';
@@ -2639,7 +2676,7 @@ async function runDropAdminAction(
     const trxId =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
-    setStatus(`${action.name} confirmed${trxId ? ` · tx ${trxId.slice(0, 8)}…` : ''}`, 'ok');
+    setStatus(`${action.name} confirmed${trxId ? ` · tx ${trxId.slice(0, 8)}…` : ''}`, 'ok', trxId);
     // Give the RPC node a moment to index the new block before we re-read,
     // otherwise the refresh can return the pre-action (stale) state and the
     // panel would show outdated info right after a successful change.
@@ -2768,7 +2805,7 @@ async function runAdminAction(
     const trxId =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
-    setStatus(`${action.name} broadcast: ${trxId}`, 'ok');
+    setStatus(`${action.name} broadcast: ${trxId}`, 'ok', trxId);
     if ((opts.refresh ?? 'blend') === 'members') {
       // Whitelist membership changed but the blend didn't: just re-read
       // the selected whitelist's members, keep everything else.
@@ -3275,7 +3312,7 @@ async function onExecuteUpgrade() {
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
     u.lastTrxId = trxId;
-    setStatus(`Upgrade broadcast: ${trxId}`, 'ok');
+    setStatus(`Upgrade broadcast: ${trxId}`, 'ok', trxId);
   } catch (err) {
     setStatus(`Upgrade failed: ${(err as Error).message}`, 'err');
   } finally {
@@ -4263,7 +4300,10 @@ function renderRngOutcome(claimed: boolean): string {
 }
 
 function renderStatus(): string {
-  if (!state.status) return '';
+  // Success outcomes are shown by the top banner only, so we don't echo a
+  // second "... confirmed" / idle "Ready" line under the Connect-wallet card.
+  // Progress ('info'), hints ('warn') and errors ('err') still render inline.
+  if (!state.status || state.statusKind === 'ok') return '';
   return `<p class="status-line ${state.statusKind}">${escapeHtml(state.status)}</p>`;
 }
 
@@ -6039,7 +6079,7 @@ async function onExecuteWaxdaoBlend() {
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
     w.lastTrxId = trxId;
-    setStatus(`WaxDAO blend broadcast: ${trxId}`, 'ok');
+    setStatus(`WaxDAO blend broadcast: ${trxId}`, 'ok', trxId);
   } catch (err) {
     setStatus(`WaxDAO blend failed: ${(err as Error).message}`, 'err');
   } finally {
@@ -6949,7 +6989,9 @@ export async function mount() {
     return;
   }
   await restoreSession();
-  setStatus('Ready. Pick a collection, then click Discover to load its blends or drops.', 'ok');
+  // Clear the boot status: no idle "Ready" line under Connect-wallet, and no
+  // banner. The empty picker (placeholder + Discover button) is guidance enough.
+  state.status = '';
   render();
   // On-demand fetching: NO auto-discovery at mount. The user clicks
   // Refresh on the picker card when they're ready, this avoids spinning
