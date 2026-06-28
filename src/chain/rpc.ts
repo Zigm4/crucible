@@ -141,6 +141,83 @@ export async function getAccount(name: string) {
   return withFailover((client) => client.v1.chain.get_account(name));
 }
 
+// ─── contract monitoring helpers (read-only, used by the status page) ──── //
+
+/**
+ * Public Hyperion history hosts (separate service from the chain API above).
+ * Verified to serve /v2/history for WAX. Used only to read the most recent
+ * action timestamp of an account; never required for the rest of the app.
+ */
+export const HYPERION_ENDPOINTS = [
+  'https://wax.eosphere.io',
+  'https://api.waxsweden.org',
+];
+
+const HYPERION_TIMEOUT_MS = 8_000;
+
+/** Raw `/v1/chain/get_account` across the RPC failover list. */
+export async function getAccountInfo(name: string): Promise<Record<string, unknown>> {
+  return withFailover(async (client) =>
+    (await client.call({
+      path: '/v1/chain/get_account',
+      params: { account_name: name },
+    })) as Record<string, unknown>,
+  );
+}
+
+/**
+ * Code hash for an account. An all-zero hash means there is no contract
+ * code deployed (a plain account, or a contract that was wiped).
+ */
+export async function getCodeHash(name: string): Promise<string> {
+  return withFailover(async (client) => {
+    const res = (await client.call({
+      path: '/v1/chain/get_code_hash',
+      params: { account_name: name },
+    })) as { code_hash?: string };
+    return res.code_hash ?? '';
+  });
+}
+
+export interface LastAction {
+  timestamp: string;
+  name: string;
+}
+
+/**
+ * Most recent action for an account, via Hyperion history. Tries each host
+ * with a deadline. Returns null when a host answers but the account has no
+ * history; throws only when every host fails (so the caller can show
+ * "activity unavailable" without losing the rest of the contract's data).
+ */
+export async function getLastAction(account: string): Promise<LastAction | null> {
+  let lastErr: unknown;
+  for (const base of HYPERION_ENDPOINTS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), HYPERION_TIMEOUT_MS);
+    try {
+      const url = `${base}/v2/history/get_actions?account=${encodeURIComponent(account)}&limit=1&sort=desc`;
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status} from ${base}`);
+      const body = (await res.json()) as {
+        actions?: Array<{ timestamp?: string; act?: { name?: string } }>;
+      };
+      const a = body.actions?.[0];
+      if (!a || !a.timestamp) return null;
+      return { timestamp: a.timestamp, name: a.act?.name ?? '' };
+    } catch (err) {
+      lastErr = ctrl.signal.aborted ? new Error(`${base} timed out`) : err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error(
+    `All Hyperion endpoints failed. Last error: ${
+      lastErr instanceof Error ? lastErr.message : String(lastErr)
+    }`,
+  );
+}
+
 /**
  * Try each atomicassets API host until one answers OK.
  * Returns the parsed JSON body of `path` (a path starting with /).

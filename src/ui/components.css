@@ -1266,3 +1266,24 @@ pre::before {
 }
 .glitch::before { color: #ff3e88; transform: translate(1px, 0); mix-blend-mode: screen; }
 .glitch::after  { color: #38bdf8; transform: translate(-1px, 0); mix-blend-mode: screen; }
+
+
+/* ─── "open the app" link — used on the standalone guide + status pages,
+ *     placed top-left so it never sits under the theme switch (top-right) ── */
+.app-link {
+  display: inline-block;
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-decoration: none;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  padding: 6px 12px;
+  border-radius: 6px;
+  transition: border-color 120ms, color 120ms, background 120ms;
+}
+.app-link:hover {
+  border-color: var(--accent);
+  color: var(--accent-hot);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}

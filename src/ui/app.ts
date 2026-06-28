@@ -155,6 +155,7 @@ import {
 import { waitForNeftyClaim } from '../nefty/neftyPackWait';
 import { dryRunActions } from './dryrun';
 import { renderAboutPanels } from './about';
+import { renderStatusPage, runStatusScan, getStatusState } from './status';
 
 type AppView =
   | 'blends'   // Nefty: blend.nefty
@@ -266,6 +267,8 @@ interface AppState {
   /** When true, the picker hides blends the wallet cannot satisfy. */
   onlyExecutable: boolean;
   pickerOpen: boolean;
+  /** Top-level page: the normal app, or the standalone contract-status page. */
+  page: 'app' | 'status';
   // ── drops view ──
   view: AppView;
   drops: DiscoveredDrop[];
@@ -590,6 +593,7 @@ const state: AppState = {
   showInactive: false,
   onlyExecutable: false,
   pickerOpen: false,
+  page: parseHashRoute().page,
   view: parseHashRoute().view,
   drops: [],
   dropsLoading: false,
@@ -711,6 +715,8 @@ export interface ParsedRoute {
   platform: Platform;
   view: AppView;
   id?: string;
+  /** Standalone pages that sit outside the platform/tab grammar (e.g. #/status). */
+  page: 'app' | 'status';
 }
 
 function tabSlugToView(platform: Platform, slug: string | undefined): AppView {
@@ -750,12 +756,13 @@ function parseHashRoute(): ParsedRoute {
     const clean = h.replace(/^#\/?/, '');
     const parts = clean.split('/').map((p) => p.trim()).filter(Boolean);
     const platformSlug = (parts[0] || '').toLowerCase();
+    const page: 'app' | 'status' = platformSlug === 'status' ? 'status' : 'app';
     const platform: Platform = platformSlug === 'waxdao' ? 'waxdao' : 'nefty';
     const view = tabSlugToView(platform, (parts[1] || '').toLowerCase());
     const id = parts[2] ? parts[2] : undefined;
-    return { platform, view, id };
+    return { platform, view, id, page };
   } catch {
-    return { platform: 'nefty', view: 'blends' };
+    return { platform: 'nefty', view: 'blends', page: 'app' };
   }
 }
 
@@ -1216,6 +1223,16 @@ async function applyPendingDeepLink() {
   } catch (err) {
     setStatus(`Deep link failed: ${(err as Error).message}`, 'err');
   }
+}
+
+/**
+ * Kicks off the contract-status scan the first time the user opens #/status
+ * (lazy: nothing heavy runs at app mount). The Refresh button re-scans
+ * explicitly. `render` is passed so cards paint as each contract resolves.
+ */
+function maybeScanStatus() {
+  const s = getStatusState();
+  if (!s.scanned && !s.scanning) void runStatusScan(render);
 }
 
 // ─── packs view: discovery + auto-wait state machine ─────────────────── //
@@ -6493,6 +6510,17 @@ function render() {
 function performRender() {
   renderScheduled = false;
   const snap = captureRenderSnapshot();
+
+  // Standalone contract-status page: a full-page view outside the platform
+  // tabs. Works with no wallet; it only ever reads the chain.
+  if (state.page === 'status') {
+    rootEl().innerHTML = renderStatusPage();
+    const refresh = document.getElementById('status-refresh');
+    if (refresh) refresh.addEventListener('click', () => { void runStatusScan(render); });
+    restoreRenderSnapshot(snap);
+    return;
+  }
+
   const session = getCurrentSession();
   rootEl().innerHTML =
     renderAboutPanels() +
@@ -6958,27 +6986,37 @@ export async function mount() {
     window.addEventListener('hashchange', () => {
       const r = parseHashRoute();
       let mutated = false;
-      if (r.platform !== state.platform) {
-        state.platform = r.platform;
+      if (r.page !== state.page) {
+        state.page = r.page;
         mutated = true;
+        if (r.page === 'status') maybeScanStatus();
       }
-      if (r.view !== state.view) {
-        state.view = r.view;
-        mutated = true;
-      }
-      if (r.id) {
-        state.pendingDeepLink = { view: r.view, id: r.id };
-        mutated = true;
+      // Platform/tab/deep-link only matter for the normal app page.
+      if (r.page === 'app') {
+        if (r.platform !== state.platform) {
+          state.platform = r.platform;
+          mutated = true;
+        }
+        if (r.view !== state.view) {
+          state.view = r.view;
+          mutated = true;
+        }
+        if (r.id) {
+          state.pendingDeepLink = { view: r.view, id: r.id };
+          mutated = true;
+        }
       }
       if (mutated) {
         render();
-        void applyPendingDeepLink();
+        if (r.page === 'app') void applyPendingDeepLink();
       }
     });
     // Normalise the hash on first load (write back the canonical form
-    // so a refresh keeps you exactly where you were).
+    // so a refresh keeps you exactly where you were). Standalone pages
+    // (e.g. #/status) sit outside the platform/tab grammar, so leave their
+    // hash untouched rather than rewriting it to a default tab.
     const r0 = parseHashRoute();
-    writeHashRoute(r0.platform, r0.view, r0.id);
+    if (r0.page === 'app') writeHashRoute(r0.platform, r0.view, r0.id);
     outsideClickAttached = true;
   }
   setStatus('Verifying live blend.nefty ABI…', 'info');
@@ -7002,4 +7040,6 @@ export async function mount() {
   // they see what was shared with them. The wallet connection prompt
   // still appears at the top when no session is active.
   void applyPendingDeepLink();
+  // Direct landing on #/status (bookmark / shared link): start the scan.
+  if (state.page === 'status') maybeScanStatus();
 }

@@ -29,15 +29,9 @@
          it adapts to all three skins. */
       .guide { max-width: 880px; margin: 0 auto; padding: 0 4px 64px; }
       .guide-top {
-        display: flex; align-items: center; justify-content: space-between;
-        gap: 12px; flex-wrap: wrap; margin: 8px 0 6px;
+        display: flex; align-items: center; justify-content: flex-start;
+        gap: 14px; flex-wrap: wrap; margin: 8px 0 6px;
       }
-      .guide-back {
-        font-size: 12px; letter-spacing: 1px; text-decoration: none;
-        color: var(--accent); border: 1px solid var(--border);
-        padding: 6px 12px; border-radius: 4px;
-      }
-      .guide-back:hover { border-color: var(--accent); color: var(--accent-hot); }
       .guide h1.guide-title {
         font-size: 22px; letter-spacing: 3px; margin: 18px 0 2px; color: var(--accent);
       }
@@ -95,8 +89,8 @@
 
     <main class="guide">
       <div class="guide-top">
+        <a class="app-link" href="./index.html">← Open the app</a>
         <span style="letter-spacing:4px; font-weight:700; color:var(--accent)">CRUCIBLE</span>
-        <a class="guide-back" href="./index.html">← Open the app</a>
       </div>
       <h1 class="guide-title">User Guide</h1>
       <p class="lead">
