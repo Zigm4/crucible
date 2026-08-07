@@ -1309,3 +1309,194 @@ pre::before {
   color: var(--accent-hot);
   background: color-mix(in srgb, var(--accent) 10%, var(--panel));
 }
+
+/* ─── collection catalogue (#/catalog) ────────────────────────────────── */
+
+/* Source tally across the top: one tile per contract scanned, so a player
+   can see at a glance where a collection's content actually lives. */
+.cat-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.cat-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: var(--panel);
+}
+.cat-stat-failed { opacity: 0.55; border-style: dashed; }
+.cat-stat-n {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--accent-hot);
+}
+.cat-stat-label { font-size: 11px; font-weight: 600; }
+.cat-stat-sub { font-size: 9px; color: var(--muted); letter-spacing: 0.3px; }
+
+.cat-controls {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 18px 0 10px;
+}
+
+/* Grouping switch (Category / Contract). */
+.cat-toggle { display: inline-flex; gap: 0; }
+.cat-toggle button {
+  padding: 8px 14px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.cat-toggle button:first-child { border-radius: 3px 0 0 3px; }
+.cat-toggle button:last-child { border-radius: 0 3px 3px 0; margin-left: -1px; }
+.cat-toggle button.active {
+  color: var(--accent-hot);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  z-index: 1;
+}
+
+.cat-group { margin-bottom: 16px; }
+.cat-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+.cat-group-head:hover { color: var(--accent-hot); }
+.cat-group-caret { color: var(--muted); font-size: 11px; }
+.cat-group-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+}
+.cat-group-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.6px;
+}
+
+.cat-rows { display: flex; flex-direction: column; }
+
+/* One recipe/drop/pack. A link, so middle-click and "open in new tab"
+   work the way players expect from a catalogue. */
+/* Every column is minmax(0, …) so a long cost string or a long
+   "missing …" reason ellipsises instead of pushing the page wider than
+   the viewport. */
+.cat-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, auto) minmax(0, auto);
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--fg);
+  text-decoration: none;
+}
+.cat-row > * { min-width: 0; }
+.cat-row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.cat-row.is-doable { box-shadow: inset 2px 0 0 var(--ok, #4ade80); }
+.cat-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cat-chips { display: inline-flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+.cat-kind {
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+/* Each contract gets its own hue so the eye can sort by source even
+   while the list is grouped by category. */
+.cat-kind-blend       { border-color: #7c9cff; color: #7c9cff; }
+.cat-kind-drop        { border-color: #f0a860; color: #f0a860; }
+.cat-kind-pack        { border-color: #c58cf5; color: #c58cf5; }
+.cat-kind-upgrade     { border-color: #5ec8d8; color: #5ec8d8; }
+.cat-kind-waxdao      { border-color: #e8798f; color: #e8798f; }
+.cat-kind-blenderizer { border-color: #86c97f; color: #86c97f; }
+.cat-flag {
+  font-size: 9px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px dashed var(--border-soft);
+  border-radius: 10px;
+  padding: 1px 6px;
+}
+/* Capped in ch so a row stays one line: costs like
+   "6 NFTs + 105.00000000 UPMAX" and reasons like "missing 1x template
+   130151, 1x template 130152" ellipsise instead of wrapping the row.
+   The full text is in the title attribute. */
+.cat-cost {
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cat-mark {
+  font-size: 10px;
+  white-space: nowrap;
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cat-doable { color: var(--ok, #4ade80); font-weight: 600; }
+.cat-blocked { color: var(--muted); }
+
+/* Mobile only: chips drop to their own line so the name keeps the width.
+   Same 560px breakpoint as the tab bar and the platform pills. */
+@media (max-width: 560px) {
+  .cat-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    row-gap: 4px;
+  }
+  .cat-chips { grid-column: 1 / -1; order: 3; }
+  .cat-mark { order: 2; text-align: right; max-width: 100%; }
+  .cat-cost { max-width: 100%; }
+}
+
+/* Entry point to the catalogue, under the platform pills. */
+.catalog-link {
+  display: block;
+  margin-top: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--fg-dim);
+  text-decoration: none;
+  text-align: center;
+  border: 1px dashed var(--border-soft);
+  border-radius: 3px;
+}
+.catalog-link:hover { color: var(--accent-hot); border-color: var(--accent); }

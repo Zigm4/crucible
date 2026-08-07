@@ -57,6 +57,7 @@ $ crucible --layout
                           #/nefty/upgrade/447
                           #/waxdao/blend/1921
                           #/blenderizer/blend/336429
+                          #/catalog/underpunks55   <- everything, one page
 ```
 
 ---
@@ -455,6 +456,46 @@ checked before you deposit anything:
   author pre-paid (`rambalance`). A collection with no balance fails
   every blend until they top it up; the amount left is shown inline.
 
+### CATALOGUE · `#/catalog/<collection>`
+
+Every tab above is organised the way the CHAIN is: one per contract,
+because that is what you need when you are about to sign. For a player
+browsing, that is the wrong axis. They want *boots*, and the boots
+might be a blend, a Blenderizer recipe, a drop or a pack, on four
+different contracts, with nothing listing them together.
+
+The catalogue inverts it. One collection, all six contracts scanned in
+parallel, every result normalised into one row shape and grouped by
+**category** -- the schema of the item produced -- with a coloured
+badge per source. Grouping by contract is one click away.
+
+```
+$ crucible #/catalog/underpunks55
+
+  22 Blenderizer   102 Blends   36 Drops   17 Packs   24 Upgrades   7 WaxDAO
+  208 entries · 130 available now · 97 your wallet can do right now
+
+  UP.ARMOUR                                                    21
+    Magical Mycelium Leather Armour Set   [BLEND]        32 NFTs  ✓ ready
+    Mycelium Leather Armour Set           [BLENDERIZER]  10 NFTs  ✓ ready
+    Mycelium Leather Cuirass              [BLENDERIZER]  48 NFTs  missing 6× template 316897
+  UP.MAGIC                                                     14
+    Diya of Fortitude                     [UPGRADE]       1 NFT   ✓ ready
+    #5 The Evil Dice of Similarly Evil Death [BLEND]      9 NFTs  ✓ ready
+```
+
+```
+[*] six sources scanned concurrently; one failing contract degrades to
+    a warning line instead of taking the page down
+[*] categories resolved from the produced template's schema in batched
+    indexer calls (one call per 100 entries)
+[*] wallet-aware: entries your NFTs satisfy are marked "ready" and
+    sorted first; the rest say what you're missing, by template
+[*] search, group-by toggle, "only what I can do", collapsible groups
+[*] read-only. Every row deep-links back into the normal tab, which
+    still does all the signing: no second transaction implementation
+```
+
 ---
 
 ## --- Shareable links ---
@@ -703,6 +744,9 @@ src/
   ui/
     app.ts             : shell, state, render loop, event wiring
     about.ts           : collapsible in-page guide
+    catalog.ts         : #/catalog - one collection across all six
+                         contracts, grouped by category
+    status.ts          : #/status - contract health monitor
     dryrun.ts          : local ABI serialisation, "simulate without signing"
     theme.css          : palette, fonts, scanlines, motion (fork to re-skin)
     layout.css         : page structure, cards, header, footer
@@ -713,6 +757,8 @@ scripts/
   verify-packs.mjs             : byte-for-byte for pack-unbox traces
   verify-upgrades.mjs          : byte-for-byte for upgrade traces
   verify-waxdao.mjs            : byte-for-byte for waxdaomarket blends
+  verify-blenderizer.mjs       : byte-for-byte for blenderizerx blends
+  verify-pool-blend.mjs        : POOL_NFT blend path against chain state
   verify-discover-chain.mjs    : on-chain discovery sanity check
 public/
   favicon.svg         : crucible glyph (animated molten core)

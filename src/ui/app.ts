@@ -174,6 +174,18 @@ import { waitForNeftyClaim } from '../nefty/neftyPackWait';
 import { dryRunActions } from './dryrun';
 import { renderAboutPanels } from './about';
 import { renderStatusPage, runStatusScan, getStatusState } from './status';
+import {
+  renderCatalogPage,
+  runCatalogScan,
+  getCatalogState,
+  setCatalogCollection,
+  setCatalogGrouping,
+  setCatalogSearch,
+  setCatalogOnlyDoable,
+  setCatalogShowInactive,
+  toggleCatalogGroup,
+  type CatalogGrouping,
+} from './catalog';
 
 type AppView =
   | 'blends'   // Nefty: blend.nefty
@@ -296,7 +308,7 @@ interface AppState {
   onlyExecutable: boolean;
   pickerOpen: boolean;
   /** Top-level page: the normal app, or the standalone contract-status page. */
-  page: 'app' | 'status';
+  page: 'app' | 'status' | 'catalog';
   // ── drops view ──
   view: AppView;
   drops: DiscoveredDrop[];
@@ -715,6 +727,10 @@ const state: AppState = {
   platform: readPlatformFromHash(),
   pendingDeepLink: (() => {
     const r = parseHashRoute();
+    // Only the app page has entity deep links. Standalone pages reuse the
+    // `id` slot for their own grammar (#/catalog/<collection>), so queuing
+    // one here would send the collection name to the blend loader.
+    if (r.page !== 'app') return undefined;
     return r.id ? { view: r.view, id: r.id } : undefined;
   })(),
   templateNames: new Map(),
@@ -777,6 +793,10 @@ const state: AppState = {
  *   waxdao      → blend
  *   blenderizer → blend
  *
+ * Standalone pages sit outside that grammar:
+ *   #/status                  contract health monitor
+ *   #/catalog/<collection>    everything one collection offers
+ *
  * Entity IDs:
  *   blend    → blend_id  (uint64); on blenderizer this is the target
  *              template_id, which is that contract's primary key
@@ -793,7 +813,7 @@ export interface ParsedRoute {
   view: AppView;
   id?: string;
   /** Standalone pages that sit outside the platform/tab grammar (e.g. #/status). */
-  page: 'app' | 'status';
+  page: 'app' | 'status' | 'catalog';
 }
 
 function tabSlugToView(platform: Platform, slug: string | undefined): AppView {
@@ -835,7 +855,12 @@ function parseHashRoute(): ParsedRoute {
     const clean = h.replace(/^#\/?/, '');
     const parts = clean.split('/').map((p) => p.trim()).filter(Boolean);
     const platformSlug = (parts[0] || '').toLowerCase();
-    const page: 'app' | 'status' = platformSlug === 'status' ? 'status' : 'app';
+    const page: ParsedRoute['page'] =
+      platformSlug === 'status'
+        ? 'status'
+        : platformSlug === 'catalog'
+          ? 'catalog'
+          : 'app';
     const platform: Platform =
       platformSlug === 'waxdao'
         ? 'waxdao'
@@ -843,7 +868,11 @@ function parseHashRoute(): ParsedRoute {
           ? 'blenderizer'
           : 'nefty';
     const view = tabSlugToView(platform, (parts[1] || '').toLowerCase());
-    const id = parts[2] ? parts[2] : undefined;
+    // Standalone pages have their own grammar: #/catalog/<collection>
+    // carries the collection where an entity id would normally sit.
+    const id = page === 'catalog'
+      ? (parts[1] ? parts[1].toLowerCase() : undefined)
+      : (parts[2] ? parts[2] : undefined);
     return { platform, view, id, page };
   } catch {
     return { platform: 'nefty', view: 'blends', page: 'app' };
@@ -1325,6 +1354,56 @@ async function applyPendingDeepLink() {
 function maybeScanStatus() {
   const s = getStatusState();
   if (!s.scanned && !s.scanning) void runStatusScan(render);
+}
+
+/**
+ * Opens #/catalog. The route can carry the collection
+ * (`#/catalog/underpunks55`), in which case we scan straight away so a
+ * shared link lands on a populated page. Without one we just render the
+ * empty form and wait for the user to pick.
+ *
+ * Re-scans when the routed collection differs from the loaded one, so
+ * editing the hash switches collection rather than showing stale rows.
+ */
+function maybeScanCatalog(routedCollection?: string) {
+  const c = getCatalogState();
+  if (routedCollection && routedCollection !== c.loaded) {
+    setCatalogCollection(routedCollection);
+    void startCatalogScan();
+    return;
+  }
+  if (!routedCollection && !c.collection && state.discoveryCollection) {
+    // Carry over whatever collection the user was already working with.
+    setCatalogCollection(state.discoveryCollection);
+    render();
+  }
+}
+
+/** Runs the scan for the collection currently in the catalogue input. */
+async function startCatalogScan() {
+  const c = getCatalogState();
+  if (!c.collection) {
+    setStatus('Enter a collection name first.', 'err');
+    return;
+  }
+  if (!isValidWaxName(c.collection)) {
+    setStatus(`"${c.collection}" is not a valid WAX collection name.`, 'err');
+    return;
+  }
+  writeCatalogHash(c.collection);
+  const session = getCurrentSession();
+  await runCatalogScan(c.collection, session ? String(session.actor) : undefined, render);
+}
+
+/** Keeps #/catalog/<collection> in sync without firing a hashchange. */
+function writeCatalogHash(collection: string) {
+  try {
+    const target = `#/catalog/${collection}`;
+    if (location.hash === target) return;
+    history.replaceState(null, '', target);
+  } catch {
+    // non-fatal: the page works, only the URL lags
+  }
 }
 
 // ─── packs view: discovery + auto-wait state machine ─────────────────── //
@@ -4609,6 +4688,15 @@ function renderTabs(): string {
         ${tab('waxdao-blends', 'Blend', 'waxdaomarket: burn NFTs → mint result')}`
       : `
         ${tab('blenderizer-blends', 'Blend', 'blenderizerx: burn NFTs → mint result')}`;
+  // The pills split the app by contract, which is what you want when
+  // signing. Players browsing for "what can I make?" want the opposite
+  // cut, so point them at the catalogue from the same card.
+  const catalogHref = state.discoveryCollection
+    ? `#/catalog/${encodeURIComponent(state.discoveryCollection)}`
+    : '#/catalog';
+  const catalogLabel = state.discoveryCollection
+    ? `Browse everything in ${state.discoveryCollection} →`
+    : 'Browse everything in one collection →';
   return `
     <div class="card platform-card">
       <div class="platform-pills">
@@ -4616,6 +4704,7 @@ function renderTabs(): string {
         ${pill('waxdao',      'WaxDAO',      'waxdaomarket')}
         ${pill('blenderizer', 'Blenderizer', 'blenderizerx · by 3DkRender')}
       </div>
+      <a class="catalog-link" href="${escapeHtml(catalogHref)}">${escapeHtml(catalogLabel)}</a>
     </div>
     <div class="card tabs-card">
       <div class="tabs">
@@ -7346,6 +7435,16 @@ function performRender() {
     return;
   }
 
+  // Standalone collection catalogue: every contract's offering for one
+  // collection, grouped by what the item is. Read-only; rows deep-link
+  // back into the normal per-contract flow to sign.
+  if (state.page === 'catalog') {
+    rootEl().innerHTML = renderCatalogPage();
+    attachCatalogHandlers();
+    restoreRenderSnapshot(snap);
+    return;
+  }
+
   const session = getCurrentSession();
   rootEl().innerHTML =
     renderAboutPanels() +
@@ -7366,6 +7465,75 @@ function performRender() {
   attachHandlers();
   positionOpenPickers();
   restoreRenderSnapshot(snap);
+}
+
+/**
+ * Wires the catalogue page. It renders standalone (outside the tab
+ * grammar), so it gets its own handler pass rather than sharing the
+ * app's big delegation block.
+ *
+ * Filters are pure client-side state over the already-scanned entries,
+ * so they re-render instantly and never re-hit the chain. Only the
+ * collection input triggers a new scan, and only on Enter/button.
+ */
+function attachCatalogHandlers() {
+  const root = rootEl();
+
+  const collection = document.getElementById('catalog-collection') as HTMLInputElement | null;
+  if (collection) {
+    collection.addEventListener('input', (e) => {
+      setCatalogCollection((e.target as HTMLInputElement).value);
+    });
+    collection.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Enter') void startCatalogScan();
+    });
+  }
+
+  const refresh = document.getElementById('catalog-refresh');
+  if (refresh) refresh.addEventListener('click', () => { void startCatalogScan(); });
+
+  const search = document.getElementById('catalog-search') as HTMLInputElement | null;
+  if (search) {
+    search.addEventListener('input', (e) => {
+      setCatalogSearch((e.target as HTMLInputElement).value);
+      render();
+    });
+  }
+
+  const onlyDoable = document.getElementById('catalog-only-doable') as HTMLInputElement | null;
+  if (onlyDoable) {
+    onlyDoable.addEventListener('change', () => {
+      setCatalogOnlyDoable(onlyDoable.checked);
+      render();
+    });
+  }
+
+  const showInactive = document.getElementById('catalog-show-inactive') as HTMLInputElement | null;
+  if (showInactive) {
+    showInactive.addEventListener('change', () => {
+      setCatalogShowInactive(showInactive.checked);
+      render();
+    });
+  }
+
+  root.querySelectorAll<HTMLElement>('[data-action]').forEach((el) => {
+    el.addEventListener('click', () => {
+      switch (el.dataset.action) {
+        case 'catalogPickCollection':
+          setCatalogCollection(el.dataset.collection ?? '');
+          void startCatalogScan();
+          break;
+        case 'catalogGroupBy':
+          setCatalogGrouping((el.dataset.grouping as CatalogGrouping) ?? 'category');
+          render();
+          break;
+        case 'catalogToggleGroup':
+          toggleCatalogGroup(el.dataset.group ?? '');
+          render();
+          break;
+      }
+    });
+  });
 }
 
 function attachHandlers() {
@@ -7855,6 +8023,10 @@ export async function mount() {
         state.page = r.page;
         mutated = true;
         if (r.page === 'status') maybeScanStatus();
+        if (r.page === 'catalog') maybeScanCatalog(r.id);
+      } else if (r.page === 'catalog') {
+        // Same page, different collection in the hash: switch to it.
+        maybeScanCatalog(r.id);
       }
       // Platform/tab/deep-link only matter for the normal app page.
       if (r.page === 'app') {
@@ -7907,4 +8079,6 @@ export async function mount() {
   void applyPendingDeepLink();
   // Direct landing on #/status (bookmark / shared link): start the scan.
   if (state.page === 'status') maybeScanStatus();
+  // Same for #/catalog/<collection>.
+  if (state.page === 'catalog') maybeScanCatalog(parseHashRoute().id);
 }

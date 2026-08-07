@@ -109,6 +109,7 @@
         <a href="#upgrade">Upgrade</a>
         <a href="#waxdao">WaxDAO</a>
         <a href="#blenderizer">Blenderizer</a>
+        <a href="#catalogue">Collection catalogue</a>
         <a href="#authors">Collection authors</a>
         <a href="#links">Shareable links</a>
         <a href="#safety">Privacy &amp; safety</a>
@@ -195,6 +196,28 @@
           collection with <strong>no RAM balance</strong> on the contract - <code>blenderizerx</code>
           mints from RAM the collection author pre-paid, so an unfunded collection fails every blend
           until they top it up.</p>
+      </section>
+
+      <section class="gcard" id="catalogue">
+        <h2>Collection catalogue · <code>#/catalog</code></h2>
+        <p>The tabs above split Crucible by <em>contract</em>, which is what you want
+          when you are about to sign something. When you are just browsing, that is the
+          wrong cut: you want <strong>boots</strong>, and you do not care whether they come
+          from a blend, a Blenderizer recipe, a drop or a pack.</p>
+        <p>The catalogue flips it. Pick a collection and it scans <strong>all six
+          contracts at once</strong>, then groups everything by <strong>category</strong> -
+          the schema of the item produced (<code>up.armour</code>,
+          <code>up.resources</code>…) - with a coloured badge showing which contract each
+          row lives on. One click switches the grouping back to per-contract.</p>
+        <div class="note">
+          With a wallet connected, every entry your NFTs can actually satisfy right now is
+          marked <strong>✓ ready</strong> and sorted to the top, and the ones you cannot do
+          say what you are missing (“missing 3× template 218122”). Tick
+          <em>only what I can do</em> and the page becomes a to-do list.
+        </div>
+        <p>It is read-only: clicking a row opens it in the normal tab, where the usual
+          flow does the signing. Reach it from the link under the platform pills, from the
+          footer, or directly at <code>#/catalog/underpunks55</code> - which is shareable.</p>
       </section>
 
       <section class="gcard" id="authors">
