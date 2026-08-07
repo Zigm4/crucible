@@ -77,6 +77,20 @@ import {
   type WaxdaoIngredient,
 } from '../waxdao/blends';
 import { buildWaxdaoBlendActions, executeWaxdaoBlend } from '../waxdao/blendExecute';
+import {
+  listBlenderizerBlends,
+  loadBlenderizerBlendById,
+  readBlenderizerRam,
+  blenderizerTitle,
+  LARGE_MIXTURE_WARN,
+  type BlenderizerRam,
+  type BlenderizerStatus,
+  type DiscoveredBlenderizerBlend,
+} from '../blenderizer/blends';
+import {
+  buildBlenderizerBlendActions,
+  executeBlenderizerBlend,
+} from '../blenderizer/blendExecute';
 import { canManageCollection, listAuthorizedCollections } from '../atomic/collections';
 import {
   buildSetBlendHide,
@@ -166,25 +180,29 @@ type AppView =
   | 'drops'    // Nefty: neftyblocksd
   | 'packs'    // Nefty: atomicpacksx
   | 'upgrades' // Nefty: up.nefty
-  | 'waxdao-blends'; // WaxDAO: waxdaomarket
+  | 'waxdao-blends' // WaxDAO: waxdaomarket
+  | 'blenderizer-blends'; // Blenderizer: blenderizerx
 
 /**
  * Top-level platform switch. Each platform exposes its own set of
  * tabs; the user picks one platform at a time. The choice is reflected
- * in the URL hash (#/nefty or #/waxdao) so the page is bookmarkable
- * and shareable.
+ * in the URL hash (#/nefty, #/waxdao, #/blenderizer) so the page is
+ * bookmarkable and shareable.
  */
-type Platform = 'nefty' | 'waxdao';
+type Platform = 'nefty' | 'waxdao' | 'blenderizer';
 
 /** Default tab per platform. Used when the platform pill is clicked. */
 const DEFAULT_VIEW_FOR_PLATFORM: Record<Platform, AppView> = {
   nefty: 'blends',
   waxdao: 'waxdao-blends',
+  blenderizer: 'blenderizer-blends',
 };
 
 /** Reverse mapping: which platform a given view belongs to. */
 function platformOf(view: AppView): Platform {
-  return view === 'waxdao-blends' ? 'waxdao' : 'nefty';
+  if (view === 'waxdao-blends') return 'waxdao';
+  if (view === 'blenderizer-blends') return 'blenderizer';
+  return 'nefty';
 }
 
 /**
@@ -368,6 +386,7 @@ interface AppState {
   upgrades: UpgradeViewState;
   /** WaxDAO blend tab state. */
   waxdao: WaxdaoViewState;
+  blenderizer: BlenderizerViewState;
   /**
    * Top-level platform pill. 'nefty' = blend.nefty / neftyblocksd /
    * atomicpacksx / up.nefty. 'waxdao' = waxdaomarket. Mirrors
@@ -546,6 +565,40 @@ interface WaxdaoViewState {
   pending: boolean;
 }
 
+/**
+ * State machine for the BLENDERIZER tab. Same picker / info / slots /
+ * actions shape as the other two platforms, but simpler underneath:
+ * recipes have no token cost and no time window, and blending is a
+ * single transfer.
+ */
+interface BlenderizerViewState {
+  /** Free-form target-template-id input (manual entry path). */
+  blendIdInput: string;
+  list: DiscoveredBlenderizerBlend[];
+  loading: boolean;
+  progress?: { pct: number; message: string };
+  error?: string;
+  picked?: DiscoveredBlenderizerBlend;
+  pickerOpen: boolean;
+  showInactive: boolean;
+  /**
+   * Picked asset_ids per slot index. Slots hold `amount` NFTs of one
+   * template, so this mirrors the Nefty BLEND tab's multi-select
+   * rather than WaxDAO's one-asset-per-slot.
+   */
+  selection: Map<number, string[]>;
+  /**
+   * The collection's RAM balance on blenderizerx. `undefined` while
+   * unread; a missing row is normalised to bytes: 0 by the reader.
+   * Zero RAM means the contract cannot mint for this collection.
+   */
+  ram?: BlenderizerRam;
+  ramChecked: boolean;
+  lastTrxId?: string;
+  lastDryRun?: unknown;
+  pending: boolean;
+}
+
 interface UpgradeViewState {
   /** Free-form Upgrade-id input (manual entry path). */
   upgradeIdInput: string;
@@ -649,6 +702,16 @@ const state: AppState = {
     ftStatus: new Map(),
     pending: false,
   },
+  blenderizer: {
+    blendIdInput: '',
+    list: [],
+    loading: false,
+    pickerOpen: false,
+    showInactive: false,
+    selection: new Map(),
+    ramChecked: false,
+    pending: false,
+  },
   platform: readPlatformFromHash(),
   pendingDeepLink: (() => {
     const r = parseHashRoute();
@@ -710,11 +773,13 @@ const state: AppState = {
  *   #/<platform>/<tab>/<id>               deep link to a specific entity
  *
  * Tab slugs:
- *   nefty   → blend | claim | unpack | upgrade
- *   waxdao  → blend
+ *   nefty       → blend | claim | unpack | upgrade
+ *   waxdao      → blend
+ *   blenderizer → blend
  *
  * Entity IDs:
- *   blend    → blend_id  (uint64)
+ *   blend    → blend_id  (uint64); on blenderizer this is the target
+ *              template_id, which is that contract's primary key
  *   claim    → drop_id   (uint64)
  *   upgrade  → upgrade_id (uint64)
  *   unpack   → unsupported (you can only open packs you own)
@@ -733,6 +798,7 @@ export interface ParsedRoute {
 
 function tabSlugToView(platform: Platform, slug: string | undefined): AppView {
   if (platform === 'waxdao') return 'waxdao-blends';
+  if (platform === 'blenderizer') return 'blenderizer-blends';
   switch (slug) {
     case 'claim':
     case 'drop':
@@ -757,8 +823,9 @@ function viewToTabSlug(view: AppView): string {
     case 'blends':         return 'blend';
     case 'drops':          return 'claim';
     case 'packs':          return 'unpack';
-    case 'upgrades':       return 'upgrade';
-    case 'waxdao-blends':  return 'blend';
+    case 'upgrades':           return 'upgrade';
+    case 'waxdao-blends':      return 'blend';
+    case 'blenderizer-blends': return 'blend';
   }
 }
 
@@ -769,7 +836,12 @@ function parseHashRoute(): ParsedRoute {
     const parts = clean.split('/').map((p) => p.trim()).filter(Boolean);
     const platformSlug = (parts[0] || '').toLowerCase();
     const page: 'app' | 'status' = platformSlug === 'status' ? 'status' : 'app';
-    const platform: Platform = platformSlug === 'waxdao' ? 'waxdao' : 'nefty';
+    const platform: Platform =
+      platformSlug === 'waxdao'
+        ? 'waxdao'
+        : platformSlug === 'blenderizer'
+          ? 'blenderizer'
+          : 'nefty';
     const view = tabSlugToView(platform, (parts[1] || '').toLowerCase());
     const id = parts[2] ? parts[2] : undefined;
     return { platform, view, id, page };
@@ -1140,6 +1212,10 @@ function onPickerOutsideClick(ev: MouseEvent) {
     state.upgrades.pickerOpen = false;
     mutated = true;
   }
+  if (state.blenderizer.pickerOpen && (!target || (!target.closest('.blenderizer-picker') && !insidePanel))) {
+    state.blenderizer.pickerOpen = false;
+    mutated = true;
+  }
   if (mutated) render();
 }
 
@@ -1222,6 +1298,10 @@ async function applyPendingDeepLink() {
       case 'upgrades':
         state.upgrades.upgradeIdInput = dl.id;
         await onLoadUpgradeManual();
+        break;
+      case 'blenderizer-blends':
+        state.blenderizer.blendIdInput = dl.id;
+        await onLoadBlenderizerBlendManual();
         break;
       case 'waxdao-blends':
         state.waxdao.blendIdInput = dl.id;
@@ -3467,6 +3547,8 @@ function activeDeepLinkLabel(): string | undefined {
       return `upgrade #${r.id} (NeftyBlocks)`;
     case 'waxdao-blends':
       return `blend #${r.id} (WaxDAO)`;
+    case 'blenderizer-blends':
+      return `recipe #${r.id} (Blenderizer)`;
     default:
       return undefined;
   }
@@ -4495,7 +4577,7 @@ function renderStatus(): string {
 
 /**
  * Renders the top-level platform pills + the tab bar of the active
- * platform. Two platforms exist (Nefty / WaxDAO) and each one exposes
+ * platform. Three platforms exist (Nefty / WaxDAO / Blenderizer) and each exposes
  * its own set of tabs. The pills update location.hash so the choice
  * is bookmarkable.
  */
@@ -4522,13 +4604,17 @@ function renderTabs(): string {
         ${tab('drops',    'Claim',   'pay (or not) → mint a drop')}
         ${tab('packs',    'Unpack',  'open packs you own')}
         ${tab('upgrades', 'Upgrade', 'mutate NFTs you own')}`
-    : `
-        ${tab('waxdao-blends', 'Blend', 'waxdaomarket: burn NFTs → mint result')}`;
+    : state.platform === 'waxdao'
+      ? `
+        ${tab('waxdao-blends', 'Blend', 'waxdaomarket: burn NFTs → mint result')}`
+      : `
+        ${tab('blenderizer-blends', 'Blend', 'blenderizerx: burn NFTs → mint result')}`;
   return `
     <div class="card platform-card">
       <div class="platform-pills">
-        ${pill('nefty',  'NeftyBlocks', 'blend.nefty · neftyblocksd · atomicpacksx · up.nefty')}
-        ${pill('waxdao', 'WaxDAO',      'waxdaomarket')}
+        ${pill('nefty',       'NeftyBlocks', 'blend.nefty · neftyblocksd · atomicpacksx · up.nefty')}
+        ${pill('waxdao',      'WaxDAO',      'waxdaomarket')}
+        ${pill('blenderizer', 'Blenderizer', 'blenderizerx · by 3DkRender')}
       </div>
     </div>
     <div class="card tabs-card">
@@ -6540,6 +6626,576 @@ function renderWaxdaoBlendsView(): string {
   return renderPickWaxdao() + renderWaxdaoInfo() + renderWaxdaoSlots() + renderWaxdaoActions();
 }
 
+// ─── BLENDERIZER view: handlers + rendering ──────────────────────── //
+
+/**
+ * Discovers blenderizerx recipes for the active collection, then reads
+ * the collection's RAM balance and refreshes the wallet inventory so
+ * the per-slot pickers have data.
+ *
+ * `blenders` has no index on collection, so this walks the whole table
+ * (~17.7K rows) in parallel chunks. Progress is reported the same way
+ * the on-chain blend.nefty scan does.
+ */
+async function loadBlenderizerList() {
+  const bz = state.blenderizer;
+  bz.loading = true;
+  bz.error = undefined;
+  bz.progress = undefined;
+  render();
+  try {
+    const { blends } = await listBlenderizerBlends({
+      collection: state.discoveryCollection,
+      includeInactive: bz.showInactive,
+      onProgress: (message, pct) => {
+        bz.progress = { pct, message };
+        render();
+      },
+    });
+    bz.list = blends;
+    await refreshBlenderizerRam(state.discoveryCollection);
+    const session = getCurrentSession();
+    if (session) {
+      try {
+        state.discoveryOwnedAssets = await listAssetsForOwner({
+          owner: String(session.actor),
+          collection_name: state.discoveryCollection,
+        });
+      } catch { /* non-fatal: slots just show 0 eligible */ }
+    }
+  } catch (err) {
+    bz.error = (err as Error).message;
+    bz.list = [];
+  } finally {
+    bz.loading = false;
+    bz.progress = undefined;
+    render();
+  }
+}
+
+/**
+ * Reads the collection's RAM balance on blenderizerx. A missing row is
+ * normalised to 0 bytes: both mean the contract cannot mint for this
+ * collection until the author funds it.
+ */
+async function refreshBlenderizerRam(collection: string) {
+  const bz = state.blenderizer;
+  bz.ramChecked = false;
+  bz.ram = undefined;
+  if (!collection) return;
+  const ram = await readBlenderizerRam(collection);
+  bz.ram = ram ?? { collection, bytes: 0 };
+  bz.ramChecked = true;
+  render();
+}
+
+function onToggleBlenderizerShowInactive(checked: boolean) {
+  const bz = state.blenderizer;
+  bz.showInactive = checked;
+  bz.list = [];
+  bz.error = undefined;
+  render();
+}
+
+function onToggleBlenderizerPicker() {
+  state.blenderizer.pickerOpen = !state.blenderizer.pickerOpen;
+  render();
+}
+
+async function onPickBlenderizerBlend(blend_id: string) {
+  const bz = state.blenderizer;
+  bz.pickerOpen = false;
+  const found = bz.list.find((b) => b.blend_id === blend_id);
+  if (!found) return;
+  bz.picked = found;
+  bz.blendIdInput = blend_id;
+  bz.selection.clear();
+  bz.lastDryRun = undefined;
+  bz.lastTrxId = undefined;
+  writeHashRoute('blenderizer', 'blenderizer-blends', blend_id);
+  render();
+}
+
+/**
+ * Manual-entry / deep-link path. The id is the TARGET template, which
+ * is also the recipe's primary key on blenderizerx.
+ */
+async function onLoadBlenderizerBlendManual() {
+  const bz = state.blenderizer;
+  if (!bz.blendIdInput) {
+    setStatus('Enter a Blenderizer recipe id (the target template_id) first.', 'err');
+    return;
+  }
+  const local = bz.list.find((b) => b.blend_id === bz.blendIdInput);
+  if (local) {
+    void onPickBlenderizerBlend(bz.blendIdInput);
+    return;
+  }
+  bz.loading = true;
+  render();
+  try {
+    const b = await loadBlenderizerBlendById(bz.blendIdInput);
+    if (!b) {
+      setStatus(
+        `No Blenderizer recipe targets template ${bz.blendIdInput}. ` +
+          `On blenderizerx the recipe id IS the template it mints.`,
+        'err',
+      );
+      return;
+    }
+    bz.picked = b;
+    bz.selection.clear();
+    bz.lastDryRun = undefined;
+    bz.lastTrxId = undefined;
+    writeHashRoute('blenderizer', 'blenderizer-blends', b.blend_id);
+    if (b.collection && b.collection !== state.discoveryCollection) {
+      state.discoveryCollection = b.collection;
+    }
+    await refreshBlenderizerRam(b.collection);
+    try {
+      const session = getCurrentSession();
+      if (session) {
+        state.discoveryOwnedAssets = await listAssetsForOwner({
+          owner: String(session.actor),
+          collection_name: b.collection,
+        });
+      }
+    } catch { /* non-fatal */ }
+  } catch (err) {
+    setStatus(`Error: ${(err as Error).message}`, 'err');
+  } finally {
+    bz.loading = false;
+    render();
+  }
+}
+
+/** NFTs in the wallet that satisfy a slot: same collection + template. */
+function ownedAssetsForBlenderizerSlot(template_id: number, collection: string): AtomicAsset[] {
+  return state.discoveryOwnedAssets.filter(
+    (a) =>
+      a.collection?.collection_name === collection &&
+      a.template?.template_id != null &&
+      Number(a.template.template_id) === template_id,
+  );
+}
+
+/**
+ * Multi-select toggle for a slot. Slots take `amount` NFTs, so this
+ * mirrors the Nefty BLEND tab rather than WaxDAO's single pick: click
+ * to add until the slot is full, click again to remove.
+ */
+function onPickBlenderizerAsset(slotIndex: number, asset_id: string) {
+  const bz = state.blenderizer;
+  const slot = bz.picked?.slots.find((s) => s.index === slotIndex);
+  if (!slot) return;
+  const current = bz.selection.get(slotIndex) ?? [];
+  if (current.includes(asset_id)) {
+    bz.selection.set(slotIndex, current.filter((id) => id !== asset_id));
+    render();
+    return;
+  }
+  if (current.length >= slot.amount) {
+    setStatus(`Slot #${slotIndex} is already full (${slot.amount} NFTs).`, 'warn');
+    return;
+  }
+  // The same asset can satisfy only one slot: a recipe that lists the
+  // same template twice would otherwise let one NFT count double.
+  for (const [otherIdx, ids] of bz.selection.entries()) {
+    if (otherIdx !== slotIndex && ids.includes(asset_id)) {
+      setStatus(`Asset ${asset_id} is already used by slot #${otherIdx}.`, 'warn');
+      return;
+    }
+  }
+  bz.selection.set(slotIndex, [...current, asset_id]);
+  render();
+}
+
+/**
+ * Conditions that would make the contract reject the transfer, checked
+ * before the user deposits anything. Same spirit as the drop tab's
+ * blocker notices: explain rather than silently disable.
+ */
+interface BlenderizerBlocker {
+  fatal: boolean;
+  message: string;
+}
+function blenderizerBlockers(b: DiscoveredBlenderizerBlend): BlenderizerBlocker[] {
+  const bz = state.blenderizer;
+  const out: BlenderizerBlocker[] = [];
+  if (b.status === 'sold_out') {
+    out.push({
+      fatal: true,
+      message:
+        `Target template ${b.target} is capped at ${b.target_max} and ${b.target_issued} are already minted. ` +
+        `The contract cannot mint another one, so this recipe can no longer pay out.`,
+    });
+  }
+  if (bz.ramChecked && bz.ram && bz.ram.bytes <= 0) {
+    out.push({
+      fatal: true,
+      message:
+        `Collection "${b.collection}" has no RAM balance on blenderizerx. The contract mints from RAM the ` +
+        `collection author pre-paid, so every blend for this collection fails until they fund it again.`,
+    });
+  }
+  if (b.total_nfts > LARGE_MIXTURE_WARN) {
+    out.push({
+      fatal: false,
+      message:
+        `This recipe burns ${b.total_nfts} NFTs in a single transfer. Large transfers cost a lot of CPU and ` +
+        `some wallets struggle to display them: make sure you have CPU staked before signing.`,
+    });
+  }
+  return out;
+}
+
+function readyToBlenderizerBlend(): boolean {
+  const bz = state.blenderizer;
+  const b = bz.picked;
+  if (!b) return false;
+  if (blenderizerBlockers(b).some((x) => x.fatal)) return false;
+  for (const slot of b.slots) {
+    if ((bz.selection.get(slot.index) ?? []).length !== slot.amount) return false;
+  }
+  return true;
+}
+
+async function onBlenderizerDryRun() {
+  const bz = state.blenderizer;
+  const session = getCurrentSession();
+  if (!session || !bz.picked) return;
+  try {
+    setStatus('Simulating Blenderizer blend (local ABI serialisation)…', 'info');
+    const actions = buildBlenderizerBlendActions({
+      claimer: String(session.actor),
+      blend: bz.picked,
+      selection: bz.selection,
+    });
+    const out = await dryRunActions(actions);
+    bz.lastDryRun = { actions, abi_serialization: out };
+    const ok = out.every((r) => !r.error);
+    setStatus(
+      ok
+        ? `Simulation OK, ${actions.length} action(s) serialize cleanly.`
+        : 'Simulation failed for at least one action.',
+      ok ? 'ok' : 'err',
+    );
+  } catch (err) {
+    setStatus((err as Error).message, 'err');
+  }
+  render();
+}
+
+async function onExecuteBlenderizerBlend() {
+  const bz = state.blenderizer;
+  const session = getCurrentSession();
+  if (!session || !bz.picked) return;
+  const b = bz.picked;
+  const total = b.total_nfts;
+  if (
+    !confirm(
+      `Burn ${total} NFT${total === 1 ? '' : 's'} to mint template ${b.target}` +
+        `${b.name ? ` (${b.name})` : ''}?\n\n` +
+        `1. atomicassets::transfer → blenderizerx  memo="${b.target}"\n\n` +
+        `blenderizerx mints the target to your wallet and burns the deposit in the same ` +
+        `transaction. There is no second signature and no way to undo it.`,
+    )
+  ) {
+    return;
+  }
+  bz.pending = true;
+  render();
+  try {
+    setStatus('Awaiting wallet signature for the Blenderizer blend…', 'info');
+    const result = await executeBlenderizerBlend(session, {
+      blend: b,
+      selection: bz.selection,
+    });
+    const trxId =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    bz.lastTrxId = trxId;
+    bz.selection.clear();
+    setStatus(`Blenderizer blend broadcast: ${trxId}`, 'ok', trxId);
+    // The burn changes the wallet, so re-read it for the next blend.
+    try {
+      state.discoveryOwnedAssets = await listAssetsForOwner({
+        owner: String(session.actor),
+        collection_name: b.collection,
+        force: true,
+      });
+    } catch { /* non-fatal */ }
+  } catch (err) {
+    setStatus(`Blenderizer blend failed: ${(err as Error).message}`, 'err');
+  } finally {
+    bz.pending = false;
+    render();
+  }
+}
+
+// ── render ── //
+
+function blenderizerStatusLabel(s: BlenderizerStatus): string {
+  switch (s) {
+    case 'active':   return 'active';
+    case 'sold_out': return 'sold out';
+    case 'unknown':  return 'template unread';
+  }
+}
+
+/** Maps our 3 statuses onto the shared status-chip CSS classes. */
+function blenderizerStatusClass(s: BlenderizerStatus): string {
+  return s === 'unknown' ? 'upcoming' : s;
+}
+
+function renderBlenderizerPickerToggle(): string {
+  const bz = state.blenderizer;
+  let label = 'Select a Blenderizer recipe…';
+  const notLoadedYet = bz.list.length === 0 && !bz.loading && !bz.error;
+  if (notLoadedYet) {
+    label = `Click "Discover recipes" to load ${state.discoveryCollection || 'a collection'}’s list`;
+  } else if (bz.picked) {
+    label = `[#${bz.picked.blend_id}] ${blenderizerTitle(bz.picked)}`;
+  } else if (bz.loading) {
+    label = bz.progress?.message ?? 'Scanning blenderizerx…';
+  } else if (bz.error) {
+    label = 'Discovery failed';
+  }
+  const disabled = bz.loading || bz.error || notLoadedYet;
+  return `
+    <button class="picker-toggle" data-action="toggleBlenderizerPicker" ${disabled ? 'disabled' : ''}>
+      <span class="picker-current">${escapeHtml(label)}</span>
+      <span class="picker-caret">${bz.pickerOpen ? '▴' : '▾'}</span>
+    </button>`;
+}
+
+function renderBlenderizerPickerPanel(): string {
+  const bz = state.blenderizer;
+  if (!bz.pickerOpen || bz.loading || bz.error) return '';
+  if (bz.list.length === 0) {
+    return `<div class="picker-panel"><div class="picker-empty">${escapeHtml('No Blenderizer recipe found for this collection.')}</div></div>`;
+  }
+  const rows = bz.list.map((b) => {
+    const disabled = b.status === 'sold_out';
+    const cls = ['picker-row'];
+    if (disabled) cls.push('picker-row-disabled');
+    return `
+      <div class="${cls.join(' ')}" ${disabled ? '' : `data-action="pickBlenderizerBlend" data-blenderizer-blend="${escapeHtml(b.blend_id)}"`}>
+        <span class="picker-id">#${escapeHtml(b.blend_id)}</span>
+        <span class="picker-name">${escapeHtml(blenderizerTitle(b))}</span>
+        <span class="picker-price">${b.total_nfts} NFT${b.total_nfts === 1 ? '' : 's'}</span>
+        <span class="status-chip status-${escapeHtml(blenderizerStatusClass(b.status))}">${escapeHtml(blenderizerStatusLabel(b.status))}</span>
+      </div>`;
+  }).join('');
+  return `<div class="picker-panel"><div class="picker-rows">${rows}</div></div>`;
+}
+
+function renderBlenderizerLegend(): string {
+  return `
+    <div class="legend">
+      <span class="legend-label">Color codes</span>
+      <span class="legend-item"><span class="status-chip status-active">active</span></span>
+      <span class="legend-item"><span class="status-chip status-sold_out">sold out</span> <span class="term">target template capped and fully minted</span></span>
+      <span class="legend-item"><span class="status-chip status-upcoming">template unread</span> <span class="term">indexer didn't resolve the target</span></span>
+    </div>`;
+}
+
+/** Collection-wide RAM notice, shown once the balance has been read. */
+function renderBlenderizerRamNotice(): string {
+  const bz = state.blenderizer;
+  if (!bz.ramChecked || !bz.ram) return '';
+  if (bz.ram.bytes > 0) {
+    return `<p class="status-line term">Collection RAM on <code>blenderizerx</code>: <code>${bz.ram.bytes.toLocaleString('en-US')}</code> bytes available for minting.</p>`;
+  }
+  return `<p class="status-line err">Collection "${escapeHtml(bz.ram.collection)}" has no RAM balance on <code>blenderizerx</code>. Every blend for this collection will fail until the author funds it.</p>`;
+}
+
+function renderPickBlenderizer(): string {
+  const bz = state.blenderizer;
+  const session = getCurrentSession();
+  const refreshLabel = bz.loading
+    ? 'Scanning…'
+    : bz.list.length > 0
+      ? 'Refresh recipes'
+      : 'Discover recipes';
+  const counts = bz.list.length > 0
+    ? `${bz.list.length} recipe${bz.list.length === 1 ? '' : 's'} found`
+    : '';
+  const progressBar = bz.loading && bz.progress
+    ? `<div class="progress"><div class="progress-fill" style="width:${Math.round(bz.progress.pct * 100)}%"></div></div>`
+    : '';
+  return `
+    <div class="card">
+      <h2>2 · Pick a Blenderizer recipe</h2>
+      <p style="margin-top:0; color:var(--fg-dim); font-size:12px">
+        <code>blenderizerx</code> is 3DkRender's Blenderizer, not a Nefty
+        contract. Recipes are dead simple: burn a fixed list of templates,
+        mint one target. No odds, no whitelist, no token cost, and a single
+        <code>atomicassets::transfer</code> to sign. The recipe id IS the
+        template it mints.
+      </p>
+      <div class="row" style="gap:14px; align-items: flex-end; margin-bottom: 8px">
+        <div style="width: 140px; flex: 0 0 140px">
+          <label>Collection</label>
+          ${renderCollectionInput()}
+        </div>
+        <div style="flex: 1 1 380px; min-width: 280px">
+          <label>Available recipes</label>
+          <div class="picker blenderizer-picker">
+            ${renderBlenderizerPickerToggle()}
+            ${renderBlenderizerPickerPanel()}
+          </div>
+        </div>
+        <button class="primary" data-action="refreshBlenderizer" ${bz.loading || !isValidWaxName(state.discoveryCollection) ? 'disabled' : ''}>
+          ${escapeHtml(refreshLabel)}
+        </button>
+      </div>
+      ${renderCollectionChips()}
+      ${progressBar}
+      <div class="row" style="margin-top:10px; gap:14px; align-items:center; flex-wrap:wrap">
+        <label class="inline-toggle">
+          <input id="blenderizerShowInactive" type="checkbox" data-action="toggleBlenderizerInactive" ${bz.showInactive ? 'checked' : ''} />
+          <span>show sold-out recipes</span>
+        </label>
+        <div class="spacer"></div>
+        <span class="term">${escapeHtml(counts)}</span>
+      </div>
+      ${renderBlenderizerLegend()}
+      ${renderBlenderizerRamNotice()}
+      ${session ? '' : '<p class="status-line term">Connect your wallet to match owned NFTs against each ingredient slot.</p>'}
+
+      <div class="divider"></div>
+
+      <label>Or enter a recipe id manually (= the target template_id)</label>
+      <div class="row" style="gap:14px; align-items: flex-end">
+        <div style="flex:1; min-width: 200px">
+          <input id="blenderizerBlendIdInput" type="text" value="${escapeHtml(bz.blendIdInput)}" placeholder="e.g. 336429" autocomplete="off" />
+        </div>
+        <button class="primary" data-action="loadBlenderizerManual" ${bz.loading ? 'disabled' : ''}>
+          ${bz.loading ? 'Loading…' : 'Load recipe'}
+        </button>
+      </div>
+      ${bz.error ? `<p class="status-line warn">Discovery: ${escapeHtml(bz.error)}</p>` : ''}
+    </div>`;
+}
+
+function renderBlenderizerInfo(): string {
+  const bz = state.blenderizer;
+  const b = bz.picked;
+  if (!b) return '';
+  const supply = b.target_max === undefined
+    ? '<span class="term">unknown</span>'
+    : b.target_max > 0
+      ? `${b.target_issued} / ${b.target_max} <span class="term">(${Math.max(0, b.target_max - (b.target_issued ?? 0))} left to mint)</span>`
+      : `${b.target_issued} / ∞`;
+  const cost = b.slots.map((s) => {
+    const nm = displayTemplateName(s.template_id, b.collection);
+    const label = nm.startsWith('template #')
+      ? `<code>template ${s.template_id}</code>`
+      : `${escapeHtml(nm)} <code>#${s.template_id}</code>`;
+    return `<li>Burn <strong>${s.amount}×</strong> ${label}</li>`;
+  }).join('');
+  const blockers = blenderizerBlockers(b)
+    .map((x) => `<p class="status-line ${x.fatal ? 'err' : 'warn'}">${escapeHtml(x.message)}</p>`)
+    .join('');
+  return `
+    <div class="card">
+      <div class="card-header">
+        <h2>3 · ${escapeHtml(blenderizerTitle(b))} <span class="term">-- #${escapeHtml(b.blend_id)} · ${escapeHtml(b.collection)}</span></h2>
+        ${renderShareButton()}
+      </div>
+      <div class="row">
+        <span class="status-chip status-${escapeHtml(blenderizerStatusClass(b.status))}">${escapeHtml(blenderizerStatusLabel(b.status))}</span>
+        <span class="tag ok">deterministic · single output</span>
+        <span class="tag">burns ${b.total_nfts} NFT${b.total_nfts === 1 ? '' : 's'}</span>
+      </div>
+      <h3>Expected mint</h3>
+      <ul class="mint-info">
+        <li><strong>Name:</strong> ${escapeHtml(b.name ?? '(unknown, indexer down)')}</li>
+        <li><strong>Template:</strong> <code>${b.target}</code></li>
+        ${b.schema_name ? `<li><strong>Schema:</strong> <code>${escapeHtml(b.schema_name)}</code></li>` : ''}
+        <li><strong>Issued / max:</strong> ${supply}</li>
+      </ul>
+      <h3>Cost</h3>
+      <ul class="mint-info">${cost}</ul>
+      ${blockers}
+      <p class="status-line term">Recipe registered by <code>${escapeHtml(b.owner)}</code>. One signature: a single <code>atomicassets::transfer</code> to <code>blenderizerx</code> with memo <code>${b.target}</code>.</p>
+    </div>`;
+}
+
+function renderBlenderizerSlots(): string {
+  const bz = state.blenderizer;
+  const b = bz.picked;
+  if (!b) return '';
+  const slots = b.slots.map((slot) => {
+    const owned = ownedAssetsForBlenderizerSlot(slot.template_id, b.collection);
+    const picked = bz.selection.get(slot.index) ?? [];
+    const nm = displayTemplateName(slot.template_id, b.collection);
+    const label = nm.startsWith('template #')
+      ? `template ${slot.template_id}`
+      : `${nm} · template ${slot.template_id}`;
+    const items = owned.map((a) => {
+      const selected = picked.includes(a.asset_id) ? ' selected' : '';
+      return `
+        <div class="asset${selected}" data-action="pickBlenderizerAsset" data-blenderizer-slot="${slot.index}" data-asset="${escapeHtml(a.asset_id)}">
+          <span>${escapeHtml(displayAssetName(a))}</span>
+          <span class="id">#${escapeHtml(a.asset_id)}${a.template_mint ? ' · mint ' + escapeHtml(a.template_mint) : ''}</span>
+        </div>`;
+    });
+    const short = owned.length < slot.amount;
+    return `
+      <div class="slot">
+        <div class="slot-header">
+          <div class="slot-label">${escapeHtml(label)} <span class="term">(${slot.amount}× required)</span></div>
+          <div class="slot-progress">${picked.length}/${slot.amount} picked · ${owned.length} eligible</div>
+        </div>
+        ${owned.length === 0
+          ? '<p class="status-line err">No eligible NFT in your wallet for this slot.</p>'
+          : `${short ? `<p class="status-line err">You hold ${owned.length} of the ${slot.amount} needed for this slot.</p>` : ''}<div class="asset-grid">${items.join('')}</div>`}
+      </div>`;
+  }).join('');
+  const totalPicked = [...bz.selection.values()].reduce((n, ids) => n + ids.length, 0);
+  return `
+    <div class="card">
+      <h2>4 · Select inputs <span class="term">(${totalPicked}/${b.total_nfts} NFTs)</span></h2>
+      ${slots}
+    </div>`;
+}
+
+function renderBlenderizerActions(): string {
+  const bz = state.blenderizer;
+  const b = bz.picked;
+  if (!b) return '';
+  const ready = readyToBlenderizerBlend();
+  const totalPicked = [...bz.selection.values()].reduce((n, ids) => n + ids.length, 0);
+  return `
+    <div class="card">
+      <h2>5 · Verify &amp; execute</h2>
+      <p class="status-line">One transaction, one action: <code>atomicassets::transfer</code> to <code>blenderizerx</code>. The contract mints the target and burns your deposit in the same transaction, so there is no waiting and no second signature.</p>
+      <div class="row">
+        <button data-action="blenderizerDryRun" ${ready ? '' : 'disabled'}>Simulate (no signature)</button>
+        <button class="primary" data-action="blenderizerExecute" ${ready ? '' : 'disabled'}>${bz.pending ? 'Signing…' : 'Sign &amp; broadcast'}</button>
+        <div class="spacer"></div>
+        <span class="term">NFTs ${totalPicked}/${b.total_nfts}</span>
+      </div>
+      ${bz.lastDryRun
+        ? `<h3>Dry-run output</h3><pre>${escapeHtml(JSON.stringify(bz.lastDryRun, null, 2))}</pre>`
+        : ''}
+      ${bz.lastTrxId
+        ? `<p class="status-line ok">Trx broadcast: <a target="_blank" href="https://waxblock.io/transaction/${escapeHtml(bz.lastTrxId)}">${escapeHtml(bz.lastTrxId)}</a></p>`
+        : ''}
+    </div>`;
+}
+
+function renderBlenderizerBlendsView(): string {
+  return (
+    renderPickBlenderizer() +
+    renderBlenderizerInfo() +
+    renderBlenderizerSlots() +
+    renderBlenderizerActions()
+  );
+}
+
 /**
  * Captures the window scroll position and the currently-focused input
  * (with its cursor offset and selection range) so we can restore them
@@ -6704,7 +7360,9 @@ function performRender() {
           ? renderPacksView()
           : state.view === 'upgrades'
             ? renderUpgradesView()
-            : renderWaxdaoBlendsView());
+            : state.view === 'blenderizer-blends'
+              ? renderBlenderizerBlendsView()
+              : renderWaxdaoBlendsView());
   attachHandlers();
   positionOpenPickers();
   restoreRenderSnapshot(snap);
@@ -6816,6 +7474,22 @@ function attachHandlers() {
   if (toggleWaxdaoInactive) {
     toggleWaxdaoInactive.addEventListener('change', () => onToggleWaxdaoShowInactive(toggleWaxdaoInactive.checked));
   }
+  // BLENDERIZER tab inputs.
+  const blenderizerIdInput = document.getElementById('blenderizerBlendIdInput') as HTMLInputElement | null;
+  if (blenderizerIdInput) {
+    blenderizerIdInput.addEventListener('input', (e) => {
+      state.blenderizer.blendIdInput = (e.target as HTMLInputElement).value.trim();
+    });
+    blenderizerIdInput.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Enter') void onLoadBlenderizerBlendManual();
+    });
+  }
+  const toggleBlenderizerInactive = document.getElementById('blenderizerShowInactive') as HTMLInputElement | null;
+  if (toggleBlenderizerInactive) {
+    toggleBlenderizerInactive.addEventListener('change', () =>
+      onToggleBlenderizerShowInactive(toggleBlenderizerInactive.checked),
+    );
+  }
   // BLEND admin (Manage section) inputs.
   const manageEnable = document.getElementById('manageEnable') as HTMLInputElement | null;
   if (manageEnable) {
@@ -6895,6 +7569,7 @@ function attachHandlers() {
       action === 'toggleDropOnlyEligible' ||
       action === 'toggleUpgradesInactive' ||
       action === 'toggleWaxdaoInactive' ||
+      action === 'toggleBlenderizerInactive' ||
       action === 'toggleManageEnable' ||
       action === 'toggleCreateEnable' ||
       action === 'toggleCreateFree' ||
@@ -7065,6 +7740,27 @@ function attachHandlers() {
           break;
         case 'waxdaoExecute':
           onExecuteWaxdaoBlend();
+          break;
+        case 'refreshBlenderizer':
+          void loadBlenderizerList();
+          break;
+        case 'toggleBlenderizerPicker':
+          onToggleBlenderizerPicker();
+          break;
+        case 'pickBlenderizerBlend':
+          void onPickBlenderizerBlend(el.dataset.blenderizerBlend ?? '');
+          break;
+        case 'loadBlenderizerManual':
+          void onLoadBlenderizerBlendManual();
+          break;
+        case 'pickBlenderizerAsset':
+          onPickBlenderizerAsset(Number(el.dataset.blenderizerSlot), el.dataset.asset ?? '');
+          break;
+        case 'blenderizerDryRun':
+          void onBlenderizerDryRun();
+          break;
+        case 'blenderizerExecute':
+          void onExecuteBlenderizerBlend();
           break;
         case 'manageHide':
           onManageHide(true);

@@ -39,7 +39,7 @@ export interface ContractSpec {
   label: string;
   /** Plain-language explanation of what this account does (1-2 sentences). */
   role: string;
-  group: 'NeftyBlocks' | 'WaxDAO' | 'Infrastructure';
+  group: 'NeftyBlocks' | 'WaxDAO' | 'Blenderizer' | 'Infrastructure';
   /**
    * contract = a normal smart contract we expect to be stable.
    * infra    = a dependency we do not own; legitimate updates are common, so
@@ -172,6 +172,14 @@ export const CONTRACTS: ContractSpec[] = [
     role: 'Creates and manages custom tokens.',
     baselineCodeHash: '1ad589628f7100a3757bd1b1438ce8f57cc0825dafb9c4c2730d8483646118c8',
     baselineLastCodeUpdate: '2023-12-20T12:07:35.000',
+  },
+
+  // ── Blenderizer (3DkRender) ──────────────────────────────────────────
+  {
+    account: 'blenderizerx', label: 'Blends', group: 'Blenderizer', kind: 'contract',
+    role: "3DkRender's Blenderizer: burn a fixed list of templates, mint one target. Drives the BLENDERIZER platform tab. Not a NeftyBlocks contract despite the similar purpose.",
+    baselineCodeHash: '56e785584299ff740e0a7ce194c3fc5b86cbbdc3483cbd1796262cb0952a16e8',
+    baselineLastCodeUpdate: '2025-03-16T07:07:24.500',
   },
 
   // ── Infrastructure (not owned by Nefty/WaxDAO) ───────────────────────
@@ -647,5 +655,6 @@ export function renderStatusPage(): string {
     </section>
     ${renderGroup('NeftyBlocks')}
     ${renderGroup('WaxDAO')}
+    ${renderGroup('Blenderizer')}
     ${renderGroup('Infrastructure')}`;
 }

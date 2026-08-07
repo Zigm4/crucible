@@ -3,21 +3,22 @@
     \|/
    ◆ ◆ ◆        C R U C I B L E
     /|\
-   ─ ─ ─        on-chain blends · drops · packs · upgrades · waxdao
+   ─ ─ ─        on-chain blends · drops · packs · upgrades
+                nefty · waxdao · blenderizer
                 no website, no backend, no trust required
 ```
 
 ```
 > SESSION OPEN
 
-  Nefty.io shut down its UI. WaxDAO's website went dark too. The
-  smart contracts both relied on are still running on WAX, 24/7,
-  exactly as they were. Crucible is the missing client for ALL of
-  them.
+  Nefty.io shut down its UI. WaxDAO's website went dark too, and so
+  did 3DkRender's Blenderizer. The smart contracts all three relied
+  on are still running on WAX, 24/7, exactly as they were. Crucible
+  is the missing client for ALL of them.
 
   Burn NFTs, claim drops, open packs, mutate NFTs in place, craft
-  via WaxDAO recipes. All directly on-chain, without going through
-  any platform that can disappear again.
+  via WaxDAO or Blenderizer recipes. All directly on-chain, without
+  going through any platform that can disappear again.
 ```
 
 ---
@@ -25,8 +26,8 @@
 ## tl;dr
 
 A **single HTML file** with bundled JavaScript that talks straight to
-five public WAX smart contracts (`blend.nefty`, `neftyblocksd`,
-`atomicpacksx`, `up.nefty`, `waxdaomarket`). Your wallet signs the
+six public WAX smart contracts (`blend.nefty`, `neftyblocksd`,
+`atomicpacksx`, `up.nefty`, `waxdaomarket`, `blenderizerx`). Your wallet signs the
 transactions; the page never sees a private key, never phones home,
 never stores anything. The blend / drop / upgrade / craft fees that
 always existed still go where they always went, nothing comes to me.
@@ -35,7 +36,7 @@ always existed still go where they always went, nothing comes to me.
 $ crucible --status
 contracts...... blend.nefty + neftyblocksd
                 + atomicpacksx + up.nefty
-                + waxdaomarket                       [LIVE]
+                + waxdaomarket + blenderizerx        [LIVE]
 backend........ none                                 [BY DESIGN]
 telemetry...... none                                 [BY DESIGN]
 cookies........ none                                 [BY DESIGN]
@@ -47,7 +48,7 @@ audit.......... open source                          [GO READ IT]
 $ crucible --layout
                                                        wallet
    ┌─────────────────────────────────────────────────────●──┐
-   │  [ NEFTYBLOCKS ]   [ WAXDAO ]                          │  <- platform pills
+   │  [ NEFTYBLOCKS ] [ WAXDAO ] [ BLENDERIZER ]            │  <- platform pills
    ├─────────────────────────────────────────────────────────┤
    │  Blend | Claim | Unpack | Upgrade                       │  <- tabs (per platform)
    └─────────────────────────────────────────────────────────┘
@@ -55,6 +56,7 @@ $ crucible --layout
                           #/nefty/claim/237418
                           #/nefty/upgrade/447
                           #/waxdao/blend/1921
+                          #/blenderizer/blend/336429
 ```
 
 ---
@@ -74,11 +76,12 @@ has been running for years and is enforced byte-for-byte by the chain.
 | `atomicpacksx` contract     | Its on-chain code         | Same, plus the ORNG oracle |
 | `up.nefty` contract         | Its on-chain code         | Same |
 | `waxdaomarket` contract     | Its on-chain code         | Same |
+| `blenderizerx` contract     | Its on-chain code         | Same |
 | WharfKit (signing library)  | Greymass + audit-friendly | Open source on GitHub |
 | Crucible's front-end        | **You. Read it.**         | This repo + the [verifier scripts](#--verify-everything--) below |
 
 Remove every Crucible-specific layer from that table and trust only
-WAX and the five contracts above: the worst Crucible can do is *fail
+WAX and the six contracts above: the worst Crucible can do is *fail
 to build the right transaction*. It can't steal funds, drain wallets,
 or front-run you. Your wallet shows every action before signing and
 would refuse anything weird.
@@ -386,7 +389,7 @@ waxdao.io is currently down.
 ```
 
 Switch to the **WAXDAO** platform pill at the top of the page to
-access it. The two platforms have independent ID spaces, so blend
+access it. All three platforms have independent ID spaces, so blend
 `#1127` on `blend.nefty` and blend `#1127` on `waxdaomarket` are
 totally different recipes.
 
@@ -399,6 +402,58 @@ totally different recipes.
 [*] one signature for the whole multi-action transaction, byte-for-
     byte equivalent to a real WaxDAO blend from 2024
 ```
+
+### BLENDERIZER tab · `blenderizerx`
+
+A third ecosystem, and **not** a Nefty contract despite doing the same
+job: the Blenderizer belongs to **3DkRender** (its own `config` row
+credits `3dkrenderwax`) and the account was created **2020-12-03**,
+seven months before `blend.nefty`. Its website is gone; the contract
+is still live and still used.
+
+It is the simplest of the three by a wide margin:
+
+```
+1. atomicassets::transfer  to=blenderizerx
+                           memo="<target_template_id>"
+                           asset_ids=[every NFT the recipe burns]
+```
+
+That's the whole transaction. No announce, no oracle, no claim, no
+second signature: the contract reacts to the transfer notification,
+mints the target, and burns the deposit in the same transaction.
+
+The recipe table is equally spare, and its **primary key IS the target
+template**, so a recipe is addressed by what it produces:
+
+```
+blenders   scope = blenderizerx   key = target
+  { owner, collection, target: int32, mixture: int32[] }
+
+mixture lists templates to burn WITH repetition, e.g.
+  [83, 83, 83, 89, 89, 89]  =  3x template 83 + 3x template 89
+```
+
+No odds, no pool, no whitelist, no time window, no token cost.
+
+```
+[*] per-collection discovery: `blenders` has no index on collection,
+    so Crucible walks all ~17.7K rows in 16 parallel chunks (~3s)
+[*] target templates resolved in one batched indexer call, so the
+    picker shows real names instead of bare ids
+[*] multi-select NFT picker per slot, since amounts are usually >1
+[*] recipe id == target template id: #/blenderizer/blend/336429
+```
+
+Two things stop a recipe paying out, neither visible in the ABI, both
+checked before you deposit anything:
+
+- **Sold out.** `blenders` has no supply flag. A capped target that is
+  already fully minted simply fails, so Crucible reads issued/max from
+  the target template and tags the recipe.
+- **No collection RAM.** `blenderizerx` mints from RAM the collection
+  author pre-paid (`rambalance`). A collection with no balance fails
+  every blend until they top it up; the amount left is shown inline.
 
 ---
 
@@ -493,6 +548,18 @@ $ node scripts/verify-waxdao.mjs
    ✓ atomicassets::transfer memo="|blend_deposit|1127|1|"
    ✓ atomicassets::transfer memo="|blend_deposit|1127|2|"
    ✓ atomicassets::transfer memo="|blend_deposit|1127|3|"
+```
+
+```bash
+$ node scripts/verify-blenderizer.mjs
+=== recipe 106051 (niftywizards) ===
+   ✓ config.author is 3dkrenderwax (3DkRender, NOT NeftyBlocks)
+   ✓ primary key IS the target template_id
+   ✓ slot amounts match the trace asset count  11 == 11
+   ✓ 10x template 362363 + 1x template 20562 deposited
+   ✓ the whole blend is ONE transfer (no announce, no 2nd signature)
+   ✓ atomicassets::transfer matches the trace byte for byte
+   ✓ discovery finds it by scanning 17748 rows (18 calls, 4.6s)
 ```
 
 ```bash
@@ -621,6 +688,10 @@ src/
     neftyPackWait.ts   : polls neftyblocksp claimassets between TX1 and TX2
     upgrades.ts        : lists up.nefty upgrades per collection
     upgradeExecute.ts  : upgrade tx (openbal + transfer + upgrade)
+  blenderizer/
+    blends.ts          : lists blenderizerx recipes per collection
+                         (full-table scan + target template enrichment)
+    blendExecute.ts    : blenderizerx blend tx (a single transfer)
   waxdao/
     blends.ts          : lists waxdaomarket blends per collection
     blendExecute.ts    : assertblend + slot-indexed transfers

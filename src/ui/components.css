@@ -519,6 +519,28 @@ section.about > h2 { margin-bottom: 10px; }
 }
 .platform-pill.active .platform-pill-sub { color: var(--fg-dim); }
 
+/* Mobile: 3 pills (NeftyBlocks / WaxDAO / Blenderizer) on a narrow screen.
+   Same treatment as the tab bar: let them shrink, centre them, and drop the
+   contract sub-label, which is the part that overflows first. */
+@media (max-width: 560px) {
+  .platform-pill {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 8px 4px;
+    align-items: center;
+    text-align: center;
+    gap: 0;
+  }
+  .platform-pill-label {
+    font-size: 10px;
+    letter-spacing: 1px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .platform-pill-sub { display: none; }
+}
+
 /* ─── card header with inline share-link button ───────────────────────── */
 .card-header {
   display: flex;

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Crucible · User Guide</title>
-    <meta name="description" content="How to use Crucible - the open-source UI for NeftyBlocks and WaxDAO smart contracts on WAX: blends, drops, packs, upgrades, plus collection-author tools." />
+    <meta name="description" content="How to use Crucible - the open-source UI for NeftyBlocks, WaxDAO and Blenderizer smart contracts on WAX: blends, drops, packs, upgrades, plus collection-author tools." />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -95,7 +95,7 @@
       <h1 class="guide-title">User Guide</h1>
       <p class="lead">
         Crucible is a single open-source page that talks <strong>directly</strong> to live WAX
-        smart contracts. The NeftyBlocks and WaxDAO <em>websites</em> went down, but the
+        smart contracts. The NeftyBlocks, WaxDAO and Blenderizer <em>websites</em> went down, but the
         <em>contracts</em> behind them never did - Crucible is the missing UI. Zero backend, no
         tracking, no fee to anyone but the contracts' own (unchanged) fees. Your wallet signs
         every transaction; the page never sees a key.
@@ -108,6 +108,7 @@
         <a href="#unpack">Unpack</a>
         <a href="#upgrade">Upgrade</a>
         <a href="#waxdao">WaxDAO</a>
+        <a href="#blenderizer">Blenderizer</a>
         <a href="#authors">Collection authors</a>
         <a href="#links">Shareable links</a>
         <a href="#safety">Privacy &amp; safety</a>
@@ -176,6 +177,26 @@
           built with WaxDAO's own action shape (one transfer per ingredient slot).</p>
       </section>
 
+      <section class="gcard" id="blenderizer">
+        <h2>Blenderizer · <code>blenderizerx</code></h2>
+        <p>A third ecosystem, and despite the name <strong>not</strong> a Nefty contract: the
+          Blenderizer is 3DkRender's, and it predates <code>blend.nefty</code>. Switch to the
+          <strong>BLENDERIZER</strong> platform pill at the top and discover recipes per collection.</p>
+        <p>Recipes are the simplest of the three: burn a fixed list of templates, mint one target.
+          No odds, no pool, no whitelist, no token cost, and <strong>one signature</strong> - a single
+          <code>atomicassets::transfer</code> carrying every NFT at once. The contract mints and burns
+          in the same transaction, so there is no waiting and no claim step.</p>
+        <div class="note">
+          A recipe's id <strong>is</strong> the template it mints, so
+          <code>#/blenderizer/blend/336429</code> and “template 336429” are the same thing.
+        </div>
+        <p>Two things can stop a recipe paying out, and Crucible checks both before you deposit:
+          a <strong>capped target that is fully minted</strong> (tagged <em>sold out</em>), and a
+          collection with <strong>no RAM balance</strong> on the contract - <code>blenderizerx</code>
+          mints from RAM the collection author pre-paid, so an unfunded collection fails every blend
+          until they top it up.</p>
+      </section>
+
       <section class="gcard" id="authors">
         <h2>Collection authors</h2>
         <p>If your connected wallet is an <strong>authorized account</strong> of a collection,
@@ -205,6 +226,7 @@
           <li><code>#/nefty/claim/237418</code> - a drop</li>
           <li><code>#/nefty/upgrade/447</code> - an upgrade</li>
           <li><code>#/waxdao/blend/1921</code> - a WaxDAO blend</li>
+          <li><code>#/blenderizer/blend/336429</code> - a Blenderizer recipe (id = target template)</li>
         </ul>
       </section>
 
