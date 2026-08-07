@@ -1406,7 +1406,7 @@ pre::before {
    the viewport. */
 .cat-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, auto) minmax(0, auto);
+  grid-template-columns: 34px minmax(0, 1fr) minmax(0, auto) minmax(0, auto) minmax(0, auto);
   align-items: center;
   gap: 10px;
   padding: 9px 10px;
@@ -1478,7 +1478,7 @@ pre::before {
    Same 560px breakpoint as the tab bar and the platform pills. */
 @media (max-width: 560px) {
   .cat-row {
-    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    grid-template-columns: 34px minmax(0, 1fr) minmax(0, auto);
     row-gap: 4px;
   }
   .cat-chips { grid-column: 1 / -1; order: 3; }
@@ -1500,3 +1500,68 @@ pre::before {
   border-radius: 3px;
 }
 .catalog-link:hover { color: var(--accent-hot); border-color: var(--accent); }
+
+/* ─── NFT artwork thumbnails ──────────────────────────────────────────── */
+
+/* Facts first, art beside them. On a narrow screen the image drops above
+   the list rather than squeezing it. */
+.mint-with-art {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.mint-with-art-body { flex: 1 1 260px; min-width: 0; }
+
+/* The box is a FIXED footprint reserved before the image arrives, so the
+   card never reflows mid-load. object-fit: contain guarantees a portrait,
+   a square and a banner all fit inside it undistorted, letterboxed
+   against the panel rather than cropped or stretched. */
+.media-thumb {
+  flex: 0 0 auto;
+  width: 132px;
+  height: 132px;
+  margin: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.media-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  display: block;
+  /* Fade in only once decoded, so a slow gateway shows an empty frame
+     instead of a half-painted image. */
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+.media-thumb img.is-loaded { opacity: 1; }
+
+.media-thumb-sm { width: 88px; height: 88px; }
+
+@media (max-width: 560px) {
+  .media-thumb { width: 104px; height: 104px; }
+}
+
+/* Catalogue row thumbnail: small enough that 130 of them stay a list,
+   big enough to recognise an item. `.cat-art` is a fixed cell that
+   exists whether or not there is an image, so a missing or failed
+   thumbnail never shifts the columns beside it. */
+.cat-art {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: block;
+}
+.media-thumb-row {
+  width: 34px;
+  height: 34px;
+  border-radius: 2px;
+}

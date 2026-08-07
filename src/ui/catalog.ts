@@ -36,6 +36,7 @@
  */
 
 import { atomicFetch } from '../chain/rpc';
+import { renderMediaThumb, pickImageRef } from './media';
 import { listAssetsForOwner, type AtomicAsset } from '../atomic/assets';
 import { buildSlots, nftSlots, ftSlots } from '../atomic/matcher';
 import { listBlends, type DiscoveredBlend } from '../nefty/discover';
@@ -653,11 +654,7 @@ async function resolveCategories(collection: string, entries: CatalogEntry[]): P
     const t = byId.get(e.templateId as number);
     if (!t) continue;
     e.category = t.schema?.schema_name || UNCATEGORISED;
-    if (!e.image) {
-      const imm = t.immutable_data ?? {};
-      const img = typeof imm.img === 'string' ? imm.img : typeof imm.image === 'string' ? imm.image : undefined;
-      if (img) e.image = img;
-    }
+    if (!e.image) e.image = pickImageRef(t.immutable_data);
     // Packs and drops often have no display name of their own; the
     // produced template's name is the one players recognise.
     if (!e.name || /^(Blend|Drop|Pack|Template) #/i.test(e.name)) {
@@ -769,8 +766,22 @@ function renderEntry(e: CatalogEntry): string {
       ? `<span class="cat-blocked" title="${esc(e.blocked)}">${esc(e.blocked)}</span>`
       : '';
 
+  // A row thumbnail is the whole point of a browsing page, but 130 rows
+  // must not mean 130 immediate requests: `loading="lazy"` on the img
+  // (set in renderMediaThumb) keeps fetches to what is actually scrolled
+  // into view.
+  const art = renderMediaThumb({
+    ref: e.image,
+    alt: `${e.name} artwork`,
+    className: 'media-thumb-row',
+  });
+
+  // The art cell is ALWAYS emitted, even when empty. A missing image, or
+  // one whose <figure> gets pulled after every gateway fails, must not
+  // shift the other columns of a 130-row grid.
   return `
     <a class="cat-row${e.doable === true ? ' is-doable' : ''}" href="${esc(e.href)}">
+      <span class="cat-art">${art}</span>
       <span class="cat-name">${esc(e.name)}</span>
       <span class="cat-chips">${chips.join('')}</span>
       <span class="cat-cost" title="${esc(e.cost)}">${esc(e.cost)}</span>

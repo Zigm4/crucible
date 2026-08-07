@@ -13,6 +13,7 @@
  *     undefined in that branch.
  */
 import { atomicFetch, getTableRows } from '../chain/rpc';
+import { pickImageRef } from '../ui/media';
 
 export interface TemplateInfo {
   template_id: string;
@@ -91,7 +92,9 @@ async function fromIndexer(args: {
     collection_name: String(raw.collection_name ?? args.collection_name),
     schema_name: raw.schema?.schema_name,
     name: typeof imm.name === 'string' ? imm.name : undefined,
-    image: typeof imm.img === 'string' ? imm.img : typeof imm.image === 'string' ? imm.image : undefined,
+    // Artwork lives under several field names depending on the author
+    // (img, img2, image2, …), so let the media helper pick.
+    image: pickImageRef(imm),
     issued_supply: Number(raw.issued_supply ?? 0) || 0,
     max_supply: Number(raw.max_supply ?? 0) || 0,
     is_burnable: !!raw.is_burnable,

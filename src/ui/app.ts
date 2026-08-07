@@ -174,6 +174,7 @@ import { waitForNeftyClaim } from '../nefty/neftyPackWait';
 import { dryRunActions } from './dryrun';
 import { renderAboutPanels } from './about';
 import { renderStatusPage, runStatusScan, getStatusState } from './status';
+import { renderMediaThumb, attachMediaFallbacks } from './media';
 import {
   renderCatalogPage,
   runCatalogScan,
@@ -3947,9 +3948,22 @@ function renderExpectedMint(): string {
     ? `<p class="term">+ ${results.length - 1} additional mint(s), IDs: ${results.slice(1).map((r) => `<code>${r.template_id}</code>`).join(', ')}</p>`
     : '';
 
+  // Artwork sits beside the facts, not above them: the numbers are what
+  // you check before signing. It collapses away entirely when the
+  // template has no image or every gateway fails.
+  const art = renderMediaThumb({
+    ref: t?.image,
+    alt: t?.name ? `${t.name} artwork` : 'result artwork',
+  });
+
   return `
-    <ul class="mint-info">${rowsForPrimary}</ul>
-    ${extras}
+    <div class="mint-with-art">
+      ${art}
+      <div class="mint-with-art-body">
+        <ul class="mint-info">${rowsForPrimary}</ul>
+        ${extras}
+      </div>
+    </div>
   `;
 }
 
@@ -4001,13 +4015,26 @@ function renderPoolReward(b: BlendRow): string {
       ? `<p class="status-line err">This pool is empty: the blend cannot pay out until the collection author refills it.</p>`
       : '';
 
+    // A pool result carries its own image in display_data, and the
+    // pool's template usually has one too. Prefer the template's (it is
+    // what actually lands in the wallet) and fall back to the blob's.
+    const art = renderMediaThumb({
+      ref: (single && t && String(t.template_id) === String(single) ? t.image : undefined) ?? meta.image,
+      alt: meta.name ? `${meta.name} artwork` : 'pool reward artwork',
+    });
+
     return `
-      <ul class="mint-info">
-        <li><strong>Name:</strong> ${escapeHtml(meta.name ?? '(no display name on the pool result)')}</li>
-        <li><strong>Source:</strong> pool <code>${escapeHtml(d.pool_name)}</code>${pool ? ` <span class="term">(pool_id ${escapeHtml(pool.pool_id)})</span>` : ''} <span class="term">· roll #${d.roll_index}</span></li>
-        ${templateLine}
-        <li><strong>Pool stock:</strong> ${stock}</li>
-      </ul>
+      <div class="mint-with-art">
+        ${art}
+        <div class="mint-with-art-body">
+          <ul class="mint-info">
+            <li><strong>Name:</strong> ${escapeHtml(meta.name ?? '(no display name on the pool result)')}</li>
+            <li><strong>Source:</strong> pool <code>${escapeHtml(d.pool_name)}</code>${pool ? ` <span class="term">(pool_id ${escapeHtml(pool.pool_id)})</span>` : ''} <span class="term">· roll #${d.roll_index}</span></li>
+            ${templateLine}
+            <li><strong>Pool stock:</strong> ${stock}</li>
+          </ul>
+        </div>
+      </div>
       ${guarantee}
       ${empty}`;
   });
@@ -4993,14 +5020,19 @@ function renderDropMintInfo(): string {
     ? Math.max(0, t.max_supply - t.issued_supply)
     : null;
   return `
-    <ul class="mint-info">
-      <li><strong>Name:</strong> ${escapeHtml(String(name))}</li>
-      <li><strong>Template:</strong> <code>${escapeHtml(String(t?.template_id ?? d.primary_template_id))}</code></li>
-      ${t?.schema_name ? `<li><strong>Schema:</strong> <code>${escapeHtml(t.schema_name)}</code></li>` : ''}
-      <li><strong>Issued / max:</strong> ${escapeHtml(String(issued))} / ${escapeHtml(max)} ${left !== null ? `<span class="term">(${left} left)</span>` : ''}</li>
-      ${t ? `<li class="term">${t.is_transferable ? 'transferable' : 'soulbound'} · ${t.is_burnable ? 'burnable' : 'non-burnable'}</li>` : ''}
-    </ul>
-    ${d.assets_to_mint.length > 1 ? `<p class="term">+ ${d.assets_to_mint.length - 1} additional mint(s) per claim</p>` : ''}`;
+    <div class="mint-with-art">
+      ${renderMediaThumb({ ref: t?.image, alt: name ? `${name} artwork` : 'drop artwork' })}
+      <div class="mint-with-art-body">
+        <ul class="mint-info">
+          <li><strong>Name:</strong> ${escapeHtml(String(name))}</li>
+          <li><strong>Template:</strong> <code>${escapeHtml(String(t?.template_id ?? d.primary_template_id))}</code></li>
+          ${t?.schema_name ? `<li><strong>Schema:</strong> <code>${escapeHtml(t.schema_name)}</code></li>` : ''}
+          <li><strong>Issued / max:</strong> ${escapeHtml(String(issued))} / ${escapeHtml(max)} ${left !== null ? `<span class="term">(${left} left)</span>` : ''}</li>
+          ${t ? `<li class="term">${t.is_transferable ? 'transferable' : 'soulbound'} · ${t.is_burnable ? 'burnable' : 'non-burnable'}</li>` : ''}
+        </ul>
+        ${d.assets_to_mint.length > 1 ? `<p class="term">+ ${d.assets_to_mint.length - 1} additional mint(s) per claim</p>` : ''}
+      </div>
+    </div>`;
 }
 
 function renderDropInfo(): string {
@@ -5336,11 +5368,16 @@ function renderPackInfo(): string {
   return `
     <div class="card">
       <h2>3 · Pack #${escapeHtml(d.pack_id)} <span class="term">${escapeHtml(d.name)} (${escapeHtml(d.collection_name)})</span></h2>
-      <div class="row">
-        <span class="tag">asset <code>#${escapeHtml(pack.asset_id)}</code></span>
-        <span class="tag">${escapeHtml(String(d.roll_counter))} mint${d.roll_counter === 1 ? '' : 's'} per pack</span>
-        ${d.pack_template_id ? `<span class="tag">template <code>${escapeHtml(String(d.pack_template_id))}</code></span>` : ''}
-        ${unlocked ? '<span class="tag ok">unlocked</span>' : `<span class="tag err">unlocks at ${escapeHtml(new Date(d.unlock_time * 1000).toISOString().slice(0, 16).replace('T', ' '))} UTC</span>`}
+      <div class="mint-with-art">
+        ${renderMediaThumb({ ref: d.image, alt: `${d.name} artwork` })}
+        <div class="mint-with-art-body">
+          <div class="row">
+            <span class="tag">asset <code>#${escapeHtml(pack.asset_id)}</code></span>
+            <span class="tag">${escapeHtml(String(d.roll_counter))} mint${d.roll_counter === 1 ? '' : 's'} per pack</span>
+            ${d.pack_template_id ? `<span class="tag">template <code>${escapeHtml(String(d.pack_template_id))}</code></span>` : ''}
+            ${unlocked ? '<span class="tag ok">unlocked</span>' : `<span class="tag err">unlocks at ${escapeHtml(new Date(d.unlock_time * 1000).toISOString().slice(0, 16).replace('T', ' '))} UTC</span>`}
+          </div>
+        </div>
       </div>
       ${state.packRolls.length > 0 ? renderPackRollsList() : '<p class="status-line">Loading roll definitions…</p>'}
       ${d.description ? `<details style="margin-top:12px"><summary class="term" style="cursor:pointer">pack description</summary><p style="margin-top:8px; font-size:12px; color:var(--fg-dim)">${escapeHtml(d.description)}</p></details>` : ''}
@@ -6048,7 +6085,12 @@ function renderUpgradeInfo(): string {
         <span class="tag">uses ${escapeHtml(remainingUses)}</span>
         ${flags.join('')}
       </div>
-      ${ingredientsList}
+      <div class="mint-with-art">
+        ${renderMediaThumb({ ref: up.image, alt: `${up.name} artwork` })}
+        <div class="mint-with-art-body">
+          ${ingredientsList}
+        </div>
+      </div>
       <h3>What gets mutated</h3>
       ${specsBlock}
       ${up.description ? `<details style="margin-top:12px"><summary class="term" style="cursor:pointer">upgrade description</summary><p style="margin-top:8px; font-size:12px; color:var(--fg-dim)">${escapeHtml(up.description)}</p></details>` : ''}
@@ -6606,15 +6648,26 @@ function renderWaxdaoInfo(): string {
   const ingList = `<h3>Cost</h3><ul class="mint-info">${
     b.ingredients.map((ing) => `<li>${escapeHtml(waxdaoIngredientLabel(ing))}</li>`).join('')
   }</ul>`;
+  // WaxDAO carries the artwork on the result itself (nft_image), with the
+  // blend's cover_image as a fallback for recipes that leave it blank.
   const outList = b.results.length > 0
-    ? `<h3>Expected mint</h3><ul class="mint-info">${
-        b.results.map((r) => {
-          const tid = r.template_id ? `template <code>${r.template_id}</code>` : '<span class="term">no template</span>';
-          const sch = r.schema_name ? ` · schema <code>${escapeHtml(r.schema_name)}</code>` : '';
-          const name = r.nft_name ? ` (${escapeHtml(r.nft_name)})` : '';
-          return `<li>${tid}${sch}${name}</li>`;
-        }).join('')
-      }</ul>`
+    ? `<h3>Expected mint</h3>
+       <div class="mint-with-art">
+         ${renderMediaThumb({
+           ref: b.results.find((r) => r.nft_image)?.nft_image ?? b.cover_image,
+           alt: `${b.title} artwork`,
+         })}
+         <div class="mint-with-art-body">
+           <ul class="mint-info">${
+             b.results.map((r) => {
+               const tid = r.template_id ? `template <code>${r.template_id}</code>` : '<span class="term">no template</span>';
+               const sch = r.schema_name ? ` · schema <code>${escapeHtml(r.schema_name)}</code>` : '';
+               const name = r.nft_name ? ` (${escapeHtml(r.nft_name)})` : '';
+               return `<li>${tid}${sch}${name}</li>`;
+             }).join('')
+           }</ul>
+         </div>
+       </div>`
     : '';
   return `
     <div class="card">
@@ -7199,12 +7252,17 @@ function renderBlenderizerInfo(): string {
         <span class="tag">burns ${b.total_nfts} NFT${b.total_nfts === 1 ? '' : 's'}</span>
       </div>
       <h3>Expected mint</h3>
-      <ul class="mint-info">
-        <li><strong>Name:</strong> ${escapeHtml(b.name ?? '(unknown, indexer down)')}</li>
-        <li><strong>Template:</strong> <code>${b.target}</code></li>
-        ${b.schema_name ? `<li><strong>Schema:</strong> <code>${escapeHtml(b.schema_name)}</code></li>` : ''}
-        <li><strong>Issued / max:</strong> ${supply}</li>
-      </ul>
+      <div class="mint-with-art">
+        ${renderMediaThumb({ ref: b.image, alt: `${blenderizerTitle(b)} artwork` })}
+        <div class="mint-with-art-body">
+          <ul class="mint-info">
+            <li><strong>Name:</strong> ${escapeHtml(b.name ?? '(unknown, indexer down)')}</li>
+            <li><strong>Template:</strong> <code>${b.target}</code></li>
+            ${b.schema_name ? `<li><strong>Schema:</strong> <code>${escapeHtml(b.schema_name)}</code></li>` : ''}
+            <li><strong>Issued / max:</strong> ${supply}</li>
+          </ul>
+        </div>
+      </div>
       <h3>Cost</h3>
       <ul class="mint-info">${cost}</ul>
       ${blockers}
@@ -7441,6 +7499,7 @@ function performRender() {
   if (state.page === 'catalog') {
     rootEl().innerHTML = renderCatalogPage();
     attachCatalogHandlers();
+    attachMediaFallbacks(rootEl());
     restoreRenderSnapshot(snap);
     return;
   }
@@ -7463,6 +7522,9 @@ function performRender() {
               ? renderBlenderizerBlendsView()
               : renderWaxdaoBlendsView());
   attachHandlers();
+  // Thumbnails only start loading here, after the markup is in the DOM,
+  // so a render that produced no artwork costs no network at all.
+  attachMediaFallbacks(rootEl());
   positionOpenPickers();
   restoreRenderSnapshot(snap);
 }

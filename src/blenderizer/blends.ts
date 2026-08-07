@@ -38,6 +38,7 @@
  */
 
 import { atomicFetch, getTableRows } from '../chain/rpc';
+import { pickImageRef } from '../ui/media';
 
 export const BLENDERIZER_CONTRACT = 'blenderizerx';
 
@@ -381,12 +382,7 @@ async function enrichTargets(
     // alphabetical sorting and looks like a rendering bug in the picker.
     const rawName = typeof imm.name === 'string' ? imm.name.trim() : '';
     b.name = rawName || undefined;
-    b.image =
-      typeof imm.img === 'string'
-        ? imm.img
-        : typeof imm.image === 'string'
-          ? imm.image
-          : undefined;
+    b.image = pickImageRef(imm);
     b.schema_name = t.schema?.schema_name;
     b.target_issued = Number(t.issued_supply ?? 0) || 0;
     b.target_max = Number(t.max_supply ?? 0) || 0;

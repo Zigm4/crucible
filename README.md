@@ -98,12 +98,34 @@ would refuse anything weird.
     persists between visits, every page load is a clean boot)
 [*] third-party requests are limited to public WAX RPC nodes (chain
     reads), AtomicHub's public AtomicAssets API (NFT name enrichment),
-    and Google Fonts (purely cosmetic, remove in 30s by editing
-    index.html)
+    an IPFS gateway (NFT artwork -- see below), and Google Fonts
+    (purely cosmetic, remove in 30s by editing index.html)
 [*] your private key never leaves your wallet. WharfKit hands the
     unsigned transaction to Anchor / WAX Cloud Wallet, which signs
     locally and returns a signature. The page never sees a secret.
 ```
+
+**On the IPFS gateway.** Artwork is stored on-chain only as an IPFS
+hash, so showing it means asking some gateway for the bytes. That
+gateway sees your IP and which NFT you are looking at -- the one
+third-party request in this app that is about *you* rather than about
+the chain. Three mitigations, none of which make it disappear:
+
+- requests carry `referrerpolicy="no-referrer"`, so the gateway never
+  learns which page you were on
+- the gateway list lives in one constant (`IPFS_GATEWAYS` in
+  `src/ui/media.ts`). **Empty it and artwork is disabled everywhere**,
+  with no other change needed -- same escape hatch as the Google Fonts
+  link
+- nothing is requested until a card that has artwork is actually
+  rendered; browsing without opening a blend costs zero image requests
+
+Worth knowing: the obvious gateways are already dead.
+`ipfs.atomichub.io`, `atomichub-ipfs.com` and `cloudflare-ipfs.com`
+have no DNS records at all, and `ipfs.neftyblocks.io` now serves a
+domain-parking page. The same decay that took the websites took their
+gateways, which is why the list is tried in order and the card drops
+the image entirely rather than trusting any single host.
 
 ---
 
@@ -746,6 +768,8 @@ src/
     about.ts           : collapsible in-page guide
     catalog.ts         : #/catalog - one collection across all six
                          contracts, grouped by category
+    media.ts           : IPFS resolution + non-distorting thumbnails
+                         (gateway fallback, removes itself on failure)
     status.ts          : #/status - contract health monitor
     dryrun.ts          : local ABI serialisation, "simulate without signing"
     theme.css          : palette, fonts, scanlines, motion (fork to re-skin)

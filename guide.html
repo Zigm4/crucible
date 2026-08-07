@@ -110,6 +110,7 @@
         <a href="#waxdao">WaxDAO</a>
         <a href="#blenderizer">Blenderizer</a>
         <a href="#catalogue">Collection catalogue</a>
+        <a href="#artwork">NFT artwork</a>
         <a href="#authors">Collection authors</a>
         <a href="#links">Shareable links</a>
         <a href="#safety">Privacy &amp; safety</a>
@@ -196,6 +197,20 @@
           collection with <strong>no RAM balance</strong> on the contract - <code>blenderizerx</code>
           mints from RAM the collection author pre-paid, so an unfunded collection fails every blend
           until they top it up.</p>
+      </section>
+
+      <section class="gcard" id="artwork">
+        <h2>NFT artwork</h2>
+        <p>Blends, drops, packs, upgrades, WaxDAO blends, Blenderizer recipes and the
+          catalogue all show the artwork of what you are about to get. It sits <em>beside</em>
+          the numbers, never on top of them: the supply, the cost and the status stay the
+          first thing you read.</p>
+        <div class="note">
+          Artwork is stored on-chain only as an IPFS hash, so it is fetched from a public
+          IPFS gateway - the one request Crucible makes that is about <em>you</em> rather
+          than about the chain. If every gateway is unreachable, the image is dropped and
+          the card renders exactly as it would without it. Nothing waits on an image.
+        </div>
       </section>
 
       <section class="gcard" id="catalogue">

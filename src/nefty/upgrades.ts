@@ -102,6 +102,8 @@ export interface DiscoveredUpgrade {
   collection_name: string;
   name: string;
   description?: string;
+  /** Artwork of the upgraded result, from the row's display_data. */
+  image?: string;
   status: UpgradeStatus;
   is_random: boolean;
   /** True when security_id != 0 (whitelist or ownership gate). */
@@ -263,12 +265,14 @@ function computeStatus(r: RawUpgradeRow): UpgradeStatus {
   return 'active';
 }
 
-function parseDisplayData(d: string | undefined): { name?: string; description?: string } {
+function parseDisplayData(
+  d: string | undefined,
+): { name?: string; description?: string; image?: string } {
   if (!d) return {};
   try {
     const o = JSON.parse(d);
     if (typeof o !== 'object' || !o) return {};
-    return o as { name?: string; description?: string };
+    return o as { name?: string; description?: string; image?: string };
   } catch {
     return {};
   }
@@ -403,6 +407,7 @@ function toDiscovered(r: RawUpgradeRow): DiscoveredUpgrade | undefined {
     collection_name: r.collection_name,
     name: dd.name || `Upgrade #${id}`,
     description: dd.description,
+    image: typeof dd.image === 'string' && dd.image.trim() ? dd.image.trim() : undefined,
     status: computeStatus(r),
     is_random,
     whitelist_required: security_id !== '0',
