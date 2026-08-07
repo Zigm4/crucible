@@ -422,6 +422,13 @@ interface AppState {
    * paint of the same template is instant.
    */
   templateNames: Map<number, string>;
+  /**
+   * Cross-tab cache of `template_id -> artwork reference`, filled by the
+   * same lazy lookup that resolves names. Lets views that only know a
+   * template id (random-blend outcomes, for one) show its picture
+   * without a second round-trip.
+   */
+  templateImages: Map<number, string>;
 
   /** Collection-author admin controls (BLEND tab, inline in zone 3). */
   manage: ManageState;
@@ -735,6 +742,7 @@ const state: AppState = {
     return r.id ? { view: r.view, id: r.id } : undefined;
   })(),
   templateNames: new Map(),
+  templateImages: new Map(),
   manage: {
     enabled: false,
     authByCollection: new Map(),
@@ -4291,7 +4299,32 @@ function renderRngOdds(b: BlendRow): string {
       : '';
     return `<details class="pack-roll" open><summary>Roll #${i} · ${roll.outcomes.length} possible outcome${roll.outcomes.length === 1 ? '' : 's'}</summary><ul class="mint-info">${items.join('')}${more}</ul></details>`;
   });
-  return `<h3>Possible mints</h3><p class="status-line" style="margin-bottom:6px">This blend has multiple outcomes per roll. The on-chain contract will randomly pick one outcome per roll when you submit. Probabilities below are the in-roll odds.</p>${blocks.join('')}`;
+  // A random blend has no single "expected mint", so it never went
+  // through renderExpectedMint and used to show no artwork at all -
+  // which is why e.g. blend 22807 looked image-less on its own page
+  // while the catalogue (which just takes the first result template)
+  // showed one. Use the blend's own display_data, falling back to the
+  // most likely outcome's template.
+  const best = rolls[0]?.outcomes?.slice().sort((a, b2) => b2.odds - a.odds)[0];
+  const bestTid = (best?.results ?? []).find((r) => r[0] === 'ON_DEMAND_NFT_RESULT')?.[1] as
+    | { template_id?: number }
+    | undefined;
+  const art = renderMediaThumb({
+    ref: [
+      parsePoolDisplayData(b.display_data).image,
+      bestTid?.template_id ? state.templateImages.get(Number(bestTid.template_id)) : undefined,
+    ],
+    alt: 'blend artwork',
+  });
+
+  return `<h3>Possible mints</h3>
+    <div class="mint-with-art">
+      ${art}
+      <div class="mint-with-art-body">
+        <p class="status-line" style="margin-bottom:6px">This blend has multiple outcomes per roll. The on-chain contract will randomly pick one outcome per roll when you submit. Probabilities below are the in-roll odds.</p>
+      </div>
+    </div>
+    ${blocks.join('')}`;
 }
 
 /**
@@ -4329,6 +4362,24 @@ function displayAssetName(a: AtomicAsset): string {
  * blend ingredient headers, RNG outcome odds, the picker label, etc.
  * Returns "template #<id>" until the name lands.
  */
+/**
+ * Artwork reference for a template, from the same lazy cache that backs
+ * displayTemplateName(). Returns undefined until the lookup lands; the
+ * render that follows picks it up.
+ */
+function displayTemplateImage(
+  template_id: number | string | undefined,
+  collection: string | undefined,
+): string | undefined {
+  if (template_id == null || template_id === '') return undefined;
+  const n = Number(template_id);
+  if (!Number.isFinite(n)) return undefined;
+  const cached = state.templateImages.get(n);
+  if (cached) return cached;
+  if (collection) void enrichTemplateName(n, collection);
+  return undefined;
+}
+
 function displayTemplateName(template_id: number | string | undefined, collection: string | undefined): string {
   if (template_id == null || template_id === '') return 'template';
   const n = Number(template_id);
@@ -4342,11 +4393,12 @@ async function enrichTemplateName(n: number, collection: string): Promise<void> 
   if (!Number.isFinite(n) || state.templateNames.has(n) || _templateFetchInflight.has(n)) return;
   _templateFetchInflight.add(n);
   try {
-    const name = await fetchTemplateName(collection, n);
-    if (name) {
-      state.templateNames.set(n, name);
-      render();
-    }
+    // loadTemplate (rather than fetchTemplateName) so the same call also
+    // yields the artwork reference, which several views need.
+    const info = await loadTemplate({ collection_name: collection, template_id: n });
+    if (info?.name) state.templateNames.set(n, info.name);
+    if (info?.image) state.templateImages.set(n, info.image);
+    if (info?.name || info?.image) render();
   } catch {
     // ignore: callers keep the "template #<id>" fallback
   } finally {
@@ -6090,7 +6142,20 @@ function renderUpgradeInfo(): string {
         ${flags.join('')}
       </div>
       <div class="mint-with-art">
-        ${renderMediaThumb({ ref: up.image, alt: `${up.name} artwork` })}
+        ${renderMediaThumb({
+          // The upgrade row's own display_data first, then the artwork of
+          // an NFT it accepts. Needed because some authors' display_data
+          // hashes are no longer served anywhere (every Diya upgrade on
+          // underpunks55 is in that state), while the templates those
+          // upgrades apply to are still perfectly resolvable.
+          ref: [
+            up.image,
+            ...(up.acceptedTemplateIds ?? [])
+              .slice(0, 3)
+              .map((tid) => displayTemplateImage(tid, up.collection_name)),
+          ],
+          alt: `${up.name} artwork`,
+        })}
         <div class="mint-with-art-body">
           ${ingredientsList}
         </div>

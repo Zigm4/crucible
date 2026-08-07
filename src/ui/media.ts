@@ -167,6 +167,26 @@ export function renderMediaThumb(args: {
 const HEDGE_MS = 1_200;
 /** Total budget for one thumbnail before it gives up and removes itself. */
 const OVERALL_TIMEOUT_MS = 12_000;
+/**
+ * Safety net for the lazy-load observer. If an IntersectionObserver
+ * callback has not arrived by now - a hidden tab, an odd embedding, a
+ * browser that throttles it - load anyway rather than showing an empty
+ * frame forever. Long enough that normal scrolling still wins.
+ */
+const OBSERVER_FALLBACK_MS = 2_500;
+
+/**
+ * Memo of `candidate url -> it worked`, and of the winner picked for a
+ * given candidate list. The app re-renders by replacing innerHTML, so
+ * every render throws away in-flight image loads and would otherwise
+ * restart the whole race from zero; on a page that re-renders a few
+ * times while data streams in, a thumbnail could be perpetually
+ * restarted and never finish. Remembering the winner makes the next
+ * render paint instantly from cache instead.
+ */
+const resolved = new Map<string, string>();
+/** Candidate lists already proven hopeless, so we stop retrying them. */
+const hopeless = new Set<string>();
 
 /**
  * Starts loading every thumbnail in `root` and wires the gateway
@@ -195,16 +215,40 @@ export function attachMediaFallbacks(root: HTMLElement): void {
       return;
     }
 
-    const start = () => loadHedged(candidates, {
-      onWin: (url) => {
-        // The winning URL is already in the HTTP cache, so pointing the
-        // visible <img> at it paints immediately.
-        img.src = url;
-        img.classList.add('is-loaded');
-      },
-      onFail: () => { img.closest('figure')?.remove(); },
-      onAttempt: (n) => { img.dataset.mediaI = String(n); },
-    });
+    const key = candidates.join('|');
+
+    // Already known good from an earlier render: paint now, no race.
+    const known = resolved.get(key);
+    if (known) {
+      img.src = known;
+      img.classList.add('is-loaded');
+      return;
+    }
+    // Already known bad: do not spend the budget discovering it again.
+    if (hopeless.has(key)) {
+      img.closest('figure')?.remove();
+      return;
+    }
+
+    let launched = false;
+    const start = () => {
+      if (launched) return;
+      launched = true;
+      loadHedged(candidates, {
+        onWin: (url) => {
+          resolved.set(key, url);
+          // The winning URL is already in the HTTP cache, so pointing
+          // the visible <img> at it paints immediately.
+          img.src = url;
+          img.classList.add('is-loaded');
+        },
+        onFail: () => {
+          hopeless.add(key);
+          img.closest('figure')?.remove();
+        },
+        onAttempt: (n) => { img.dataset.mediaI = String(n); },
+      });
+    };
 
     // Defer the first request until the thumbnail is worth fetching.
     // 400px of margin means it is already there by the time it scrolls
@@ -221,6 +265,8 @@ export function attachMediaFallbacks(root: HTMLElement): void {
         { rootMargin: '400px' },
       );
       io.observe(img);
+      // ...but never let a silent observer strand the thumbnail.
+      setTimeout(() => { io.disconnect(); start(); }, OBSERVER_FALLBACK_MS);
     } else {
       start();
     }
