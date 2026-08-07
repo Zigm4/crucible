@@ -37,8 +37,12 @@ import {
   isDeterministic,
   loadBlend,
   deterministicResults,
+  poolDraws,
+  oddsAreCertain,
+  parsePoolDisplayData,
   type BlendRow,
 } from '../nefty/blend';
+import { loadPool, type PoolInfo } from '../nefty/pools';
 import { checkWhitelist, type WhitelistStatus } from '../nefty/whitelist';
 import { listAssetsForOwner, type AtomicAsset } from '../atomic/assets';
 import {
@@ -238,6 +242,12 @@ interface AppState {
   blend?: BlendRow;
   template?: TemplateInfo;
   templateLoading: boolean;
+  /**
+   * Stock of the pool a POOL_NFT_RESULT blend draws from, keyed by
+   * pool_name. Populated only for pool blends; empty otherwise.
+   */
+  pools: Map<string, PoolInfo>;
+  poolsLoading: boolean;
   slots: IngredientSlot[];
   selection: Map<number, string[]>;
   ownedAssets: AtomicAsset[];
@@ -577,6 +587,8 @@ const state: AppState = {
   blendId: '',
   collection: '',
   templateLoading: false,
+  pools: new Map(),
+  poolsLoading: false,
   slots: [],
   selection: new Map(),
   ownedAssets: [],
@@ -1869,6 +1881,8 @@ async function onLoadBlend() {
   state.blend = undefined;
   state.template = undefined;
   state.templateLoading = false;
+  state.pools.clear();
+  state.poolsLoading = false;
   state.slots = [];
   state.selection.clear();
   state.ownedAssets = [];
@@ -1900,17 +1914,11 @@ async function onLoadBlend() {
       state.rngAbort = undefined;
     }
 
-    // Both deterministic and random blends are loadable now. The
-    // execute button below routes to the right state machine based on
-    // isDeterministic(). The only thing that genuinely can't run is a
-    // pool-NFT result, which we still reject up-front because we can't
-    // even build the right action list.
-    const det = isDeterministic(state.blend);
-    if (!det.ok && /POOL_NFT/.test(det.reason ?? '')) {
-      setStatus(`Unsupported blend: ${det.reason}`, 'err');
-      return;
-    }
-
+    // Every blend shape is loadable. The execute button routes on
+    // isDeterministic(): true -> one-shot nosecfuse, false -> the
+    // announce+fuse / wait / claim state machine. Pool draws take that
+    // second path too (the contract picks the escrowed asset at fuse
+    // time), and the action list is identical either way.
     const session = getCurrentSession();
     if (session) {
       state.whitelist = await checkWhitelist({
@@ -1922,17 +1930,20 @@ async function onLoadBlend() {
     state.blendLoading = false; // header info is enough to show, keep skeletons for assets/template
     render();
 
-    // Kick off template enrichment + asset refresh in parallel.
-    const results = deterministicResults(state.blend);
+    // Kick off template enrichment + pool stock + asset refresh in parallel.
+    const blend = state.blend;
+    const results = deterministicResults(blend);
     const firstResult = results[0];
+    const draws = poolDraws(blend);
     state.templateLoading = !!firstResult;
+    state.poolsLoading = draws.length > 0;
     render();
 
     const tasks: Promise<unknown>[] = [];
     if (firstResult) {
       tasks.push(
         loadTemplate({
-          collection_name: state.blend.collection_name,
+          collection_name: blend.collection_name,
           template_id: firstResult.template_id,
         })
           .then((info) => {
@@ -1944,6 +1955,9 @@ async function onLoadBlend() {
           }),
       );
     }
+    if (draws.length > 0) {
+      tasks.push(loadPoolsFor(blend, draws.map((d) => d.pool_name)));
+    }
     tasks.push(refreshAssets());
     await Promise.all(tasks);
   } catch (err) {
@@ -1952,6 +1966,54 @@ async function onLoadBlend() {
     state.pending = false;
     state.blendLoading = false;
     state.templateLoading = false;
+    state.poolsLoading = false;
+    render();
+  }
+}
+
+/**
+ * Reads the stock of every pool a blend draws from, plus the template
+ * each pool hands out (pool results carry no template_id, only the pool
+ * name, so the reward preview has to come from the pool row).
+ *
+ * Best-effort by design: a pool that fails to read leaves the card
+ * showing "stock unknown" instead of blocking the blend.
+ */
+async function loadPoolsFor(blend: BlendRow, poolNames: string[]): Promise<void> {
+  state.poolsLoading = true;
+  try {
+    await Promise.all(
+      [...new Set(poolNames)].map(async (pool_name) => {
+        try {
+          const info = await loadPool({
+            collection_name: blend.collection_name,
+            pool_name,
+          });
+          if (info) state.pools.set(pool_name, info);
+        } catch {
+          // leave it out of the map; the UI renders "stock unknown"
+        }
+      }),
+    );
+    // A pool's templates give us a real name/supply for the reward panel.
+    // Only fill `state.template` when nothing else claimed it.
+    const firstTemplate = [...state.pools.values()]
+      .flatMap((p) => p.templates)
+      .find((t) => t > 0);
+    if (firstTemplate && !state.template && !state.templateLoading) {
+      state.templateLoading = true;
+      render();
+      try {
+        state.template = await loadTemplate({
+          collection_name: blend.collection_name,
+          template_id: firstTemplate,
+        });
+      } finally {
+        state.templateLoading = false;
+      }
+    }
+  } finally {
+    state.poolsLoading = false;
     render();
   }
 }
@@ -2124,13 +2186,18 @@ async function onExecuteRng() {
     secure,
     security_check,
   });
+  const why = poolDraws(state.blend).length > 0
+    ? `\n\nThe reward comes out of a pre-filled pool: the contract picks which escrowed ` +
+      `NFT you get, then Nefty's claim service delivers it to your wallet a few seconds ` +
+      `later - usually no second signature is needed.`
+    : `\n\nThis is a random blend: the oracle resolves the result and Nefty's claim ` +
+      `service mints it to your wallet automatically a few seconds later - usually no ` +
+      `second signature is needed.`;
   if (
     !confirm(
       `Sign ${actions.length} action(s) to blend?\n\n` +
         actions.map((a, i) => `${i + 1}. ${a.account}::${a.name}`).join('\n') +
-        `\n\nThis is a random blend: the oracle resolves the result and Nefty's claim ` +
-        `service mints it to your wallet automatically a few seconds later - usually no ` +
-        `second signature is needed.`,
+        why,
     )
   ) {
     return;
@@ -3725,6 +3792,70 @@ function renderExpectedMint(): string {
   `;
 }
 
+/**
+ * Reward panel for a blend whose output comes out of a pool.
+ *
+ * Pool results carry no template_id, only a `pool_name` and the author's
+ * `display_data` blob, so the name/image come from there and the hard
+ * numbers (stock left, template) from the `pools` row we fetched.
+ *
+ * The point of this panel is to make the guarantee explicit: when the
+ * pool hands out a single template, the user knows exactly which NFT
+ * they get, only the serial is drawn.
+ */
+function renderPoolReward(b: BlendRow): string {
+  const draws = poolDraws(b);
+  if (draws.length === 0) return '';
+
+  const blocks = draws.map((d) => {
+    const meta = parsePoolDisplayData(d.display_data);
+    const pool = state.pools.get(d.pool_name);
+    const t = state.template;
+
+    const stock = pool
+      ? `${pool.remaining} left <span class="term">(of ${pool.added} ever added${pool.reserved > 0 ? `, ${pool.reserved} reserved` : ''})</span>`
+      : state.poolsLoading
+        ? '<span class="shimmer skeleton-inline">reading pool…</span>'
+        : '<span class="term">stock unknown (pool row unreadable)</span>';
+
+    // One template in the pool = the reward NFT is fully known up front.
+    const single = pool && pool.templates.length === 1 ? pool.templates[0] : undefined;
+    const templateLine = single
+      ? `<li><strong>Template:</strong> <code>${escapeHtml(String(single))}</code>${
+          t && String(t.template_id) === String(single) && t.name
+            ? ` <span class="term">${escapeHtml(t.name)}</span>`
+            : ''
+        }</li>`
+      : pool && pool.templates.length > 1
+        ? `<li><strong>Templates:</strong> ${pool.templates.map((x) => `<code>${escapeHtml(String(x))}</code>`).join(', ')} <span class="term">(the draw decides which)</span></li>`
+        : '';
+
+    const guarantee = single
+      ? `<p class="status-line ok">Guaranteed outcome: every asset in this pool is template <code>${escapeHtml(String(single))}</code>, so the reward NFT is certain - only its serial number is drawn.</p>`
+      : pool && pool.templates.length > 1
+        ? `<p class="status-line warn">This pool holds ${pool.templates.length} different templates: which one you get is decided by the contract at fuse time.</p>`
+        : '';
+
+    const empty = pool && pool.remaining === 0
+      ? `<p class="status-line err">This pool is empty: the blend cannot pay out until the collection author refills it.</p>`
+      : '';
+
+    return `
+      <ul class="mint-info">
+        <li><strong>Name:</strong> ${escapeHtml(meta.name ?? '(no display name on the pool result)')}</li>
+        <li><strong>Source:</strong> pool <code>${escapeHtml(d.pool_name)}</code>${pool ? ` <span class="term">(pool_id ${escapeHtml(pool.pool_id)})</span>` : ''} <span class="term">· roll #${d.roll_index}</span></li>
+        ${templateLine}
+        <li><strong>Pool stock:</strong> ${stock}</li>
+      </ul>
+      ${guarantee}
+      ${empty}`;
+  });
+
+  return `
+    <p class="status-line">The reward is <strong>not minted on demand</strong>: it was pre-minted and deposited into a pool on <code>blend.nefty</code>. The contract hands you one of the escrowed assets, which is why this runs as a two-step fuse → claim.</p>
+    ${blocks.join('')}`;
+}
+
 function renderBlendInfo(): string {
   if (state.blendLoading) {
     return renderSkeleton('3 · Loading blend recipe…');
@@ -3732,7 +3863,15 @@ function renderBlendInfo(): string {
   const b = state.blend;
   if (!b) return '';
   const det = isDeterministic(b);
+  const draws = poolDraws(b);
+  // A pool blend with single-outcome, full-odds rolls is NOT a lottery: the
+  // reward is certain, only the escrowed serial is drawn. Label it honestly
+  // instead of lumping it in with multi-outcome random blends.
+  const certainPool = draws.length > 0 && oddsAreCertain(b);
   const wl = state.whitelist;
+  // security_id != 0 means the blend IS gated; `wl` only gets filled once a
+  // wallet is connected (that's what we check eligibility against).
+  const gatedButUnchecked = !wl && blendIsSecure(b);
   const remainingUses = b.max && Number(b.max) > 0
     ? `${b.use_count}/${b.max} (${Math.max(0, Number(b.max) - Number(b.use_count))} left)`
     : `${b.use_count}/∞`;
@@ -3745,17 +3884,28 @@ function renderBlendInfo(): string {
       <div class="row">
         ${det.ok
           ? '<span class="tag ok">deterministic · single output</span>'
-          : '<span class="tag warn">random · oracle picks one outcome per roll</span>'}
+          : certainPool
+            ? '<span class="tag ok">guaranteed · drawn from a pool</span>'
+            : '<span class="tag warn">random · oracle picks one outcome per roll</span>'}
         ${
           wl?.required
             ? wl.allowed
               ? '<span class="tag ok">whitelist · allowed</span>'
               : '<span class="tag err">whitelist · denied</span>'
-            : '<span class="tag">open · no whitelist</span>'
+            : gatedButUnchecked
+              // The eligibility read only runs with a wallet connected, so
+              // without one we know the blend is gated but not whether the
+              // user passes. Saying "open" there would be a lie.
+              ? '<span class="tag warn">whitelist · connect a wallet to check</span>'
+              : '<span class="tag">open · no whitelist</span>'
         }
         <span class="tag">uses ${escapeHtml(remainingUses)}</span>
       </div>
-      ${det.ok ? `<h3>Expected mint</h3>${renderExpectedMint()}` : renderRngOdds(b)}
+      ${det.ok
+        ? `<h3>Expected mint</h3>${renderExpectedMint()}`
+        : certainPool
+          ? `<h3>Expected reward</h3>${renderPoolReward(b)}`
+          : `${renderRngOdds(b)}${draws.length > 0 ? `<h3>Pool draws</h3>${renderPoolReward(b)}` : ''}`}
       ${wl?.required && !wl.allowed ? `<p class="status-line err">${escapeHtml(wl.reason ?? '')}</p>` : ''}
       ${renderBlendManage(b)}
     </div>
@@ -3931,7 +4081,10 @@ function renderRngOdds(b: BlendRow): string {
             : `${escapeHtml(nm)} <code>#${escapeHtml(String(tid))}</code>`;
         }
         if (kind === 'POOL_NFT_RESULT') {
-          return `<span class="term">pool draw</span>`;
+          const p = r[1] as { pool_name?: string; display_data?: string };
+          const nm = parsePoolDisplayData(p.display_data).name;
+          const stock = p.pool_name ? state.pools.get(p.pool_name) : undefined;
+          return `${nm ? `${escapeHtml(nm)} ` : ''}<span class="term">from pool <code>${escapeHtml(p.pool_name ?? '?')}</code>${stock ? ` · ${stock.remaining} left` : ''}</span>`;
         }
         if (kind === 'FT_RESULT') {
           const amt = (r[1] as { amount?: { quantity?: string } })?.amount?.quantity;
@@ -4209,10 +4362,18 @@ function renderRngActions(ready: boolean, totalPicked: number, totalRequired: nu
       ? `<a target="_blank" href="https://waxblock.io/transaction/${escapeHtml(id)}">${escapeHtml(id.slice(0, 16))}…</a>`
       : '';
 
+  // Pool blends run the exact same two-step flow, but the reason is
+  // different (the asset is drawn from escrow, not rolled), so the
+  // explanation has to match or it reads as a lottery warning.
+  const isPoolDraw = state.blend ? poolDraws(state.blend).length > 0 : false;
+  const twoStepWhy = isPoolDraw
+    ? 'The reward is drawn from a pre-filled pool, so the contract decides which escrowed NFT you get at fuse time. Crucible signs a first transaction (announce + fuse), waits for the contract to stage the drawn asset, then claims it - usually the claim happens automatically.'
+    : 'This blend has at least one roll with multiple possible outcomes. Crucible signs a first transaction (announce + fuse), waits for the contract to stage the result, then prompts you for a second signature (claim) that actually mints the cards.';
+
   let body = '';
   if (phase === 'idle') {
     body = `
-      <p class="status-line">This blend has at least one roll with multiple possible outcomes. Crucible signs a first transaction (announce + fuse), waits for the contract to stage the result, then prompts you for a second signature (claim) that actually mints the cards.</p>
+      <p class="status-line">${escapeHtml(twoStepWhy)}</p>
       <div class="row">
         <button data-action="dryrun" ${ready ? '' : 'disabled'}>Simulate (no signature)</button>
         <button class="primary" data-action="execute" ${ready ? '' : 'disabled'}>Sign step 1: announce + fuse</button>
@@ -4283,6 +4444,7 @@ function renderRngOutcome(claimed: boolean): string {
     if (variant === 'ON_DEMAND_NFT_CLAIM') {
       tidStr = String((payload as { template_id?: number }).template_id ?? '');
     } else if (variant === 'POOL_NFT_CLAIM') {
+      // The pool draw resolves to a concrete, already-existing asset_id.
       tidStr = `pool asset ${String((payload as { asset_id?: string }).asset_id ?? '')}`;
     } else if (variant === 'FT_CLAIM') {
       tidStr = String((payload as { amount?: { quantity?: string } }).amount?.quantity ?? '');
@@ -4292,7 +4454,14 @@ function renderRngOutcome(claimed: boolean): string {
     const rolls = state.blend?.rolls ?? [];
     const roll = rolls[idx];
     let pctLabel = '?';
-    if (roll && variant === 'ON_DEMAND_NFT_CLAIM') {
+    if (roll && variant === 'POOL_NFT_CLAIM') {
+      // A single full-odds outcome means the pool draw was never a gamble
+      // on WHAT you get, only on which serial: report it as certain.
+      const total = roll.total_odds || roll.outcomes.reduce((a, o) => a + o.odds, 0);
+      if (roll.outcomes.length === 1 && total > 0 && roll.outcomes[0].odds === total) {
+        pctLabel = '100.00%';
+      }
+    } else if (roll && variant === 'ON_DEMAND_NFT_CLAIM') {
       const total = roll.total_odds || roll.outcomes.reduce((a, o) => a + o.odds, 0);
       const tid = Number((payload as { template_id?: number }).template_id);
       const match = roll.outcomes.find((o) =>

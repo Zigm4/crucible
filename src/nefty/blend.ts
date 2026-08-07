@@ -94,12 +94,26 @@ export interface Outcome {
   results: ResultVariant[];
 }
 export type ResultVariant =
-  | ['POOL_NFT_RESULT', { pool_id: number }]
+  | ['POOL_NFT_RESULT', PoolNftResult]
   | ['ON_DEMAND_NFT_RESULT', OnDemandNftResult]
   | ['FT_RESULT', { quantity: string }];
 export interface OnDemandNftResult {
   template_id: number;
   payload?: unknown;
+}
+/**
+ * A reward drawn from a pre-filled pool rather than minted on demand. The
+ * live ABI declares `{ pool_name: name, display_data: string }` -- there is
+ * no `pool_id` on the result, the pool is addressed by name within the
+ * blend's own collection scope (see src/nefty/pools.ts).
+ *
+ * `display_data` is the author-supplied JSON blob describing what the pool
+ * hands out ({"name": ..., "image": ...}), which is what the UI shows since
+ * no template_id is available here.
+ */
+export interface PoolNftResult {
+  pool_name: string;
+  display_data?: string;
 }
 
 export async function loadBlend(args: {
@@ -125,10 +139,17 @@ export async function loadBlend(args: {
 }
 
 /**
- * A blend's `nosecfuse` action is only safe to call when the result is fully
- * deterministic: every roll has a single outcome whose odds equal total_odds.
- * Anything else means the contract would draw a random result from a pool,
- * which requires the secfuse / RNG flow we do NOT support.
+ * "Can this blend be settled in ONE transaction, with the exact output
+ * known before signing?"
+ *
+ * That holds only when every roll has a single outcome whose odds equal
+ * total_odds AND that outcome mints on demand from a template. Anything
+ * else - several outcomes per roll, or a draw from a pool - means the
+ * contract decides something at execution time and stages the answer in
+ * `claimassets`, so it needs the two-step fuse -> wait -> claim flow
+ * (src/nefty/rngExecute.ts).
+ *
+ * `ok: false` is NOT "unsupported": it only selects which flow the UI runs.
  */
 export function isDeterministic(blend: BlendRow): {
   ok: boolean;
@@ -142,7 +163,7 @@ export function isDeterministic(blend: BlendRow): {
     if (r.outcomes.length !== 1) {
       return {
         ok: false,
-        reason: `Roll #${i} has ${r.outcomes.length} possible outcomes (random blend, uses secfuse, not supported here).`,
+        reason: `Roll #${i} has ${r.outcomes.length} possible outcomes (the oracle picks one at fuse time).`,
       };
     }
     if (r.outcomes[0].odds !== r.total_odds) {
@@ -151,12 +172,14 @@ export function isDeterministic(blend: BlendRow): {
         reason: `Roll #${i}: odds=${r.outcomes[0].odds} != total_odds=${r.total_odds} (outcome not guaranteed).`,
       };
     }
-    // Reject pool draws, by definition non-deterministic for the claimer
+    // A pool draw keeps the odds at 100% but the contract still picks WHICH
+    // escrowed asset you get, so the exact asset_id only exists after the
+    // claim row is staged -> two-step flow.
     for (const res of r.outcomes[0].results) {
       if (res[0] === 'POOL_NFT_RESULT') {
         return {
           ok: false,
-          reason: `Roll #${i} draws from a POOL_NFT, random outcome, not supported.`,
+          reason: `Roll #${i} draws a pre-minted NFT from pool "${res[1].pool_name}" (the contract picks which asset at fuse time).`,
         };
       }
     }
@@ -176,4 +199,66 @@ export function deterministicResults(blend: BlendRow): OnDemandNftResult[] {
     }
   }
   return out;
+}
+
+/** One pool draw declared by a blend, tagged with the roll it belongs to. */
+export interface PoolDraw extends PoolNftResult {
+  roll_index: number;
+}
+
+/**
+ * Every POOL_NFT_RESULT the blend declares, across all rolls and outcomes.
+ * Used to fetch pool stock and to preview the reward, since pool results
+ * carry no template_id.
+ */
+export function poolDraws(blend: BlendRow): PoolDraw[] {
+  const out: PoolDraw[] = [];
+  const rolls = blend.rolls ?? [];
+  for (let i = 0; i < rolls.length; i++) {
+    for (const outcome of rolls[i].outcomes ?? []) {
+      for (const result of outcome.results ?? []) {
+        if (result[0] === 'POOL_NFT_RESULT') {
+          out.push({ roll_index: i, ...result[1] });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * True when the odds themselves leave nothing to chance: every roll has a
+ * single outcome carrying the full odds. A pool blend can satisfy this and
+ * still be non-deterministic per `isDeterministic()` -- the reward IS
+ * guaranteed, only the specific escrowed asset_id is drawn. The UI uses
+ * this to avoid labelling a 100%-certain craft as a lottery.
+ */
+export function oddsAreCertain(blend: BlendRow): boolean {
+  for (const roll of blend.rolls ?? []) {
+    if ((roll.outcomes ?? []).length !== 1) return false;
+    if (roll.outcomes[0].odds !== roll.total_odds) return false;
+  }
+  return true;
+}
+
+/**
+ * Parses a pool result's author-supplied `display_data` JSON blob. Returns
+ * an empty object for malformed or absent data rather than throwing -- it is
+ * cosmetic metadata, never something to fail a blend over.
+ */
+export function parsePoolDisplayData(
+  raw: string | undefined,
+): { name?: string; image?: string } {
+  if (!raw || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    const o = parsed as Record<string, unknown>;
+    return {
+      name: typeof o.name === 'string' ? o.name : undefined,
+      image: typeof o.image === 'string' ? o.image : undefined,
+    };
+  } catch {
+    return {};
+  }
 }

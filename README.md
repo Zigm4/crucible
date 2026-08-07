@@ -134,6 +134,9 @@ actions lead the sequence:
 [*] random blends (fuse + claim, two signatures) with auto-wait
     between TX1 and TX2 and a full breakdown of the resolved outcome
     + the in-roll odds
+[*] pool blends (POOL_NFT_RESULT): reward pre-minted into an escrow
+    pool instead of minted on demand, with live pool stock and a
+    "guaranteed" badge when the pool holds a single template
 ```
 
 Random blends (any roll with 2+ outcomes) follow:
@@ -148,6 +151,39 @@ TX 1 - announcedepo + atomicassets::transfer + blend.nefty::fuse
 TX 2 - blend.nefty::claim  claim_id, roll_indexes
        (mints the resolved cards to your wallet)
 ```
+
+#### Pool blends · rewards that were minted in advance
+
+A roll can pay out two ways. `ON_DEMAND_NFT_RESULT` mints a fresh NFT
+from a template, so the output is known before you sign.
+`POOL_NFT_RESULT` doesn't mint anything: the reward NFTs were minted
+ahead of time and deposited into a named **pool** on `blend.nefty`, and
+the contract hands you one of the assets still escrowed there.
+
+That's how a capped reward stays craftable. Blend 42787
+(`underpunks55`, *Volna-57 Geiger Counter*) pays out template 893664,
+whose supply is 16/16 already minted — no on-demand mint could ever
+produce another one, so all 16 went into the `volna` pool instead.
+
+Because the contract picks *which* escrowed asset you get, the exact
+`asset_id` only exists once the claim row is staged. Pool blends
+therefore run the same two-step `fuse` → `claim` flow as random blends,
+even when the odds leave nothing to chance. Crucible reads the
+`pools` / `poolassets` tables and shows what that actually means:
+
+```
+GUARANTEED · DRAWN FROM A POOL          <- odds are 1/1, not a lottery
+Name:       Volna-57
+Source:     pool volna (pool_id 3665) · roll #0
+Template:   893664  Volna-57
+Pool stock: 9 left (of 16 ever added)
+
+✓ every asset in this pool is template 893664, so the reward NFT is
+  certain - only its serial number is drawn
+```
+
+A pool holding several templates says so instead, and an empty pool is
+called out before you deposit anything.
 
 #### Manage panel · collection authors
 
@@ -399,7 +435,7 @@ they're looking at and invites them to sign in.
 
 ## --- Verify everything ---
 
-This is the strongest argument against trusting me. Four standalone
+This is the strongest argument against trusting me. Standalone
 Node scripts reconstruct real historical transactions from the chain
 and prove the action payloads our code generates match what was
 actually signed, **byte for byte**.
@@ -417,6 +453,18 @@ $ node scripts/verify-trace.mjs
    ✓ blend.nefty::announcedepo
    ✓ atomicassets::transfer
    ✓ blend.nefty::nosecfuse
+```
+
+```bash
+$ node scripts/verify-pool-blend.mjs
+=== blend 42787 "Volna-57 Geiger Counter" ===
+   ✓ blend declares a POOL_NFT_RESULT  pool="volna"
+   ✓ odds are certain (1 outcome at full total_odds per roll)
+   ✓ pools.count matches the escrowed asset_ids  9 == 9
+   ✓ pool hands out a single template  [893664]
+   ✓ result template is capped and fully minted (hence the pool)
+   ✓ blend.nefty::announcedepo / atomicassets::transfer
+     / blend.nefty::fuse  serialise against the live ABIs
 ```
 
 ```bash
@@ -550,6 +598,8 @@ src/
   nefty/
     abi.ts             : verifies blend.nefty ABI shape at startup
     blend.ts           : reads a blend's recipe, isDeterministic
+    pools.ts           : reads blend.nefty pools + escrowed asset_ids
+                         (POOL_NFT_RESULT rewards)
     discover.ts        : lists blends per collection (indexer + on-chain)
     whitelist.ts       : checks secure.nefty whitelists
     admin.ts           : author actions - blend settings + secure.nefty
