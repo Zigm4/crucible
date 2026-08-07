@@ -32,11 +32,21 @@
  */
 
 /**
- * Tried in order, first success wins. All four resolved and are run by
- * parties independent of NeftyBlocks/WaxDAO, so one operator going
- * dark degrades to the next instead of losing artwork everywhere.
+ * Raced, not tried in strict order (see loadHedged). WAX-ecosystem
+ * gateways come first on purpose: they are run by WAX block producers
+ * who pin WAX NFT media, so they hold this content when a generic
+ * public gateway has never heard of it. Measured against real
+ * underpunks55 hashes, `ipfs.eosdac.io` and `ipfs.alienworlds.io` both
+ * returned 512x512 images in ~1-1.3s, ahead of ipfs.io at ~1.7s.
+ *
+ * The generic gateways stay as a backstop for collections whose media
+ * is pinned outside the WAX world.
+ *
+ * Emptying this list disables artwork everywhere, with no other change.
  */
 export const IPFS_GATEWAYS = [
+  'https://ipfs.eosdac.io/ipfs/',
+  'https://ipfs.alienworlds.io/ipfs/',
   'https://ipfs.io/ipfs/',
   'https://dweb.link/ipfs/',
   'https://w3s.link/ipfs/',
@@ -65,14 +75,8 @@ export function pickImageRef(
   return undefined;
 }
 
-/**
- * Turns an artwork reference into a list of candidate URLs.
- *
- * A full URL is used as-is (single candidate, no gateway involved). A
- * bare hash - or an `ipfs://` URI - is expanded across every gateway.
- * Returns [] for anything unusable so callers can skip rendering.
- */
-export function mediaCandidates(ref: string | undefined): string[] {
+/** Expands ONE reference into its candidate URLs. */
+function candidatesForRef(ref: string | undefined): string[] {
   if (!ref) return [];
   const v = ref.trim();
   if (!v) return [];
@@ -82,6 +86,35 @@ export function mediaCandidates(ref: string | undefined): string[] {
   // else is author junk we should not turn into a network request.
   if (!/^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{20,})$/.test(hash)) return [];
   return IPFS_GATEWAYS.map((g) => g + hash);
+}
+
+/**
+ * Turns one or more artwork references into a flat candidate list.
+ *
+ * Passing several references is how a caller says "prefer the result
+ * template's art, but the recipe carries its own picture too" - which
+ * matters because authors do not fill both. On underpunks55, 11 of the
+ * 102 blends have no image on their result template while the blend row
+ * itself has one; without the second reference those render blank for
+ * no good reason.
+ *
+ * References are expanded in order, so every gateway for the preferred
+ * reference is tried before the fallback's. Duplicates are dropped.
+ */
+export function mediaCandidates(
+  ref: string | undefined | (string | undefined)[],
+): string[] {
+  const refs = Array.isArray(ref) ? ref : [ref];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const r of refs) {
+    for (const url of candidatesForRef(r)) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push(url);
+    }
+  }
+  return out;
 }
 
 /**
@@ -95,7 +128,8 @@ export function mediaCandidates(ref: string | undefined): string[] {
  * that pass - so a caller that forgets to attach simply shows nothing.
  */
 export function renderMediaThumb(args: {
-  ref: string | undefined;
+  /** One reference, or several in priority order. */
+  ref: string | undefined | (string | undefined)[];
   alt: string;
   /** Extra class for size variants, e.g. 'media-thumb-sm'. */
   className?: string;
@@ -114,14 +148,25 @@ export function renderMediaThumb(args: {
 }
 
 /**
- * How long to give one gateway before moving on. A dead gateway does
- * not necessarily fail fast: an unreachable IPFS node commonly leaves
- * the request hanging forever, and `onerror` never fires. Without this
- * deadline the first stalled gateway would pin an empty frame on the
- * page for the rest of the session, which is exactly the kind of
- * breakage artwork must never cause.
+ * Racing strategy.
+ *
+ * The naive design - try gateway 1, wait for it to fail, try gateway 2 -
+ * is what makes artwork look "mostly missing" even when the content is
+ * perfectly available: a dead IPFS gateway usually does not fail, it
+ * HANGS, so `onerror` never fires and each miss costs the full timeout.
+ * Four gateways then means a 24-second worst case, far past the point
+ * where anyone is still looking at the card.
+ *
+ * So we hedge instead. Gateway 1 starts immediately; if it has not
+ * answered within HEDGE_MS, gateway 2 starts *alongside* it rather than
+ * replacing it, and so on. The first response that decodes to a real
+ * image wins and the rest are abandoned. A healthy gateway therefore
+ * still costs exactly one request, while a stalled one costs a second
+ * of delay instead of the whole budget.
  */
-const GATEWAY_TIMEOUT_MS = 6_000;
+const HEDGE_MS = 1_200;
+/** Total budget for one thumbnail before it gives up and removes itself. */
+const OVERALL_TIMEOUT_MS = 12_000;
 
 /**
  * Starts loading every thumbnail in `root` and wires the gateway
@@ -150,44 +195,15 @@ export function attachMediaFallbacks(root: HTMLElement): void {
       return;
     }
 
-    let i = -1;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let settled = false;
-
-    const give_up = () => {
-      settled = true;
-      if (timer) clearTimeout(timer);
-      // Cancel the in-flight request so a stalled gateway stops holding
-      // a connection open after we have stopped caring about it.
-      img.removeAttribute('src');
-      img.closest('figure')?.remove();
-    };
-
-    const tryNext = () => {
-      if (settled) return;
-      if (timer) clearTimeout(timer);
-      i += 1;
-      if (i >= candidates.length) {
-        give_up();
-        return;
-      }
-      img.dataset.mediaI = String(i);
-      timer = setTimeout(tryNext, GATEWAY_TIMEOUT_MS);
-      img.src = candidates[i];
-    };
-
-    img.addEventListener('error', tryNext);
-    img.addEventListener('load', () => {
-      if (settled) return;
-      // A gateway that answers with an HTML error page decodes to a
-      // 0x0 image; treat that as a failure rather than showing a gap.
-      if (img.naturalWidth === 0) {
-        tryNext();
-        return;
-      }
-      settled = true;
-      if (timer) clearTimeout(timer);
-      img.classList.add('is-loaded');
+    const start = () => loadHedged(candidates, {
+      onWin: (url) => {
+        // The winning URL is already in the HTTP cache, so pointing the
+        // visible <img> at it paints immediately.
+        img.src = url;
+        img.classList.add('is-loaded');
+      },
+      onFail: () => { img.closest('figure')?.remove(); },
+      onAttempt: (n) => { img.dataset.mediaI = String(n); },
     });
 
     // Defer the first request until the thumbnail is worth fetching.
@@ -199,14 +215,83 @@ export function attachMediaFallbacks(root: HTMLElement): void {
           for (const entry of entries) {
             if (!entry.isIntersecting) continue;
             io.disconnect();
-            tryNext();
+            start();
           }
         },
         { rootMargin: '400px' },
       );
       io.observe(img);
     } else {
-      tryNext();
+      start();
     }
   });
+}
+
+/**
+ * Races `candidates` with hedged starts and resolves with the first URL
+ * that decodes to a non-empty image.
+ *
+ * Probes are detached `Image` objects, never the element on screen, so
+ * a losing gateway can never paint over a winner. A gateway answering
+ * with an HTML error page decodes to 0x0 and counts as a failure.
+ */
+function loadHedged(
+  candidates: string[],
+  cb: { onWin: (url: string) => void; onFail: () => void; onAttempt?: (n: number) => void },
+): void {
+  let settled = false;
+  let started = 0;
+  let failed = 0;
+  const timers: ReturnType<typeof setTimeout>[] = [];
+
+  const stop = () => {
+    settled = true;
+    for (const t of timers) clearTimeout(t);
+  };
+
+  const overall = setTimeout(() => {
+    if (settled) return;
+    stop();
+    cb.onFail();
+  }, OVERALL_TIMEOUT_MS);
+  timers.push(overall);
+
+  const startOne = (i: number) => {
+    if (settled || i >= candidates.length) return;
+    started = Math.max(started, i + 1);
+    cb.onAttempt?.(i);
+
+    const probe = new Image();
+    probe.decoding = 'async';
+    probe.referrerPolicy = 'no-referrer';
+    const fail = () => {
+      if (settled) return;
+      failed += 1;
+      // Every candidate answered and none worked: stop early rather
+      // than sitting out the remaining budget.
+      if (failed >= candidates.length) {
+        stop();
+        cb.onFail();
+        return;
+      }
+      // A fast failure should immediately promote the next candidate
+      // instead of waiting for its hedge timer.
+      if (started < candidates.length) startOne(started);
+    };
+    probe.onerror = fail;
+    probe.onload = () => {
+      if (settled) return;
+      if (probe.naturalWidth === 0) { fail(); return; }
+      stop();
+      cb.onWin(candidates[i]);
+    };
+    probe.src = candidates[i];
+
+    // Hedge: bring the next gateway in if this one is still silent.
+    if (i + 1 < candidates.length) {
+      timers.push(setTimeout(() => { if (!settled) startOne(i + 1); }, HEDGE_MS));
+    }
+  };
+
+  startOne(0);
 }

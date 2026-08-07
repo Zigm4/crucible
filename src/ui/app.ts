@@ -3951,8 +3951,12 @@ function renderExpectedMint(): string {
   // Artwork sits beside the facts, not above them: the numbers are what
   // you check before signing. It collapses away entirely when the
   // template has no image or every gateway fails.
+  //
+  // Two references, in order: the result template's own art, then the
+  // blend row's display_data. Authors fill one or the other - 11 of
+  // underpunks55's 102 blends have art only on the blend row.
   const art = renderMediaThumb({
-    ref: t?.image,
+    ref: [t?.image, parsePoolDisplayData(b.display_data).image],
     alt: t?.name ? `${t.name} artwork` : 'result artwork',
   });
 

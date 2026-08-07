@@ -124,8 +124,21 @@ Worth knowing: the obvious gateways are already dead.
 `ipfs.atomichub.io`, `atomichub-ipfs.com` and `cloudflare-ipfs.com`
 have no DNS records at all, and `ipfs.neftyblocks.io` now serves a
 domain-parking page. The same decay that took the websites took their
-gateways, which is why the list is tried in order and the card drops
-the image entirely rather than trusting any single host.
+gateways.
+
+What replaced them matters for coverage: **WAX block-producer gateways
+hold WAX NFT media that generic public gateways have never seen**.
+`ipfs.eosdac.io` and `ipfs.alienworlds.io` are tried first for exactly
+that reason, with `ipfs.io` / `dweb.link` / `w3s.link` /
+`gateway.pinata.cloud` behind them for collections pinned outside the
+WAX world.
+
+Gateways are also **raced, not queued**. A dead IPFS gateway usually
+does not fail, it hangs — so a strict try-then-timeout chain spends the
+whole budget on the first stalled host and the artwork looks missing
+even when it is perfectly available. Each gateway instead gets a 1.2s
+head start before the next joins in parallel, and the first response
+that decodes wins.
 
 ---
 
