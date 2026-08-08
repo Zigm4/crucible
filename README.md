@@ -224,6 +224,50 @@ Pool stock: 9 left (of 16 ever added)
 A pool holding several templates says so instead, and an empty pool is
 called out before you deposit anything.
 
+#### Create a blend · collection authors
+
+`blend.nefty::createblend` is the author-side counterpart to running a
+recipe, and the BLEND tab exposes it behind the same opt-in switch the
+drop creator uses. Ingredients and outcomes are entered as one-per-line
+text, because a blend is a three-level tree (ingredients / weighted
+outcomes / results) and a recipe you can read, paste and diff beats a
+nest of widgets:
+
+```
+INGREDIENTS                       OUTCOMES
+template 877088 x5                907173 @50
+template 877088 x2 -> vault.wam   907173+906880 @30
+template alien.worlds:741859 x1   nothing @20
+schema up.tools x3
+collection x2
+token 10.0000 TLM -> payout.wam
+```
+
+The panel parses as you type and previews what the recipe will actually
+do — how many ingredients are burned versus transferred away, the token
+cost, and the draw normalised to percentages — before the wallet opens.
+
+Three things the builder handles that are easy to get wrong, each found
+by diffing against real on-chain creations:
+
+- **NFTs are not always burned.** 18 of the 362 NFT ingredients across
+  the 250 most recent real creations are *transferred* to a vault
+  instead. Assuming "burn" silently destroys NFTs an author meant to
+  keep, so `-> account` is explicit and the preview says which is which.
+- **Ingredients can come from another collection.** `streamingart`
+  recipes mix their own templates with an `alien.worlds` one. Defaulting
+  every ingredient to the blend's collection builds the wrong recipe.
+- **An outcome may mint nothing.** A blank branch is how authors build
+  "you got unlucky"; `waxlandianft`'s 51-outcome blend opens with one at
+  20%. Write it as `nothing @20`.
+
+`total_odds` is always derived from the weights rather than taken from
+the form: the contract does not normalise it, so a hand-entered total
+that disagrees with the outcomes silently skews the draw.
+
+Attribute ingredients are supported by the builder but not offered by
+the form yet (4 of 362 real ingredients use them).
+
 #### Manage panel · collection authors
 
 When the connected wallet is authorized on a blend's collection, the
@@ -754,6 +798,8 @@ src/
     rngWait.ts         : polls claimassets between fuse and claim
     drops.ts           : lists drops per collection + 4 auth flavours
     dropExecute.ts     : claim tx (assertprice + transfer + claim*)
+    createBlend.ts     : author action - build a createblend tx
+                         (+ the form's ingredient/outcome parsers)
     createDrop.ts      : author action - build a createdrop tx
     dropAdmin.ts       : author actions - drop whitelist + settings + reads
     packs.ts           : lists atomicpacksx pack designs, pairs with wallet
@@ -795,6 +841,8 @@ scripts/
   verify-upgrades.mjs          : byte-for-byte for upgrade traces
   verify-waxdao.mjs            : byte-for-byte for waxdaomarket blends
   verify-blenderizer.mjs       : byte-for-byte for blenderizerx blends
+  verify-createblend.mjs       : byte-for-byte for createblend, 5
+                                 collections + the form's text parsers
   verify-pool-blend.mjs        : POOL_NFT blend path against chain state
   verify-discover-chain.mjs    : on-chain discovery sanity check
 public/

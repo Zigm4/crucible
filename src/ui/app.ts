@@ -78,6 +78,15 @@ import {
 } from '../waxdao/blends';
 import { buildWaxdaoBlendActions, executeWaxdaoBlend } from '../waxdao/blendExecute';
 import {
+  buildCreateBlendAction,
+  executeCreateBlend,
+  parseIngredientLines,
+  parseOutcomeLines,
+  describeOdds,
+  validateNewBlend,
+  type CreateBlendArgs,
+} from '../nefty/createBlend';
+import {
   listBlenderizerBlends,
   loadBlenderizerBlendById,
   readBlenderizerRam,
@@ -143,6 +152,7 @@ import {
 } from '../nefty/tokens';
 import {
   listBlends,
+  clearDiscoverCache,
   SUPPORTED_COLLECTIONS,
   type DiscoveredBlend,
   type DiscoveredStatus,
@@ -434,6 +444,7 @@ interface AppState {
   manage: ManageState;
   /** Collection-author "create a drop" panel (CLAIM/drops tab). */
   createDrop: CreateDropState;
+  createBlend: CreateBlendState;
   /** Collection-author "manage a drop" panel (whitelist + settings). */
   manageDrop: DropManageState;
 }
@@ -465,6 +476,46 @@ interface DropManageState {
   whitelist?: string[];
   /** Inline form input for adding whitelist accounts. */
   addAccountsInput: string;
+}
+
+/**
+ * Inline "create a blend" form (BLEND tab, collection authors).
+ *
+ * Ingredients and outcomes are collected as one-per-line text rather
+ * than a widget tree: a blend is a three-level structure (ingredients /
+ * weighted outcomes / results) and a form that nests that deeply is
+ * worse to use than a recipe you can read, paste and diff. Same choice
+ * the drop creator makes for its templates field.
+ */
+interface CreateBlendState {
+  /** Opt-in safety switch, like the drop creator. */
+  enabled: boolean;
+  collection: string;
+  authChecked?: string;
+  authorized?: boolean;
+  authChecking: boolean;
+  busy: boolean;
+  /** display_data fields. */
+  name: string;
+  description: string;
+  image: string;
+  category: string;
+  /** One ingredient per line (see parseIngredientLines). */
+  ingredientsInput: string;
+  /** One outcome per line (see parseOutcomeLines). */
+  outcomesInput: string;
+  /** datetime-local strings; empty = now / never. */
+  startTime: string;
+  endTime: string;
+  /** '' or '0' = unlimited. */
+  maxUses: string;
+  accountLimit: string;
+  cooldown: string;
+  /** secure.nefty whitelist id; '' or '0' = open. */
+  securityId: string;
+  hidden: boolean;
+  lastDryRun?: unknown;
+  lastTrxId?: string;
 }
 
 interface CreateDropState {
@@ -755,6 +806,25 @@ const state: AppState = {
     newMaxInput: '',
     newLimitInput: '',
     newCooldownInput: '',
+  },
+  createBlend: {
+    enabled: false,
+    collection: '',
+    authChecking: false,
+    busy: false,
+    name: '',
+    description: '',
+    image: '',
+    category: '',
+    ingredientsInput: '',
+    outcomesInput: '',
+    startTime: '',
+    endTime: '',
+    maxUses: '',
+    accountLimit: '',
+    cooldown: '',
+    securityId: '',
+    hidden: false,
   },
   createDrop: {
     enabled: false,
@@ -5579,7 +5649,9 @@ function renderPacksView(): string {
 }
 
 function renderBlendsView(): string {
-  return renderPickBlend() + renderBlendInfo() + renderSlots() + renderActions();
+  // The author panel sits at the bottom, behind its own opt-in, so the
+  // blending flow above is untouched for the 99% who are not authors.
+  return renderPickBlend() + renderBlendInfo() + renderSlots() + renderActions() + renderBlendCreate();
 }
 
 function renderDropsView(): string {
@@ -5713,6 +5785,301 @@ function renderDropManage(): string {
       ${picker}
       ${loader}
       ${body}
+    </div>`;
+}
+
+
+// ─── create-blend panel (collection authors, BLEND tab) ───────────────── //
+
+function onToggleCreateBlendEnabled(checked: boolean) {
+  const c = state.createBlend;
+  c.enabled = checked;
+  if (checked && !c.collection) {
+    // Default to whatever collection the author is already looking at.
+    c.collection = state.blend?.collection_name || state.discoveryCollection || '';
+  }
+  render();
+  if (checked && c.collection) void refreshCreateBlendAuth();
+}
+
+/** Same authorized_accounts check the Manage panel and drop creator use. */
+async function refreshCreateBlendAuth() {
+  const c = state.createBlend;
+  const collection = c.collection.trim();
+  const session = getCurrentSession();
+  const actor = session ? String(session.actor) : '';
+  if (!collection || !actor) {
+    c.authChecked = collection;
+    c.authorized = false;
+    render();
+    return;
+  }
+  if (c.authChecked === collection && c.authorized !== undefined && !c.authChecking) return;
+  c.authChecking = true;
+  render();
+  try {
+    c.authorized = await canManageCollection(actor, collection);
+  } catch {
+    c.authorized = false;
+  } finally {
+    c.authChecked = collection;
+    c.authChecking = false;
+    render();
+  }
+}
+
+/**
+ * Folds the form into the builder's argument shape. Returns the parse
+ * and validation problems alongside, so the caller can block on them
+ * and the panel can show them live as the author types.
+ */
+function readCreateBlendForm(): { args: CreateBlendArgs; problems: string[] } {
+  const c = state.createBlend;
+  const session = getCurrentSession();
+  const collection = c.collection.trim();
+
+  const ing = parseIngredientLines(c.ingredientsInput, collection);
+  const out = parseOutcomeLines(c.outcomesInput);
+
+  const display: Record<string, string> = {};
+  if (c.name.trim()) display.name = c.name.trim();
+  if (c.description.trim()) display.description = c.description.trim();
+  if (c.image.trim()) display.image = c.image.trim();
+
+  const args: CreateBlendArgs = {
+    authorized_account: session ? String(session.actor) : '',
+    collection_name: collection,
+    ingredients: ing.items,
+    rolls: [{ outcomes: out.items }],
+    start_time: datetimeLocalToUnix(c.startTime),
+    end_time: datetimeLocalToUnix(c.endTime),
+    max_uses: Number(c.maxUses) || 0,
+    display_data: Object.keys(display).length ? JSON.stringify(display) : '',
+    security_id: c.securityId.trim() || 0,
+    is_hidden: c.hidden,
+    category: c.category.trim(),
+    account_limit: Number(c.accountLimit) || 0,
+    account_limit_cooldown: Number(c.cooldown) || 0,
+  };
+
+  return {
+    args,
+    problems: [...ing.errors, ...out.errors, ...validateNewBlend(args)],
+  };
+}
+
+async function onCreateBlendDryRun() {
+  const { args, problems } = readCreateBlendForm();
+  if (problems.length) { setStatus(problems[0], 'err'); render(); return; }
+  try {
+    setStatus('Simulating createblend (local ABI serialisation)…', 'info');
+    const action = buildCreateBlendAction(args);
+    const out = await dryRunActions([action]);
+    state.createBlend.lastDryRun = { action, abi_serialization: out };
+    const ok = out.every((r) => !r.error);
+    setStatus(ok ? 'Simulation OK, the action serialises cleanly.' : 'Simulation failed.', ok ? 'ok' : 'err');
+  } catch (err) {
+    setStatus((err as Error).message, 'err');
+  }
+  render();
+}
+
+async function onCreateBlendSubmit() {
+  const c = state.createBlend;
+  const session = getCurrentSession();
+  if (!session) { setStatus('Connect a wallet first.', 'err'); return; }
+  const { args, problems } = readCreateBlendForm();
+  if (problems.length) { setStatus(problems[0], 'err'); render(); return; }
+  if (!(c.authChecked === args.collection_name && c.authorized)) {
+    setStatus('That account is not authorized for this collection (the contract would reject it).', 'err');
+    return;
+  }
+
+  // Consequential and effectively irreversible once people start using
+  // it, so spell out what is being registered before the wallet opens.
+  const burned = args.ingredients.filter((i) => i.kind !== 'ft' && !i.transfer_to).length;
+  const moved = args.ingredients.filter((i) => i.kind !== 'ft' && i.transfer_to).length;
+  const odds = describeOdds(args.rolls[0]?.outcomes ?? []);
+  if (!confirm(
+    `Create this blend on ${args.collection_name}?\n\n` +
+    `${args.ingredients.length} ingredient(s): ${burned} burned` +
+    `${moved ? `, ${moved} transferred away` : ''}\n` +
+    `Outcomes:\n${odds.map((o) => '  ' + o).join('\n')}\n\n` +
+    `${args.max_uses ? `Max ${args.max_uses} use(s).` : 'Unlimited uses.'}` +
+    `${args.security_id && String(args.security_id) !== '0' ? ` Whitelist ${args.security_id}.` : ''}\n\n` +
+    `Anyone can run it as soon as it exists, and the NFTs it consumes are gone.`,
+  )) return;
+
+  c.busy = true;
+  render();
+  try {
+    setStatus('Awaiting wallet signature for createblend…', 'info');
+    const result = await executeCreateBlend(session, args);
+    const trxId =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    c.lastTrxId = trxId;
+    setStatus(`Blend created: ${trxId}`, 'ok', trxId);
+    // The new blend is not in any cached list yet.
+    clearDiscoverCache();
+  } catch (err) {
+    setStatus(`Create blend failed: ${(err as Error).message}`, 'err');
+  } finally {
+    c.busy = false;
+    render();
+  }
+}
+
+
+/**
+ * Inline "create a blend" form. Renders nothing until the author opts in
+ * AND the connected wallet is authorized on the collection. The chain is
+ * the real guard - blend.nefty verifies authorized_account - this is
+ * just so the button is not a trap.
+ */
+function renderBlendCreate(): string {
+  const c = state.createBlend;
+  const session = getCurrentSession();
+  const actor = session ? String(session.actor) : '';
+
+  if (!c.enabled) {
+    return `
+      <div class="manage-section create-section" style="margin-top:18px">
+        <div class="manage-head">
+          <span class="manage-title create-title">✦ CREATE A BLEND · blend.nefty</span>
+          <label class="inline-toggle">
+            <input id="createBlendEnable" type="checkbox" data-action="toggleCreateBlendEnable" />
+            <span>enable blend creation</span>
+          </label>
+        </div>
+        <p class="term" style="margin-top:6px">Register a new recipe on a collection you manage: what gets consumed, and what it mints.</p>
+      </div>`;
+  }
+
+  const collection = c.collection.trim();
+  const authLine = !actor
+    ? '<p class="status-line warn">Connect a wallet to create a blend.</p>'
+    : c.authChecking
+      ? '<p class="status-line">Checking whether you can manage this collection…</p>'
+      : c.authChecked === collection && c.authorized
+        ? `<p class="status-line ok">${escapeHtml(actor)} is authorized on ${escapeHtml(collection)}.</p>`
+        : collection
+          ? `<p class="status-line err">${escapeHtml(actor)} is not an authorized account of ${escapeHtml(collection)} — the contract would reject this.</p>`
+          : '';
+
+  // Live feedback: parse as the author types so mistakes surface before
+  // the wallet opens, not after.
+  const { args, problems } = readCreateBlendForm();
+  const odds = describeOdds(args.rolls[0]?.outcomes ?? []);
+  const burned = args.ingredients.filter((i) => i.kind !== 'ft' && !i.transfer_to);
+  const moved = args.ingredients.filter((i) => i.kind !== 'ft' && i.transfer_to);
+  const tokens = args.ingredients.filter((i) => i.kind === 'ft');
+
+  const preview = args.ingredients.length || odds.length
+    ? `
+      <h3 style="margin-top:12px">Preview</h3>
+      <ul class="mint-info">
+        ${burned.length ? `<li><strong>Burned:</strong> ${burned.length} ingredient(s) — destroyed for good</li>` : ''}
+        ${moved.length ? `<li><strong>Transferred:</strong> ${moved.length} ingredient(s) sent to ${escapeHtml([...new Set(moved.map((i) => (i as { transfer_to?: string }).transfer_to ?? ''))].join(', '))}</li>` : ''}
+        ${tokens.length ? `<li><strong>Token cost:</strong> ${tokens.map((t) => escapeHtml((t as { quantity: string }).quantity)).join(' + ')}</li>` : ''}
+        ${odds.length ? `<li><strong>Draw:</strong><ul>${odds.map((o) => `<li>${escapeHtml(o)}</li>`).join('')}</ul></li>` : ''}
+      </ul>`
+    : '';
+
+  const problemList = problems.length
+    ? `<div class="risk-box"><div class="risk-why">⚠ Fix before signing</div><ul class="mint-info">${problems.map((p) => `<li>${escapeHtml(p)}</li>`).join('')}</ul></div>`
+    : '';
+
+  const ready = problems.length === 0 && !!actor && c.authChecked === collection && c.authorized && !c.busy;
+  const disabled = ready ? '' : 'disabled';
+
+  return `
+    <div class="manage-section create-section" style="margin-top:18px">
+      <div class="manage-head">
+        <span class="manage-title create-title">✦ CREATE A BLEND · blend.nefty</span>
+        <label class="inline-toggle">
+          <input id="createBlendEnable" type="checkbox" data-action="toggleCreateBlendEnable" checked />
+          <span>blend creation enabled</span>
+        </label>
+      </div>
+
+      <div class="manage-row">
+        <span class="manage-label">collection</span>
+        <div class="manage-ctl"><input id="cbCollection" type="text" value="${escapeHtml(c.collection)}" placeholder="e.g. underpunks55" autocomplete="off" /></div>
+      </div>
+      ${authLine}
+
+      <div class="manage-row">
+        <span class="manage-label">name</span>
+        <div class="manage-ctl"><input id="cbName" type="text" value="${escapeHtml(c.name)}" placeholder="shown in the picker" autocomplete="off" /></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">image</span>
+        <div class="manage-ctl"><input id="cbImage" type="text" value="${escapeHtml(c.image)}" placeholder="IPFS hash (Qm… / baf…)" autocomplete="off" /></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">description</span>
+        <div class="manage-ctl"><input id="cbDescription" type="text" value="${escapeHtml(c.description)}" autocomplete="off" /></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">category</span>
+        <div class="manage-ctl"><input id="cbCategory" type="text" value="${escapeHtml(c.category)}" placeholder="optional grouping label" autocomplete="off" /></div>
+      </div>
+
+      ${riskBox(
+        'These NFTs are consumed every time someone blends. "-> account" sends them there instead of burning them; without it they are destroyed permanently.',
+        `<label>Ingredients — one per line</label>
+         <textarea id="cbIngredients" rows="5" spellcheck="false" placeholder="template 877088 x5
+template 877088 x5 -> vault.wam
+template othercoll:741859 x1
+schema up.tools x3
+collection x2
+token 10.0000 TLM -> payout.wam">${escapeHtml(c.ingredientsInput)}</textarea>`,
+      )}
+
+      ${riskBox(
+        'Weights are relative and the draw is final. One line = a guaranteed result; several lines = a lottery. "nothing" is a blank branch that mints nothing at all.',
+        `<label>Outcomes — one per line</label>
+         <textarea id="cbOutcomes" rows="4" spellcheck="false" placeholder="907173
+907173 @50
+907173+906880 @3
+nothing @20">${escapeHtml(c.outcomesInput)}</textarea>`,
+      )}
+
+      <div class="manage-row">
+        <span class="manage-label">starts</span>
+        <div class="manage-ctl"><input id="cbStart" type="datetime-local" value="${escapeHtml(c.startTime)}" /> <span class="term">empty = immediately</span></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">ends</span>
+        <div class="manage-ctl"><input id="cbEnd" type="datetime-local" value="${escapeHtml(c.endTime)}" /> <span class="term">empty = never</span></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">max uses</span>
+        <div class="manage-ctl"><input id="cbMaxUses" type="number" min="0" value="${escapeHtml(c.maxUses)}" placeholder="0" /> <span class="term">0 = unlimited</span></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">per account</span>
+        <div class="manage-ctl"><input id="cbAccountLimit" type="number" min="0" value="${escapeHtml(c.accountLimit)}" placeholder="0" /> <span class="term">0 = unlimited · cooldown</span> <input id="cbCooldown" type="number" min="0" value="${escapeHtml(c.cooldown)}" placeholder="0" style="max-width:120px" /> <span class="term">seconds</span></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">whitelist</span>
+        <div class="manage-ctl"><input id="cbSecurityId" type="text" value="${escapeHtml(c.securityId)}" placeholder="0" autocomplete="off" /> <span class="term">secure.nefty id · 0 = open to everyone</span></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">hidden</span>
+        <div class="manage-ctl"><label class="inline-toggle"><input id="cbHidden" type="checkbox" ${c.hidden ? 'checked' : ''} /> <span>create it hidden</span></label></div>
+      </div>
+
+      ${preview}
+      ${problemList}
+
+      <div class="row" style="margin-top:12px">
+        <button data-action="createBlendDryRun" ${problems.length ? 'disabled' : ''}>Simulate (no signature)</button>
+        <button class="create-btn" data-action="createBlendSubmit" ${disabled}>${c.busy ? 'Creating…' : 'Create blend'}</button>
+      </div>
+      ${c.lastDryRun ? `<h3>Dry-run output</h3><pre>${escapeHtml(JSON.stringify(c.lastDryRun, null, 2))}</pre>` : ''}
+      ${c.lastTrxId ? `<p class="status-line ok">Created: <a target="_blank" href="https://waxblock.io/transaction/${escapeHtml(c.lastTrxId)}">${escapeHtml(c.lastTrxId)}</a></p>` : ''}
     </div>`;
 }
 
@@ -7773,6 +8140,45 @@ function attachHandlers() {
   if (toggleWaxdaoInactive) {
     toggleWaxdaoInactive.addEventListener('change', () => onToggleWaxdaoShowInactive(toggleWaxdaoInactive.checked));
   }
+  // CREATE A BLEND panel inputs.
+  const cbEnable = document.getElementById('createBlendEnable') as HTMLInputElement | null;
+  if (cbEnable) {
+    cbEnable.addEventListener('change', () => onToggleCreateBlendEnabled(cbEnable.checked));
+  }
+  const bindCb = (id: string, set: (v: string) => void, opts: { commit?: boolean } = {}) => {
+    const el = document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;
+    if (!el) return;
+    el.addEventListener('input', (e) => {
+      set((e.target as HTMLInputElement).value);
+      // The panel shows live parse feedback, so it has to re-render as
+      // the author types. Focus and caret survive via the render snapshot.
+      render();
+    });
+    if (opts.commit) {
+      // Collection changes trigger the authorization lookup on blur/Enter
+      // rather than per keystroke.
+      el.addEventListener('change', () => { void refreshCreateBlendAuth(); });
+      el.addEventListener('keydown', (e) => {
+        if ((e as KeyboardEvent).key === 'Enter') void refreshCreateBlendAuth();
+      });
+    }
+  };
+  bindCb('cbCollection', (v) => { state.createBlend.collection = v.trim().toLowerCase(); }, { commit: true });
+  bindCb('cbName', (v) => { state.createBlend.name = v; });
+  bindCb('cbImage', (v) => { state.createBlend.image = v; });
+  bindCb('cbDescription', (v) => { state.createBlend.description = v; });
+  bindCb('cbCategory', (v) => { state.createBlend.category = v; });
+  bindCb('cbIngredients', (v) => { state.createBlend.ingredientsInput = v; });
+  bindCb('cbOutcomes', (v) => { state.createBlend.outcomesInput = v; });
+  bindCb('cbStart', (v) => { state.createBlend.startTime = v; });
+  bindCb('cbEnd', (v) => { state.createBlend.endTime = v; });
+  bindCb('cbMaxUses', (v) => { state.createBlend.maxUses = v; });
+  bindCb('cbAccountLimit', (v) => { state.createBlend.accountLimit = v; });
+  bindCb('cbCooldown', (v) => { state.createBlend.cooldown = v; });
+  bindCb('cbSecurityId', (v) => { state.createBlend.securityId = v; });
+  const cbHidden = document.getElementById('cbHidden') as HTMLInputElement | null;
+  if (cbHidden) cbHidden.addEventListener('change', () => { state.createBlend.hidden = cbHidden.checked; render(); });
+
   // BLENDERIZER tab inputs.
   const blenderizerIdInput = document.getElementById('blenderizerBlendIdInput') as HTMLInputElement | null;
   if (blenderizerIdInput) {
@@ -7871,6 +8277,7 @@ function attachHandlers() {
       action === 'toggleBlenderizerInactive' ||
       action === 'toggleManageEnable' ||
       action === 'toggleCreateEnable' ||
+      action === 'toggleCreateBlendEnable' ||
       action === 'toggleCreateFree' ||
       action === 'toggleCreateUnlimited' ||
       action === 'toggleCreateAuthReq' ||
@@ -8096,6 +8503,12 @@ function attachHandlers() {
           break;
         case 'manageDelete':
           onManageDelete();
+          break;
+        case 'createBlendDryRun':
+          void onCreateBlendDryRun();
+          break;
+        case 'createBlendSubmit':
+          void onCreateBlendSubmit();
           break;
         case 'createDropSubmit':
           void onCreateDrop();

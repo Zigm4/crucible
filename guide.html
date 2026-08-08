@@ -240,6 +240,26 @@
         <p>If your connected wallet is an <strong>authorized account</strong> of a collection,
           Crucible reveals inline management controls (each behind a safety toggle). The contracts
           always allowed this - only the website was missing.</p>
+        <h3>Create a blend (BLEND tab)</h3>
+        <p>Register a new recipe on a collection you manage. Ingredients and outcomes are
+          typed one per line, so a recipe is something you can read, paste and adjust:</p>
+        <ul>
+          <li><code>template 877088 x5</code> — burn 5 NFTs of that template</li>
+          <li><code>template 877088 x5 -&gt; vault.wam</code> — send them there instead of burning</li>
+          <li><code>template othercoll:741859 x1</code> — an NFT from another collection</li>
+          <li><code>schema up.tools x3</code> / <code>collection x2</code> — looser requirements</li>
+          <li><code>token 10.0000 TLM -&gt; payout.wam</code> — a token cost and who receives it</li>
+        </ul>
+        <p>Outcomes take a weight: one line is a guaranteed result, several lines make a
+          lottery (<code>907173 @50</code>), and <code>nothing @20</code> is a blank branch that
+          mints nothing. Weights are relative — the page normalises them to percentages and
+          shows the draw before you sign.</p>
+        <div class="note">
+          The preview spells out how many ingredients are <strong>burned</strong> versus
+          <strong>transferred away</strong>. Burning is permanent, and once the blend exists
+          anyone can run it — so read that line before signing.
+        </div>
+
         <h3>Manage blends &amp; whitelists (BLEND tab)</h3>
         <p>Rename, hide, set the time window, change limits, delete, and manage reusable named
           whitelists (<code>secure.nefty</code>): create one, fill it with wallets, and attach it to
