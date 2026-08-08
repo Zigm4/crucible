@@ -261,15 +261,22 @@ cost, and the draw normalised to percentages — before the wallet opens.
 PHASE A · encoder      10000/10000 rebuilt to identical bytes
 PHASE B · form syntax   9991 round-tripped through the text form,
                            9 reported as not expressible
-PHASE C · live rows    underpunks55 102/102, cigalepixeld 30/30
-                       rebuildable exactly as they exist today
+PHASE C · live rows    3003/3003 across 10 collections rebuildable
+                       exactly as they exist today
+PHASE D · validation   10000/10000 real recipes accepted by our own
+                       validator (any rejection is a false negative)
 ```
 
 Phase A folds each trace down into the shape the UI works in and
 rebuilds it; phase B goes further and renders it into the form's
 one-per-line text, parses that back, and demands the same bytes again.
-Phase C covers collections whose blends predate the history window, by
-checking their live `blends` rows could be recreated verbatim.
+Phase C reads LIVE `blends` rows, covering recipes whose creation
+predates the history window. Phase D is the mirror image of the others:
+every recipe in the corpus was accepted by the contract, so anything
+our own validation refuses is a blend an author could not create
+through Crucible — it caught a token-precision rule that rejected
+zero-decimal assets like `1000000 MSOURCE`, and a JSON check that
+refused the 202 real blends whose display_data is not JSON.
 
 The 9 that are not expressible are named, never silently passed: 2
 cooldown ingredients (a time gate with no text syntax) and 7 attribute

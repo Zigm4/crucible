@@ -50,7 +50,18 @@ const { parseIngredientLines, parseOutcomeLines } = REAL;
 
 const client = new APIClient({ url: 'https://wax.eosphere.io' });
 const HYPERION = 'https://wax.eosphere.io';
-const FOCUS = process.argv.slice(2).length ? process.argv.slice(2) : ['underpunks55', 'cigalepixeld'];
+/**
+ * Phase C collections. Deliberately more than a token couple, and mixed
+ * on purpose: the two the app suggests by default (underpunks55,
+ * cigalepixeld), plus collections picked for shape rather than
+ * convenience — pool payouts, token payouts, attribute filters,
+ * cross-collection ingredients, 50-outcome tables.
+ */
+const FOCUS = process.argv.slice(2).length ? process.argv.slice(2) : [
+  'underpunks55', 'cigalepixeld', 'waxlandianft', 'streamingart',
+  'captainshelm', '1madcarnival', 'agar', 'tutanlegacys',
+  'chronaverseo', 'futuresrelic',
+];
 /** Hyperion caps a page at 1000; walk back until it runs dry. */
 const PAGE = 1000;
 const MAX_PAGES = 12;
@@ -356,6 +367,39 @@ for (const coll of FOCUS) {
   log(`   ${bad ? '✗' : '✓'} ${coll.padEnd(14)} ${rows.length} live blend(s): ${okN} rebuildable, ${naN} outside the builder's model`);
   for (const p of problems.slice(0, 6)) log(`        ↳ ${p}`);
   if (bad) failures += bad;
+}
+
+// ── phase D: the validator must accept what the chain accepted ────────
+//
+// validateNewBlend() blocks the Create button. Every recipe in the
+// corpus was accepted by the contract, so any rejection here is a FALSE
+// NEGATIVE in our own rules - a real blend an author could not create
+// through Crucible. Cheap to check and easy to regress.
+log(`\n=== PHASE D · does our validator reject anything the chain accepted? ===`);
+const vBad = new Map();
+let vOk = 0;
+for (const a of traces) {
+  const dt = a.act.data;
+  try {
+    const args = { ...foldTrace(dt), authorized_account: dt.authorized_account };
+    const problems = REAL.validateNewBlend(args);
+    if (problems.length === 0) { vOk += 1; continue; }
+    for (const p of problems) {
+      // Strip the "Ingredient #3:" prefix so causes group together.
+      const key = p.replace(/^(Ingredient|Roll) #\d+(, outcome #\d+)?(, result #\d+)?: /, '');
+      if (!vBad.has(key)) vBad.set(key, { n: 0, sample: `${dt.collection_name} ${a.trx_id.slice(0, 12)}` });
+      vBad.get(key).n += 1;
+    }
+  } catch (e) {
+    vBad.set('threw: ' + e.message, { n: (vBad.get('threw: ' + e.message)?.n ?? 0) + 1, sample: dt.collection_name });
+  }
+}
+log(`   ${vOk}/${traces.length} real recipes pass our own validation`);
+if (vBad.size) {
+  for (const [why, info] of [...vBad.entries()].sort((x, y) => y[1].n - x[1].n)) {
+    log(`   ✗ ${info.n}× rejected: ${why}   (e.g. ${info.sample})`);
+  }
+  failures += 1;
 }
 
 log(`\n=== ${failures === 0 ? 'ALL CREATEBLEND CHECKS PASS' : `${failures} FAILURE(S)`} ===`);

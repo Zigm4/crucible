@@ -268,10 +268,12 @@ export function validateNewBlend(args: CreateBlendArgs): string[] {
 
   args.ingredients.forEach((ing, i) => {
     if (ing.kind === 'ft') {
-      // "10.0000 TLM": the precision must match the token's own, and the
-      // contract rejects anything it cannot parse as an asset.
-      if (!/^\d+\.\d+ [A-Z]{1,7}$/.test(ing.quantity)) {
-        errs.push(`Ingredient #${i + 1}: "${ing.quantity}" is not a valid quantity (expected e.g. "10.0000 TLM").`);
+      // "10.0000 TLM": the precision must match the token's own. A
+      // zero-precision token has NO decimal point at all - MSOURCE is
+      // priced as "1000000 MSOURCE" on chain - so requiring one blocked
+      // real blends.
+      if (!/^\d+(\.\d+)? [A-Z]{1,7}$/.test(ing.quantity)) {
+        errs.push(`Ingredient #${i + 1}: "${ing.quantity}" is not a valid quantity (expected e.g. "10.0000 TLM" or "1000 MSOURCE").`);
       }
       if (!ing.to) {
         errs.push(`Ingredient #${i + 1}: a token cost needs a receiving account, otherwise the tokens are burned.`);
@@ -302,7 +304,7 @@ export function validateNewBlend(args: CreateBlendArgs): string[] {
         const at = `Roll #${r}, outcome #${oi + 1}, result #${ri + 1}`;
         if (res.kind === 'nft' && !(res.template_id > 0)) errs.push(`${at}: template id required.`);
         if (res.kind === 'ft') {
-          if (!/^\d+\.\d+ [A-Z]{1,7}$/.test(res.quantity)) errs.push(`${at}: "${res.quantity}" is not a valid quantity.`);
+          if (!/^\d+(\.\d+)? [A-Z]{1,7}$/.test(res.quantity)) errs.push(`${at}: "${res.quantity}" is not a valid quantity.`);
           if (!res.contract) errs.push(`${at}: token contract required.`);
         }
         if (res.kind === 'pool' && !res.pool_name) errs.push(`${at}: pool name required.`);
@@ -315,10 +317,10 @@ export function validateNewBlend(args: CreateBlendArgs): string[] {
   if (end > 0 && start > 0 && end <= start) {
     errs.push('End time must be after start time.');
   }
-  if (args.display_data) {
-    try { JSON.parse(args.display_data); }
-    catch { errs.push('Display data must be valid JSON.'); }
-  }
+  // display_data is an opaque string as far as the contract is
+  // concerned, and 202 of the 10,000 real creations carry something
+  // that is not JSON. Every UI (ours included) writes JSON, but
+  // REJECTING anything else would block recipes the chain accepts.
   return errs;
 }
 
