@@ -1,122 +1,123 @@
 /**
- * Byte-for-byte verification of the `blend.nefty::createblend` builder.
+ * Exhaustive verification of the `blend.nefty::createblend` builder.
  *
- * Five real creations, five different collections, chosen to cover every
- * ingredient variant and both ends of the complexity range:
+ * Not a handful of hand-picked cases: this walks EVERY createblend
+ * action Hyperion will serve (hundreds, across every collection that
+ * has ever made one) and holds each to two independent standards.
  *
- *   rustveil      1 template ingredient, 1 outcome        (simplest)
- *   tutanlegacys  6 ingredients, 2 weighted outcomes      (random blend)
- *   streamingart  TEMPLATE + FT cost, max_uses set        (paid blend)
- *   captainshelm  TEMPLATE + SCHEMA + ATTRIBUTE           (every NFT kind)
- *   waxlandianft  1 ingredient, 51 outcomes               (stress)
+ *   PHASE A — encoder. Fold the trace's decoded payload DOWN into the
+ *   high-level shape the UI works in (CreateBlendArgs: "5 of template
+ *   X", "these outcomes with these weights"), rebuild it back UP with
+ *   the builder's encoding, serialise against the live ABI, and diff
+ *   the bytes against what was actually signed. Anything the
+ *   abstraction loses shows up as a mismatch.
  *
- * The test is a round-trip, not a copy: each trace's decoded payload is
- * folded DOWN into the high-level shape our UI works in
- * (CreateBlendArgs - "3 of template X", "these outcomes with these
- * odds"), then rebuilt back UP through the same encoding the builder
- * uses, serialised against the live ABI, and diffed against the
- * original action's bytes. Anything the abstraction loses or encodes
- * differently shows up as a hex mismatch.
+ *   PHASE B — the form. Render the same trace into the one-per-line
+ *   text the create panel collects, parse it back, rebuild, and demand
+ *   the same bytes AGAIN. This holds the parsers to the encoder's
+ *   standard instead of eyeballing them.
+ *
+ *   PHASE C — recreatability. For collections named on the command line
+ *   (default: underpunks55 and cigalepixeld), read their LIVE `blends`
+ *   rows and check each one could be rebuilt exactly as it exists
+ *   today. This covers recipes whose creation predates the history
+ *   window, where no trace exists to diff against.
+ *
+ * The parsers under test are the REAL ones from
+ * src/nefty/createBlend.ts, compiled to ESM first (npm run
+ * build:verify) rather than re-implemented here. An earlier version of
+ * this script mirrored them by hand and passed while the shipped parser
+ * had a different bug — the copy was correct, the product was not.
+ * The ENCODER is still mirrored on purpose, so the two must agree.
  *
  * Nothing is broadcast and no signature is requested.
  *
- * Run: node scripts/verify-createblend.mjs
+ * Run: npm run verify:createblend      (compiles the module, then runs)
+ *      node scripts/verify-createblend.mjs [collection ...]
  */
 
 import { APIClient, Action } from '@wharfkit/session';
+import { existsSync } from 'node:fs';
+
+const BUILT = new URL('./.build/createBlend.mjs', import.meta.url);
+if (!existsSync(BUILT)) {
+  console.error('Missing scripts/.build/createBlend.mjs — run `npm run verify:createblend`,');
+  console.error('or build it with: npx vite build --config vite.lib.config.mjs');
+  process.exit(2);
+}
+const REAL = await import(BUILT.href);
+const { parseIngredientLines, parseOutcomeLines } = REAL;
 
 const client = new APIClient({ url: 'https://wax.eosphere.io' });
 const HYPERION = 'https://wax.eosphere.io';
-
-// Fetched by full trx_id rather than scanned out of a recent-actions
-// window, so these references keep working as new blends are created.
-const CASES = [
-  { label: 'rustveil · 1 ingredient, 1 outcome',
-    trx: '55b6ec8a19929e5e3918cfab7a79203cf103935f3ee31ea5decb794f37468b38' },
-  { label: 'tutanlegacys · 6 ingredients, 2 weighted outcomes',
-    trx: '4b272c90d510fca04ee64d19804bc125eb0ba98361f49c2b8bfcca0d9b001fc2' },
-  { label: 'streamingart · TEMPLATE + FT cost, NFTs sent to a vault',
-    trx: 'b01fd77a8d513255b4144625e2e4bc4e1a55e1fa92ae142da34b1c0db50bbc70' },
-  { label: 'captainshelm · TEMPLATE + SCHEMA + ATTRIBUTE',
-    trx: '81e1532d6c98fa2c7a1e14d2797fe98d7ad1569158510286d2dfd739d2f4aa68' },
-  { label: 'waxlandianft · 51 outcomes',
-    trx: '06eeb374337f96c19eba4c9d14428e85c7a4f24c68a5bf72e46a963243272365' },
-];
+const FOCUS = process.argv.slice(2).length ? process.argv.slice(2) : ['underpunks55', 'cigalepixeld'];
+/** Hyperion caps a page at 1000; walk back until it runs dry. */
+const PAGE = 1000;
+const MAX_PAGES = 12;
 
 const log = (...a) => console.log(...a);
-let ok = true;
+let failures = 0;
 
 // ─── the builder's encoding, mirrored ──────────────────────────────────
-// Deliberately re-implemented from the on-chain trace shape rather than
-// imported, so a drift in src/nefty/createBlend.ts surfaces here.
+// Re-implemented from the on-chain shape rather than imported, so drift
+// in src/nefty/createBlend.ts surfaces here instead of hiding.
 
 const BURN = ['TYPED_EFFECT', { type: 0 }];
-/** NFTs burn unless the author routed them somewhere. */
-const nftEffect = (ing) => (ing.transfer_to ? ['TRANSFER_EFFECT', { to: ing.transfer_to }] : BURN);
+const nftEffect = (i) => (i.transfer_to ? ['TRANSFER_EFFECT', { to: i.transfer_to }] : BURN);
 
 function encodeIngredient(ing) {
   switch (ing.kind) {
     case 'template':
-      return ['TEMPLATE_INGREDIENT', {
-        template_id: ing.template_id, collection_name: ing.collection_name,
-        amount: ing.amount, effect: nftEffect(ing) }];
+      return ['TEMPLATE_INGREDIENT', { template_id: ing.template_id, collection_name: ing.collection_name, amount: ing.amount, effect: nftEffect(ing) }];
     case 'schema':
-      return ['SCHEMA_INGREDIENT', {
-        collection_name: ing.collection_name, schema_name: ing.schema_name,
-        display_data: ing.display_data ?? '', amount: ing.amount, effect: nftEffect(ing) }];
+      return ['SCHEMA_INGREDIENT', { collection_name: ing.collection_name, schema_name: ing.schema_name, display_data: ing.display_data ?? '', amount: ing.amount, effect: nftEffect(ing) }];
     case 'attribute':
-      return ['ATTRIBUTE_INGREDIENT', {
-        collection_name: ing.collection_name, schema_name: ing.schema_name,
-        display_data: ing.display_data ?? '', attributes: ing.attributes,
-        amount: ing.amount, effect: nftEffect(ing) }];
+      return ['ATTRIBUTE_INGREDIENT', { collection_name: ing.collection_name, schema_name: ing.schema_name, display_data: ing.display_data ?? '', attributes: ing.attributes, amount: ing.amount, effect: nftEffect(ing) }];
     case 'collection':
-      return ['COLLECTION_INGREDIENT', {
-        collection_name: ing.collection_name, amount: ing.amount, effect: nftEffect(ing) }];
+      return ['COLLECTION_INGREDIENT', { collection_name: ing.collection_name, amount: ing.amount, effect: nftEffect(ing) }];
+    case 'cooldown':
+      return ['COOLDOWN_INGREDIENT', { schema_name: ing.schema_name, template_id: ing.template_id, attribute_name: ing.attribute_name, wait_time: ing.wait_time, requirements: ing.requirements, display_data: ing.display_data ?? '' }];
     case 'ft':
-      return ['FT_INGREDIENT', {
-        quantity: ing.quantity,
-        effect: ing.to ? ['TRANSFER_EFFECT', { to: ing.to }] : BURN }];
+      return ['FT_INGREDIENT', { quantity: ing.quantity, effect: ing.to ? ['TRANSFER_EFFECT', { to: ing.to }] : BURN }];
     default:
       throw new Error('unknown ingredient kind ' + ing.kind);
   }
 }
 
-function encodeRoll(roll) {
-  return {
-    outcomes: roll.outcomes.map((o) => ({
-      odds: o.odds,
-      results: o.template_ids.map((t) => ['ON_DEMAND_NFT_RESULT', { template_id: t }]),
-    })),
-    // Derived, never trusted from the caller.
-    total_odds: roll.outcomes.reduce((n, o) => n + o.odds, 0),
-  };
-}
+const encodeResult = (r) => {
+  switch (r.kind) {
+    case 'nft':  return ['ON_DEMAND_NFT_RESULT', { template_id: r.template_id }];
+    case 'ft':   return ['FT_RESULT', { amount: { quantity: r.quantity, contract: r.contract } }];
+    case 'pool': return ['POOL_NFT_RESULT', { pool_name: r.pool_name, display_data: r.display_data ?? '' }];
+    default: throw new Error('unknown result kind ' + r.kind);
+  }
+};
+const encodeRoll = (roll) => ({
+  outcomes: roll.outcomes.map((o) => ({ odds: o.odds, results: o.results.map(encodeResult) })),
+  // Derived, never trusted from the caller.
+  total_odds: roll.outcomes.reduce((n, o) => n + o.odds, 0),
+});
 
-function buildData(args) {
-  return {
-    authorized_account: args.authorized_account,
-    collection_name: args.collection_name,
-    ingredients: args.ingredients.map(encodeIngredient),
-    rolls: args.rolls.map(encodeRoll),
-    start_time: args.start_time ?? 0,
-    end_time: args.end_time ?? 0,
-    max_uses: args.max_uses ?? 0,
-    display_data: args.display_data ?? '',
-    security_id: String(args.security_id ?? 0),
-    is_hidden: args.is_hidden ?? false,
-    category: args.category ?? '',
-    account_limit: String(args.account_limit ?? 0),
-    account_limit_cooldown: args.account_limit_cooldown ?? 0,
-  };
-}
+const buildData = (a) => ({
+  authorized_account: a.authorized_account,
+  collection_name: a.collection_name,
+  ingredients: a.ingredients.map(encodeIngredient),
+  rolls: a.rolls.map(encodeRoll),
+  start_time: a.start_time ?? 0,
+  end_time: a.end_time ?? 0,
+  max_uses: a.max_uses ?? 0,
+  display_data: a.display_data ?? '',
+  security_id: String(a.security_id ?? 0),
+  is_hidden: a.is_hidden ?? false,
+  category: a.category ?? '',
+  account_limit: String(a.account_limit ?? 0),
+  account_limit_cooldown: a.account_limit_cooldown ?? 0,
+});
 
-// ─── fold a trace DOWN into the high-level shape ───────────────────────
+// ─── folding a trace down ──────────────────────────────────────────────
 
-/** TRANSFER_EFFECT -> the destination, TYPED_EFFECT -> burn (undefined). */
-const foldNftEffect = (eff) =>
-  Array.isArray(eff) && eff[0] === 'TRANSFER_EFFECT' ? eff[1].to : undefined;
+const foldNftEffect = (e) => (Array.isArray(e) && e[0] === 'TRANSFER_EFFECT' ? e[1].to : undefined);
 
-/** Trace ingredient variant -> the abstract form our UI produces. */
 function foldIngredient([tag, p]) {
   switch (tag) {
     case 'TEMPLATE_INGREDIENT':
@@ -127,224 +128,235 @@ function foldIngredient([tag, p]) {
       return { kind: 'attribute', collection_name: p.collection_name, schema_name: p.schema_name, amount: p.amount, display_data: p.display_data, attributes: p.attributes, transfer_to: foldNftEffect(p.effect) };
     case 'COLLECTION_INGREDIENT':
       return { kind: 'collection', collection_name: p.collection_name, amount: p.amount, transfer_to: foldNftEffect(p.effect) };
+    case 'COOLDOWN_INGREDIENT':
+      return { kind: 'cooldown', schema_name: p.schema_name, template_id: p.template_id, attribute_name: p.attribute_name, wait_time: p.wait_time, requirements: p.requirements, display_data: p.display_data };
     case 'FT_INGREDIENT': {
-      const [etag, ep] = p.effect;
-      return { kind: 'ft', quantity: p.quantity, to: etag === 'TRANSFER_EFFECT' ? ep.to : undefined };
+      const [t, e] = p.effect;
+      return { kind: 'ft', quantity: p.quantity, to: t === 'TRANSFER_EFFECT' ? e.to : undefined };
     }
     default:
-      throw new Error('unsupported ingredient variant in trace: ' + tag);
+      throw new Error('unsupported ingredient variant: ' + tag);
   }
 }
 
-function foldTrace(dt) {
-  return {
-    authorized_account: dt.authorized_account,
-    collection_name: dt.collection_name,
-    ingredients: dt.ingredients.map(foldIngredient),
-    rolls: dt.rolls.map((r) => ({
-      outcomes: r.outcomes.map((o) => ({
-        odds: o.odds,
-        template_ids: o.results.map(([tag, p]) => {
-          if (tag !== 'ON_DEMAND_NFT_RESULT') throw new Error('unsupported result variant: ' + tag);
-          return p.template_id;
-        }),
-      })),
-    })),
-    start_time: dt.start_time,
-    end_time: dt.end_time,
-    max_uses: dt.max_uses,
-    display_data: dt.display_data,
-    security_id: dt.security_id,
-    is_hidden: dt.is_hidden,
-    category: dt.category,
-    account_limit: dt.account_limit,
-    account_limit_cooldown: dt.account_limit_cooldown,
-  };
-}
-
-// ─── run ────────────────────────────────────────────────────────────────
-
-const abiRes = await client.v1.chain.get_abi('blend.nefty');
-const abi = abiRes.abi;
-
-const hexOf = (data, actor) =>
-  Action.from(
-    { account: 'blend.nefty', name: 'createblend',
-      authorization: [{ actor, permission: 'active' }], data },
-    abi,
-  ).data.hexString.toLowerCase();
-
-for (const c of CASES) {
-  log(`\n=== ${c.label} ===`);
-  const res = await fetch(`${HYPERION}/v2/history/get_transaction?id=${c.trx}`).then((r) => r.json());
-  const hit = (res.actions ?? []).find(
-    (a) => a.act?.account === 'blend.nefty' && a.act?.name === 'createblend',
-  );
-  if (!hit) {
-    log(`   ✗ no createblend action in transaction ${c.trx.slice(0, 16)}…`);
-    ok = false;
-    continue;
+const foldResult = ([t, p]) => {
+  switch (t) {
+    case 'ON_DEMAND_NFT_RESULT': return { kind: 'nft', template_id: p.template_id };
+    case 'FT_RESULT':            return { kind: 'ft', quantity: p.amount.quantity, contract: p.amount.contract };
+    case 'POOL_NFT_RESULT':      return { kind: 'pool', pool_name: p.pool_name, display_data: p.display_data };
+    default: throw new Error('unsupported result variant: ' + t);
   }
-  const dt = hit.act.data;
-  const nOut = dt.rolls.reduce((n, r) => n + r.outcomes.length, 0);
-  const kinds = [...new Set(dt.ingredients.map((i) => i[0]))].join(' + ');
-  log(`   trx ${hit.trx_id.slice(0, 16)}…  ${dt.collection_name}  ing=${dt.ingredients.length} (${kinds})  outcomes=${nOut}`);
+};
+const foldRolls = (rolls) =>
+  rolls.map((r) => ({
+    outcomes: r.outcomes.map((o) => ({ odds: o.odds, results: o.results.map(foldResult) })),
+  }));
 
-  let folded;
-  try {
-    folded = foldTrace(dt);
-  } catch (e) {
-    log(`   ✗ cannot express this blend in the builder's shape: ${e.message}`);
-    ok = false;
-    continue;
-  }
+const foldTrace = (dt) => ({
+  authorized_account: dt.authorized_account,
+  collection_name: dt.collection_name,
+  ingredients: dt.ingredients.map(foldIngredient),
+  rolls: foldRolls(dt.rolls),
+  start_time: dt.start_time, end_time: dt.end_time, max_uses: dt.max_uses,
+  display_data: dt.display_data, security_id: dt.security_id, is_hidden: dt.is_hidden,
+  category: dt.category, account_limit: dt.account_limit,
+  account_limit_cooldown: dt.account_limit_cooldown,
+});
 
-  // total_odds is DERIVED by the builder; check we land on what the
-  // author actually published rather than quietly changing the draw.
-  dt.rolls.forEach((r, i) => {
-    const sum = r.outcomes.reduce((n, o) => n + o.odds, 0);
-    const match = sum === r.total_odds;
-    log(`   ${match ? '✓' : '✗'} roll #${i} total_odds derived = published (${sum} vs ${r.total_odds})`);
-    if (!match) ok = false;
-  });
+// ─── the form's text syntax ────────────────────────────────────────────
 
-  const theirs = hexOf(dt, hit.act.authorization[0].actor);
-  const ours = hexOf(buildData(folded), hit.act.authorization[0].actor);
-  const same = theirs === ours;
-  log(`   ${same ? '✓' : '✗'} createblend payload matches byte for byte (${ours.length / 2} bytes)`);
-  if (!same) {
-    ok = false;
-    // Show the first divergent byte to make a mismatch debuggable.
-    let i = 0;
-    while (i < Math.min(ours.length, theirs.length) && ours[i] === theirs[i]) i++;
-    log(`      diverges at byte ${Math.floor(i / 2)}`);
-    log(`      ours : …${ours.slice(Math.max(0, i - 20), i + 40)}`);
-    log(`      trace: …${theirs.slice(Math.max(0, i - 20), i + 40)}`);
-  }
-}
-
-// ─── phase 2: the text form the UI actually collects ───────────────────
-//
-// The form takes ingredients and outcomes as one-per-line text. Phase 1
-// proved the encoder; this proves the PARSER, by rendering each trace
-// back into that text, parsing it, rebuilding, and demanding the same
-// bytes again. A parser that drops an amount, a destination account or
-// an odds weight cannot survive this.
+/** Trailing display_data blob, when the ingredient carries one. */
+const dd = (i) => (i.display_data ? ` ${i.display_data}` : '');
 
 function toIngredientText(ings, own) {
   return ings.map((i) => {
     const tail = i.transfer_to ? ` -> ${i.transfer_to}` : '';
-    // Cross-collection ingredients keep their "collection:" prefix.
     const pre = i.collection_name && i.collection_name !== own ? `${i.collection_name}:` : '';
     switch (i.kind) {
       case 'template':   return `template ${pre}${i.template_id} x${i.amount}${tail}`;
-      case 'schema':     return `schema ${pre}${i.schema_name} x${i.amount}${tail}`;
+      case 'schema':     return `schema ${pre}${i.schema_name} x${i.amount}${tail}${dd(i)}`;
       case 'collection': return `collection ${i.collection_name} x${i.amount}${tail}`;
       case 'ft':         return `token ${i.quantity}${i.to ? ` -> ${i.to}` : ''}`;
-      default:           return null; // attribute: not offered by the form
+      case 'attribute': {
+        if (!i.attributes || !i.attributes.length) return null;
+        // "|" separates values and ";" separates filters, so a value
+        // containing either cannot be written and is reported.
+        // The form trims around separators, so a name or value whose
+        // leading/trailing whitespace is significant cannot be typed
+        // back exactly. Real authors do produce these ("glow ").
+        if (i.attributes.some((a) =>
+          a.attribute_name !== a.attribute_name.trim() ||
+          a.allowed_values.some((v) => v !== v.trim() || v.includes('|') || v.includes(';')) ||
+          a.attribute_name.includes(';') || a.attribute_name.includes('='))) return null;
+        const clauses = i.attributes.map((a) => `${a.attribute_name} = ${a.allowed_values.join(' | ')}`).join(' ; ');
+        return `attribute ${pre}${i.schema_name} x${i.amount}${tail} where ${clauses}${dd(i)}`;
+      }
+      case 'cooldown': return null; // time gate: no text syntax
+      default: return null;
     }
   });
 }
-const toOutcomeText = (outs) =>
-  outs.map((o) => `${o.template_ids.length ? o.template_ids.join('+') : 'nothing'} @${o.odds}`).join('\n');
-
-// Mirrors src/nefty/createBlend.ts::parseIngredientLines
-function parseIngredientLines(text, collection) {
-  const items = [], errors = [];
-  text.split('\n').forEach((raw, idx) => {
-    const line = raw.split('#')[0].trim();
-    if (!line) return;
-    const where = `Line ${idx + 1}`;
-    const arrow = line.split('->');
-    const body = arrow[0].trim();
-    const to = arrow.length > 1 ? arrow[1].trim() : undefined;
-    if (arrow.length > 2) { errors.push(`${where}: only one "->" is allowed.`); return; }
-    if (to !== undefined && !/^[a-z1-5.]{1,12}$/.test(to)) { errors.push(`${where}: bad account`); return; }
-    const m = body.match(/\bx\s*(\d+)\s*$/i);
-    const amount = m ? Number(m[1]) : 1;
-    const head = m ? body.slice(0, m.index).trim() : body;
-    const [kw, ...rest] = head.split(/\s+/);
-    const kind = (kw || '').toLowerCase();
-    const split = (v) => {
-      const i = (v ?? '').indexOf(':');
-      return i < 0 ? { coll: collection, value: v ?? '' } : { coll: v.slice(0, i).trim(), value: v.slice(i + 1).trim() };
-    };
-    if (kind === 'template') {
-      const { coll, value } = split(rest[0]);
-      const tid = Number(value);
-      if (!Number.isFinite(tid) || tid <= 0) { errors.push(`${where}: bad template`); return; }
-      items.push({ kind: 'template', template_id: tid, collection_name: coll, amount, transfer_to: to });
-    } else if (kind === 'schema') {
-      const { coll, value } = split(rest[0]);
-      if (!value) { errors.push(`${where}: schema missing`); return; }
-      items.push({ kind: 'schema', collection_name: coll, schema_name: value, amount, transfer_to: to });
-    } else if (kind === 'collection') {
-      items.push({ kind: 'collection', collection_name: rest[0] || collection, amount, transfer_to: to });
-    } else if (kind === 'token') {
-      const quantity = rest.join(' ').trim();
-      if (!quantity) { errors.push(`${where}: quantity missing`); return; }
-      items.push({ kind: 'ft', quantity, to });
-    } else errors.push(`${where}: unknown ingredient "${kw}"`);
+const resultText = (r) => {
+  switch (r.kind) {
+    case 'nft':  return String(r.template_id);
+    case 'ft':   return `token ${r.quantity}${r.contract && r.contract !== 'eosio.token' ? ` from ${r.contract}` : ''}`;
+    case 'pool': return `pool ${r.pool_name}${r.display_data ? ' ' + r.display_data : ''}`;
+    default: return null;
+  }
+};
+const toOutcomeText = (outs) => {
+  const lines = outs.map((o) => {
+    if (!o.results.length) return `nothing @${o.odds}`;
+    const parts = o.results.map(resultText);
+    if (parts.some((p) => p === null)) return null;
+    return `${parts.join('+')} @${o.odds}`;
   });
-  return { items, errors };
+  return lines.some((l) => l === null) ? null : lines.join('\n');
+};
+
+
+// ─── harness ────────────────────────────────────────────────────────────
+
+const abi = (await client.v1.chain.get_abi('blend.nefty')).abi;
+const hexOf = (data, actor) =>
+  Action.from({ account: 'blend.nefty', name: 'createblend', authorization: [{ actor, permission: 'active' }], data }, abi)
+    .data.hexString.toLowerCase();
+
+/** Every createblend Hyperion will give us, newest first. */
+async function fetchAllTraces() {
+  const seen = new Map();
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const url = `${HYPERION}/v2/history/get_actions?filter=blend.nefty:createblend&limit=${PAGE}&skip=${page * PAGE}&sort=desc`;
+    let batch;
+    try {
+      batch = (await fetch(url).then((r) => r.json())).actions ?? [];
+    } catch { break; }
+    if (batch.length === 0) break;
+    for (const a of batch) seen.set(a.trx_id + ':' + (a.action_ordinal ?? 0), a);
+    if (batch.length < PAGE) break;
+  }
+  return [...seen.values()];
 }
 
-// Mirrors src/nefty/createBlend.ts::parseOutcomeLines
-function parseOutcomeLines(text) {
-  const items = [], errors = [];
-  text.split('\n').forEach((raw, idx) => {
-    const line = raw.split('#')[0].trim();
-    if (!line) return;
-    const where = `Line ${idx + 1}`;
-    const at = line.split('@');
-    if (at.length > 2) { errors.push(`${where}: one "@" only`); return; }
-    const odds = at.length > 1 ? Number(at[1].trim()) : 1;
-    if (!Number.isInteger(odds) || odds < 1) { errors.push(`${where}: bad odds`); return; }
-    const head = at[0].trim().toLowerCase();
-    if (head === 'nothing' || head === 'none' || head === 'empty' || head === '-') {
-      items.push({ odds, template_ids: [] });
-      return;
+log('Fetching every createblend action Hyperion will serve…');
+const traces = await fetchAllTraces();
+const collections = new Set(traces.map((a) => a.act.data.collection_name));
+log(`${traces.length} creations across ${collections.size} collections.\n`);
+
+// ── phases A + B over the whole corpus ────────────────────────────────
+const perColl = new Map();
+const stat = (c) => {
+  if (!perColl.has(c)) perColl.set(c, { n: 0, aOk: 0, bOk: 0, bSkip: 0, fails: [] });
+  return perColl.get(c);
+};
+let aOk = 0, bOk = 0, bSkip = 0;
+const skipReasons = new Map();
+const bump = (m, k) => m.set(k, (m.get(k) ?? 0) + 1);
+
+for (const a of traces) {
+  const dt = a.act.data;
+  const coll = dt.collection_name;
+  const st = stat(coll);
+  st.n += 1;
+  const actor = a.act.authorization?.[0]?.actor ?? dt.authorized_account;
+  let theirs;
+  try { theirs = hexOf(dt, actor); } catch (e) {
+    st.fails.push(`${a.trx_id.slice(0, 12)}: trace itself will not serialise (${e.message})`);
+    failures += 1;
+    continue;
+  }
+
+  // Phase A
+  try {
+    const folded = foldTrace(dt);
+    if (hexOf(buildData(folded), actor) === theirs) { aOk += 1; st.aOk += 1; }
+    else { st.fails.push(`${a.trx_id.slice(0, 12)}: PHASE A byte mismatch`); failures += 1; }
+
+    // Phase B
+    const lines = toIngredientText(folded.ingredients, coll);
+    if (lines.some((l) => l === null)) { bSkip += 1; st.bSkip += 1; bump(skipReasons, 'ingredient not expressible in the form'); continue; }
+    if (folded.rolls.length !== 1) { bSkip += 1; st.bSkip += 1; bump(skipReasons, `${folded.rolls.length} rolls (form builds one)`); continue; }
+    const outText = toOutcomeText(folded.rolls[0].outcomes);
+    if (outText === null) { bSkip += 1; st.bSkip += 1; bump(skipReasons, 'outcome not expressible in the form'); continue; }
+    const pi = parseIngredientLines(lines.join('\n'), coll);
+    const po = parseOutcomeLines(outText);
+    if (pi.errors.length || po.errors.length) {
+      st.fails.push(`${a.trx_id.slice(0, 12)}: PHASE B parse errors — ${[...pi.errors, ...po.errors][0]}`);
+      failures += 1;
+      continue;
     }
-    const ids = at[0].split('+').map((p) => p.trim()).filter(Boolean).map(Number);
-    if (!ids.length || ids.some((n) => !Number.isFinite(n) || n <= 0)) { errors.push(`${where}: bad ids`); return; }
-    items.push({ odds, template_ids: ids });
-  });
-  return { items, errors };
+    const rebuilt = buildData({ ...folded, ingredients: pi.items, rolls: [{ outcomes: po.items }] });
+    if (hexOf(rebuilt, actor) === theirs) { bOk += 1; st.bOk += 1; }
+    else { st.fails.push(`${a.trx_id.slice(0, 12)}: PHASE B byte mismatch after text round-trip`); failures += 1; }
+  } catch (e) {
+    st.fails.push(`${a.trx_id.slice(0, 12)}: ${e.message}`);
+    failures += 1;
+  }
 }
 
-log(`\n\n########  PHASE 2 — the form's text parsers  ########`);
+log('=== PHASE A · encoder, byte-for-byte vs every trace ===');
+log(`   ${aOk}/${traces.length} rebuilt to identical bytes`);
+log('\n=== PHASE B · the form\'s text syntax, round-tripped ===');
+log(`   ${bOk} matched, ${bSkip} not expressible by the form`);
+for (const [why, n] of skipReasons) log(`      ${n}× ${why}`);
 
-for (const c of CASES) {
-  const res = await fetch(`${HYPERION}/v2/history/get_transaction?id=${c.trx}`).then((r) => r.json());
-  const hit = (res.actions ?? []).find((a) => a.act?.account === 'blend.nefty' && a.act?.name === 'createblend');
-  if (!hit) continue;
-  const dt = hit.act.data;
-  const folded = foldTrace(dt);
-  log(`\n=== ${c.label} ===`);
-
-  const lines = toIngredientText(folded.ingredients, dt.collection_name);
-  if (lines.some((l) => l === null)) {
-    log(`   i  contains an ATTRIBUTE ingredient, which the text form does not offer — skipped`);
-    continue;
-  }
-  if (folded.rolls.length !== 1) {
-    log(`   i  ${folded.rolls.length} rolls; the form builds a single roll — skipped`);
-    continue;
-  }
-
-  const pi = parseIngredientLines(lines.join('\n'), dt.collection_name);
-  const po = parseOutcomeLines(toOutcomeText(folded.rolls[0].outcomes));
-  const clean = pi.errors.length === 0 && po.errors.length === 0;
-  log(`   ${clean ? '✓' : '✗'} parses without errors (${pi.items.length} ingredients, ${po.items.length} outcomes)`);
-  if (!clean) { ok = false; log('      ' + [...pi.errors, ...po.errors].join(' | ')); continue; }
-
-  const rebuilt = buildData({ ...folded, ingredients: pi.items, rolls: [{ outcomes: po.items }] });
-  const theirs = hexOf(dt, hit.act.authorization[0].actor);
-  const ours = hexOf(rebuilt, hit.act.authorization[0].actor);
-  const same = ours === theirs;
-  log(`   ${same ? '✓' : '✗'} text → parser → payload still matches the trace byte for byte`);
-  if (!same) ok = false;
+log('\n=== per collection ===');
+const rows = [...perColl.entries()].sort((x, y) => y[1].n - x[1].n);
+for (const [coll, s] of rows) {
+  const mark = s.fails.length ? '✗' : '✓';
+  log(`   ${mark} ${coll.padEnd(14)} ${String(s.n).padStart(4)} creation(s)  A:${s.aOk}/${s.n}  B:${s.bOk}${s.bSkip ? ` (+${s.bSkip} n/a)` : ''}`);
+  for (const f of s.fails.slice(0, 3)) log(`        ↳ ${f}`);
 }
 
-log(`\n=== ${ok ? 'CREATEBLEND BUILDER + PARSERS MATCH EVERY TRACE' : 'MISMATCH'} ===`);
-process.exit(ok ? 0 : 1);
+// ── phase C: recreatability of live rows for the focus collections ────
+log(`\n=== PHASE C · can today's LIVE blends be rebuilt exactly? ===`);
+for (const coll of FOCUS) {
+  let rows = [];
+  let cursor = '0';
+  for (;;) {
+    const r = await client.call({
+      path: '/v1/chain/get_table_rows',
+      params: { json: true, code: 'blend.nefty', scope: 'blend.nefty', table: 'blends', lower_bound: cursor, limit: 1000 },
+    });
+    rows.push(...r.rows.filter((b) => b.collection_name === coll));
+    if (!r.more || !r.rows.length) break;
+    cursor = String(Number(r.rows[r.rows.length - 1].blend_id) + 1);
+  }
+  let okN = 0, naN = 0;
+  const problems = [];
+  for (const b of rows) {
+    try {
+      const args = {
+        authorized_account: coll, collection_name: coll,
+        ingredients: b.ingredients.map(foldIngredient),
+        rolls: foldRolls(b.rolls),
+        start_time: b.start_time, end_time: b.end_time, max_uses: b.max,
+        display_data: b.display_data, security_id: b.security_id,
+        is_hidden: !!b.is_hidden, category: b.category ?? '',
+        account_limit: 0, account_limit_cooldown: 0,
+      };
+      const data = buildData(args);
+      // The row is the oracle: what we build must decode back to the
+      // same ingredients and the same weighted outcomes.
+      const sameIng = JSON.stringify(data.ingredients) === JSON.stringify(b.ingredients);
+      const sameRolls = data.rolls.every((r, i) =>
+        JSON.stringify(r.outcomes) === JSON.stringify(b.rolls[i].outcomes) &&
+        r.total_odds === b.rolls[i].total_odds);
+      hexOf(data, coll); // must also serialise
+      if (sameIng && sameRolls) okN += 1;
+      else problems.push(`blend ${b.blend_id}: ${!sameIng ? 'ingredients differ' : 'rolls/odds differ'}`);
+    } catch (e) {
+      // A shape the builder does not model (pool results, chest/cooldown
+      // ingredients). Reported, never silently counted as a pass.
+      naN += 1;
+      problems.push(`blend ${b.blend_id}: not modelled — ${e.message}`);
+    }
+  }
+  const bad = problems.filter((p) => !p.includes('not modelled')).length;
+  log(`   ${bad ? '✗' : '✓'} ${coll.padEnd(14)} ${rows.length} live blend(s): ${okN} rebuildable, ${naN} outside the builder's model`);
+  for (const p of problems.slice(0, 6)) log(`        ↳ ${p}`);
+  if (bad) failures += bad;
+}
+
+log(`\n=== ${failures === 0 ? 'ALL CREATEBLEND CHECKS PASS' : `${failures} FAILURE(S)`} ===`);
+process.exit(failures === 0 ? 0 : 1);

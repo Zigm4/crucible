@@ -79,21 +79,51 @@ export type NewIngredient =
     } & NftDisposal)
   | ({ kind: 'collection'; collection_name: string; amount: number } & NftDisposal)
   /**
+   * A time gate rather than a cost: the contract refuses the blend until
+   * `wait_time` has elapsed since the NFT's tracked attribute. Only 2 of
+   * ~24,800 real ingredients use it, but modelling it keeps the builder
+   * able to reproduce any recipe on chain.
+   */
+  | {
+      kind: 'cooldown';
+      schema_name: string;
+      template_id: number;
+      attribute_name: string;
+      wait_time: number;
+      requirements: { attribute_name: string; allowed_values: string[] }[];
+      display_data?: string;
+    }
+  /**
    * Token cost, e.g. "10.0000 TLM". Every real trace routes the payment
    * to an account (358/358), so `to` is required in practice.
    */
   | { kind: 'ft'; quantity: string; to?: string };
 
+/**
+ * What a drawn outcome hands over. A blend is not limited to minting an
+ * NFT: across the 10,000 most recent real creations the contract also
+ * pays out tokens (801 results) and draws pre-minted NFTs from a pool
+ * (1,076). Modelling only the first would build silently different
+ * recipes for ~1 in 9 blends.
+ */
+export type NewResult =
+  /** Mint a new NFT from a template. */
+  | { kind: 'nft'; template_id: number }
+  /** Pay tokens, e.g. "0.75000000 WAX" on eosio.token. */
+  | { kind: 'ft'; quantity: string; contract: string }
+  /** Hand over a pre-minted NFT from a named pool (see nefty/pools.ts). */
+  | { kind: 'pool'; pool_name: string; display_data?: string };
+
 /** One possible payout of a roll, with its integer weight. */
 export interface NewOutcome {
   odds: number;
   /**
-   * Templates minted when this outcome is drawn. MAY be empty: a roll
-   * can carry a blank that mints nothing, which is how authors build a
-   * "you got unlucky" branch. waxlandianft's 51-outcome blend opens
-   * with exactly that - odds 2000 out of 10000, no results.
+   * What this branch gives. MAY be empty: a roll can carry a blank that
+   * hands over nothing, which is how authors build a "you got unlucky"
+   * branch. waxlandianft's 51-outcome blend opens with exactly that -
+   * odds 2000 out of 10000, no results.
    */
-  template_ids: number[];
+  results: NewResult[];
 }
 
 /** A blend mints one result per roll. Most recipes have exactly one. */
@@ -174,6 +204,15 @@ export function encodeIngredient(ing: NewIngredient): Variant {
         amount: ing.amount,
         effect: nftEffect(ing),
       }];
+    case 'cooldown':
+      return ['COOLDOWN_INGREDIENT', {
+        schema_name: ing.schema_name,
+        template_id: ing.template_id,
+        attribute_name: ing.attribute_name,
+        wait_time: ing.wait_time,
+        requirements: ing.requirements,
+        display_data: ing.display_data ?? '',
+      }];
     case 'ft':
       // A token cost with no destination would be burned; every real
       // trace names a receiver, and validateNewBlend() insists on one.
@@ -181,6 +220,18 @@ export function encodeIngredient(ing: NewIngredient): Variant {
         quantity: ing.quantity,
         effect: encodeEffect(ing.to ? { kind: 'transfer', to: ing.to } : { kind: 'burn' }),
       }];
+  }
+}
+
+/** Result variant encoding. */
+export function encodeResult(r: NewResult): Variant {
+  switch (r.kind) {
+    case 'nft':
+      return ['ON_DEMAND_NFT_RESULT', { template_id: r.template_id }];
+    case 'ft':
+      return ['FT_RESULT', { amount: { quantity: r.quantity, contract: r.contract } }];
+    case 'pool':
+      return ['POOL_NFT_RESULT', { pool_name: r.pool_name, display_data: r.display_data ?? '' }];
   }
 }
 
@@ -192,12 +243,11 @@ export function encodeIngredient(ing: NewIngredient): Variant {
  * roll unreachable. Computing it here removes that whole class of bug.
  */
 export function encodeRoll(roll: NewRoll): Record<string, unknown> {
-  const outcomes = roll.outcomes.map((o) => ({
-    odds: o.odds,
-    results: o.template_ids.map((tid): Variant => ['ON_DEMAND_NFT_RESULT', { template_id: tid }]),
-  }));
   return {
-    outcomes,
+    outcomes: roll.outcomes.map((o) => ({
+      odds: o.odds,
+      results: o.results.map(encodeResult),
+    })),
     total_odds: roll.outcomes.reduce((n, o) => n + o.odds, 0),
   };
 }
@@ -226,7 +276,7 @@ export function validateNewBlend(args: CreateBlendArgs): string[] {
       if (!ing.to) {
         errs.push(`Ingredient #${i + 1}: a token cost needs a receiving account, otherwise the tokens are burned.`);
       }
-    } else if (!Number.isFinite(ing.amount) || ing.amount < 1) {
+    } else if (ing.kind !== 'cooldown' && (!Number.isFinite(ing.amount) || ing.amount < 1)) {
       errs.push(`Ingredient #${i + 1}: amount must be at least 1.`);
     }
     if (ing.kind === 'template' && !(ing.template_id > 0)) {
@@ -246,11 +296,17 @@ export function validateNewBlend(args: CreateBlendArgs): string[] {
       if (!Number.isFinite(o.odds) || o.odds < 1) {
         errs.push(`Roll #${r}, outcome #${oi + 1}: odds must be a positive whole number.`);
       }
-      // An empty outcome is legal (it mints nothing), so only the ids
-      // that ARE listed have to be real.
-      if (o.template_ids.some((t) => !(t > 0))) {
-        errs.push(`Roll #${r}, outcome #${oi + 1}: every result needs a template id.`);
-      }
+      // An empty outcome is legal (it hands over nothing), so only the
+      // results that ARE listed have to be well formed.
+      o.results.forEach((res, ri) => {
+        const at = `Roll #${r}, outcome #${oi + 1}, result #${ri + 1}`;
+        if (res.kind === 'nft' && !(res.template_id > 0)) errs.push(`${at}: template id required.`);
+        if (res.kind === 'ft') {
+          if (!/^\d+\.\d+ [A-Z]{1,7}$/.test(res.quantity)) errs.push(`${at}: "${res.quantity}" is not a valid quantity.`);
+          if (!res.contract) errs.push(`${at}: token contract required.`);
+        }
+        if (res.kind === 'pool' && !res.pool_name) errs.push(`${at}: pool name required.`);
+      });
     });
   });
 
@@ -272,6 +328,24 @@ export function validateNewBlend(args: CreateBlendArgs): string[] {
 // than a widget tree. Same choice the drop creator makes for its
 // "templates to mint" field, and it keeps a recipe copy-pasteable
 // between collections, which is how authors actually work.
+
+
+/**
+ * Strips a trailing `# comment`, but never inside a {...} blob: pool
+ * display_data and ingredient display_data are JSON, and real names
+ * contain "#" ("Mint #1 Rare Riley", "VegasKitties#3"). Cutting there
+ * silently truncated the recipe.
+ */
+function stripComment(line: string): string {
+  let depth = 0;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') depth = Math.max(0, depth - 1);
+    else if (ch === '#' && depth === 0) return line.slice(0, i);
+  }
+  return line;
+}
 
 export interface ParseResult<T> {
   items: T[];
@@ -302,26 +376,62 @@ export function parseIngredientLines(text: string, collection: string): ParseRes
   const errors: string[] = [];
 
   text.split('\n').forEach((raw, idx) => {
-    const line = raw.split('#')[0].trim();
+    let line = stripComment(raw).trim();
     if (!line) return;
     const where = `Line ${idx + 1}`;
 
-    // Optional "-> account" tail decides burn vs transfer.
+    // A trailing balanced {...} is the ingredient's display_data. Pulled
+    // off first because everything else is whitespace-delimited and the
+    // blob can contain spaces, "=", "|" and the rest.
+    let display_data: string | undefined;
+    if (line.endsWith('}')) {
+      let depth = 0;
+      for (let i = line.length - 1; i >= 0; i--) {
+        if (line[i] === '}') depth += 1;
+        else if (line[i] === '{') {
+          depth -= 1;
+          if (depth === 0) {
+            display_data = line.slice(i).trim();
+            line = line.slice(0, i).trim();
+            break;
+          }
+        }
+      }
+    }
+
+    // Optional "-> account" decides burn vs transfer. The account is a
+    // single token, NOT "everything after the arrow": an attribute
+    // ingredient can be written "… -> vault.wam where rarity = Rare",
+    // and swallowing the filter into the account name silently broke
+    // every recipe that combines the two.
     const arrow = line.split('->');
-    const body = arrow[0].trim();
-    const to = arrow.length > 1 ? arrow[1].trim() : undefined;
     if (arrow.length > 2) {
       errors.push(`${where}: only one "->" is allowed.`);
       return;
+    }
+    let body = arrow[0].trim();
+    let to: string | undefined;
+    if (arrow.length > 1) {
+      const rest = arrow[1].trim();
+      const sp = rest.search(/\s/);
+      to = (sp < 0 ? rest : rest.slice(0, sp)).trim();
+      // Whatever followed the account belongs to the ingredient body.
+      if (sp >= 0) body = `${body} ${rest.slice(sp).trim()}`.trim();
     }
     if (to !== undefined && !/^[a-z1-5.]{1,12}$/.test(to)) {
       errors.push(`${where}: "${to}" is not a valid WAX account.`);
       return;
     }
 
-    const amountMatch = body.match(/\bx\s*(\d+)\s*$/i);
+    // The "xN" multiplier is a standalone token and does NOT have to be
+    // last: "attribute up.gear x2 where ..." puts it mid-line. Anchoring
+    // it to the end silently parsed those as amount 1.
+    const amountMatch = body.match(/(?:^|\s)x\s*(\d+)(?=\s|$)/i);
     const amount = amountMatch ? Number(amountMatch[1]) : 1;
-    const head = amountMatch ? body.slice(0, amountMatch.index).trim() : body;
+    const at = amountMatch?.index ?? -1;
+    const head = at >= 0 && amountMatch
+      ? (body.slice(0, at) + ' ' + body.slice(at + amountMatch[0].length)).replace(/\s+/g, ' ').trim()
+      : body;
     const [kw, ...rest] = head.split(/\s+/);
     const kind = (kw || '').toLowerCase();
 
@@ -344,16 +454,51 @@ export function parseIngredientLines(text: string, collection: string): ParseRes
     } else if (kind === 'schema') {
       const { coll, value } = split(rest[0]);
       if (!value) { errors.push(`${where}: schema name missing.`); return; }
-      items.push({ kind: 'schema', collection_name: coll, schema_name: value, amount, transfer_to: to });
+      items.push({ kind: 'schema', collection_name: coll, schema_name: value, amount, display_data, transfer_to: to });
     } else if (kind === 'collection') {
       items.push({ kind: 'collection', collection_name: rest[0] || collection, amount, transfer_to: to });
+    } else if (kind === 'attribute') {
+      // attribute [coll:]<schema> xN where <attr> = <v1> | <v2> | ...
+      // Values may contain commas and colons, so "|" separates them and
+      // the first "=" ends the attribute name.
+      const m = head.match(/^attribute\s+(\S+)\s+where\s+(.+)$/i);
+      if (!m) {
+        errors.push(`${where}: expected "attribute <schema> xN where <attr> = <value> | <value>".`);
+        return;
+      }
+      const { coll, value: schema } = split(m[1]);
+      // "attr = a | b ; other = c" - ";" separates filters, all required.
+      const attributes: { attribute_name: string; allowed_values: string[] }[] = [];
+      let bad = false;
+      for (const clause of m[2].split(';')) {
+        const c = clause.trim();
+        if (!c) continue;
+        const eq = c.indexOf('=');
+        if (eq < 0) { errors.push(`${where}: missing "=" in "${c}".`); bad = true; break; }
+        const attribute_name = c.slice(0, eq).trim();
+        const allowed_values = c.slice(eq + 1).split('|').map((v) => v.trim()).filter(Boolean);
+        if (!attribute_name) { errors.push(`${where}: attribute name missing.`); bad = true; break; }
+        if (allowed_values.length === 0) { errors.push(`${where}: list at least one allowed value.`); bad = true; break; }
+        attributes.push({ attribute_name, allowed_values });
+      }
+      if (bad) return;
+      if (attributes.length === 0) { errors.push(`${where}: no attribute filter.`); return; }
+      items.push({
+        kind: 'attribute',
+        collection_name: coll,
+        schema_name: schema,
+        amount,
+        attributes,
+        display_data,
+        transfer_to: to,
+      });
     } else if (kind === 'token') {
       // "token 10.0000 TLM": the rest, minus any trailing amount marker.
       const quantity = rest.join(' ').trim();
       if (!quantity) { errors.push(`${where}: token quantity missing.`); return; }
       items.push({ kind: 'ft', quantity, to });
     } else {
-      errors.push(`${where}: unknown ingredient "${kw}". Use template / schema / collection / token.`);
+      errors.push(`${where}: unknown ingredient "${kw}". Use template / schema / collection / attribute / token.`);
     }
   });
 
@@ -363,42 +508,94 @@ export function parseIngredientLines(text: string, collection: string): ParseRes
 /**
  * Parses the outcomes box. One per line:
  *
- *   907173            mint template 907173 (single outcome = certain)
- *   907173 @50        weight 50
- *   907173+906880 @3  one outcome minting BOTH templates, weight 3
- *   nothing @20       a blank: this branch mints nothing
+ *   907173                      mint template 907173
+ *   907173 @50                  ...with weight 50
+ *   907173+906880 @3            one branch handing over BOTH
+ *   nothing @20                 a blank: this branch gives nothing
+ *   token 1.00000000 WAX @5     pay tokens (eosio.token unless stated)
+ *   token 5.0000 TLM from alien.worlds @2
+ *   pool eternalblaze @1        hand over an NFT from that pool
  *
  * Weights are relative: the builder sums them into total_odds, so
  * `@50/@50` and `@1/@1` both mean 50/50.
  */
+
+/**
+ * Splits on `sep` but never inside a {...} blob, so a pool result's
+ * display_data JSON (which contains commas, spaces, colons and can
+ * contain the separators themselves) survives intact.
+ */
+function splitOutsideBraces(text: string, sep: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of text) {
+    if (ch === '{') depth += 1;
+    else if (ch === '}') depth = Math.max(0, depth - 1);
+    if (ch === sep && depth === 0) { out.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
 export function parseOutcomeLines(text: string): ParseResult<NewOutcome> {
   const items: NewOutcome[] = [];
   const errors: string[] = [];
 
   text.split('\n').forEach((raw, idx) => {
-    const line = raw.split('#')[0].trim();
+    const line = stripComment(raw).trim();
     if (!line) return;
     const where = `Line ${idx + 1}`;
 
-    const at = line.split('@');
-    if (at.length > 2) { errors.push(`${where}: only one "@" is allowed.`); return; }
-    const odds = at.length > 1 ? Number(at[1].trim()) : 1;
+    // Odds are the trailing "@<n>". Matched at the end rather than by
+    // splitting, because a pool result's display_data may contain "@".
+    const oddsMatch = line.match(/@\s*(\d+)\s*$/);
+    const odds = oddsMatch ? Number(oddsMatch[1]) : 1;
     if (!Number.isFinite(odds) || odds < 1 || !Number.isInteger(odds)) {
       errors.push(`${where}: odds must be a whole number of at least 1.`);
       return;
     }
-    const head = at[0].trim().toLowerCase();
-    // An explicit blank branch: mints nothing when drawn.
-    if (head === 'nothing' || head === 'none' || head === 'empty' || head === '-') {
-      items.push({ odds, template_ids: [] });
+    const head = (oddsMatch ? line.slice(0, oddsMatch.index) : line).trim();
+    // An explicit blank branch: hands over nothing when drawn.
+    if (['nothing', 'none', 'empty', '-'].includes(head.toLowerCase())) {
+      items.push({ odds, results: [] });
       return;
     }
-    const ids = at[0].split('+').map((p) => p.trim()).filter(Boolean).map(Number);
-    if (ids.length === 0 || ids.some((n) => !Number.isFinite(n) || n <= 0)) {
-      errors.push(`${where}: expected template ids ("907173", "907173+906880") or "nothing".`);
-      return;
+
+    const results: NewResult[] = [];
+    let bad = false;
+    for (const partRaw of splitOutsideBraces(head, '+')) {
+      const part = partRaw.trim();
+      if (!part) continue;
+      const lower = part.toLowerCase();
+      if (lower.startsWith('token ')) {
+        // token <quantity> [from <contract>]
+        const m = part.slice(6).match(/^(.*?)(?:\s+from\s+(\S+))?$/i);
+        const quantity = (m?.[1] ?? '').trim();
+        if (!quantity) { errors.push(`${where}: token payout needs a quantity.`); bad = true; break; }
+        results.push({ kind: 'ft', quantity, contract: (m?.[2] ?? 'eosio.token').trim() });
+      } else if (lower.startsWith('pool ')) {
+        // pool <name> [<display json>]
+        const rest2 = part.slice(5).trim();
+        const sp = rest2.indexOf(' ');
+        const pool_name = sp < 0 ? rest2 : rest2.slice(0, sp).trim();
+        const display_data = sp < 0 ? '' : rest2.slice(sp + 1).trim();
+        if (!pool_name) { errors.push(`${where}: pool name missing.`); bad = true; break; }
+        results.push({ kind: 'pool', pool_name, display_data });
+      } else {
+        const tid = Number(part);
+        if (!Number.isFinite(tid) || tid <= 0) {
+          errors.push(`${where}: "${part}" is not a template id, "token …", "pool …" or "nothing".`);
+          bad = true;
+          break;
+        }
+        results.push({ kind: 'nft', template_id: tid });
+      }
     }
-    items.push({ odds, template_ids: ids });
+    if (bad) return;
+    if (results.length === 0) { errors.push(`${where}: nothing to hand over.`); return; }
+    items.push({ odds, results });
   });
 
   return { items, errors };
@@ -408,9 +605,13 @@ export function parseOutcomeLines(text: string): ParseResult<NewOutcome> {
 export function describeOdds(outcomes: NewOutcome[]): string[] {
   const total = outcomes.reduce((n, o) => n + o.odds, 0);
   if (total <= 0) return [];
+  const label = (r: NewResult) =>
+    r.kind === 'nft' ? `template ${r.template_id}`
+      : r.kind === 'ft' ? r.quantity
+        : `pool ${r.pool_name}`;
   return outcomes.map(
     (o) =>
-      `${o.template_ids.length ? o.template_ids.join(' + ') : 'nothing'} — ${((o.odds / total) * 100).toFixed(2)}% (${o.odds}/${total})`,
+      `${o.results.length ? o.results.map(label).join(' + ') : 'nothing'} — ${((o.odds / total) * 100).toFixed(2)}% (${o.odds}/${total})`,
   );
 }
 

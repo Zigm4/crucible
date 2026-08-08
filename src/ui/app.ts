@@ -5897,8 +5897,9 @@ async function onCreateBlendSubmit() {
 
   // Consequential and effectively irreversible once people start using
   // it, so spell out what is being registered before the wallet opens.
-  const burned = args.ingredients.filter((i) => i.kind !== 'ft' && !i.transfer_to).length;
-  const moved = args.ingredients.filter((i) => i.kind !== 'ft' && i.transfer_to).length;
+  const consumed = args.ingredients.filter((i) => i.kind !== 'ft' && i.kind !== 'cooldown');
+  const burned = consumed.filter((i) => !i.transfer_to).length;
+  const moved = consumed.filter((i) => i.transfer_to).length;
   const odds = describeOdds(args.rolls[0]?.outcomes ?? []);
   if (!confirm(
     `Create this blend on ${args.collection_name}?\n\n` +
@@ -5971,8 +5972,9 @@ function renderBlendCreate(): string {
   // the wallet opens, not after.
   const { args, problems } = readCreateBlendForm();
   const odds = describeOdds(args.rolls[0]?.outcomes ?? []);
-  const burned = args.ingredients.filter((i) => i.kind !== 'ft' && !i.transfer_to);
-  const moved = args.ingredients.filter((i) => i.kind !== 'ft' && i.transfer_to);
+  const consumed = args.ingredients.filter((i) => i.kind !== 'ft' && i.kind !== 'cooldown');
+  const burned = consumed.filter((i) => !i.transfer_to);
+  const moved = consumed.filter((i) => i.transfer_to);
   const tokens = args.ingredients.filter((i) => i.kind === 'ft');
 
   const preview = args.ingredients.length || odds.length

@@ -234,11 +234,14 @@ outcomes / results) and a recipe you can read, paste and diff beats a
 nest of widgets:
 
 ```
-INGREDIENTS                       OUTCOMES
-template 877088 x5                907173 @50
-template 877088 x2 -> vault.wam   907173+906880 @30
-template alien.worlds:741859 x1   nothing @20
-schema up.tools x3
+INGREDIENTS                          OUTCOMES
+template 877088 x5                   907173 @50
+template 877088 x2 -> vault.wam      907173+906880 @20
+template alien.worlds:741859 x1      token 1.00000000 WAX @15
+schema up.tools x3 {"description":…} token 5.0000 TLM from alien.worlds @5
+attribute up.gear x2 where           pool volna @5
+    Rarity = Rare | Epic ;           nothing @5
+    Generation = V3
 collection x2
 token 10.0000 TLM -> payout.wam
 ```
@@ -247,8 +250,34 @@ The panel parses as you type and previews what the recipe will actually
 do — how many ingredients are burned versus transferred away, the token
 cost, and the draw normalised to percentages — before the wallet opens.
 
-Three things the builder handles that are easy to get wrong, each found
-by diffing against real on-chain creations:
+### How it is verified
+
+`npm run verify:createblend` compiles the real module and replays
+**every `createblend` action the chain will serve** through it:
+
+```
+10000 creations across 341 collections
+
+PHASE A · encoder      10000/10000 rebuilt to identical bytes
+PHASE B · form syntax   9991 round-tripped through the text form,
+                           9 reported as not expressible
+PHASE C · live rows    underpunks55 102/102, cigalepixeld 30/30
+                       rebuildable exactly as they exist today
+```
+
+Phase A folds each trace down into the shape the UI works in and
+rebuilds it; phase B goes further and renders it into the form's
+one-per-line text, parses that back, and demands the same bytes again.
+Phase C covers collections whose blends predate the history window, by
+checking their live `blends` rows could be recreated verbatim.
+
+The 9 that are not expressible are named, never silently passed: 2
+cooldown ingredients (a time gate with no text syntax) and 7 attribute
+filters whose names carry significant leading/trailing whitespace,
+which the form trims.
+
+Things the builder handles that are easy to get wrong, each found by
+diffing against real on-chain creations:
 
 - **NFTs are not always burned.** 18 of the 362 NFT ingredients across
   the 250 most recent real creations are *transferred* to a vault
@@ -260,13 +289,18 @@ by diffing against real on-chain creations:
 - **An outcome may mint nothing.** A blank branch is how authors build
   "you got unlucky"; `waxlandianft`'s 51-outcome blend opens with one at
   20%. Write it as `nothing @20`.
+- **An outcome is not always an NFT.** Across the corpus the contract
+  also pays out tokens (801 results) and hands over pre-minted NFTs
+  from a pool (1,076). Modelling only on-demand mints built a silently
+  different recipe for roughly one blend in nine.
 
 `total_odds` is always derived from the weights rather than taken from
 the form: the contract does not normalise it, so a hand-entered total
 that disagrees with the outcomes silently skews the draw.
 
-Attribute ingredients are supported by the builder but not offered by
-the form yet (4 of 362 real ingredients use them).
+Every ingredient kind the contract accepts is supported, attribute
+filters included (`where a = x | y ; b = z`), along with each
+ingredient's optional `display_data` JSON blob.
 
 #### Manage panel · collection authors
 

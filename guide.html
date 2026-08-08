@@ -251,9 +251,13 @@
           <li><code>token 10.0000 TLM -&gt; payout.wam</code> — a token cost and who receives it</li>
         </ul>
         <p>Outcomes take a weight: one line is a guaranteed result, several lines make a
-          lottery (<code>907173 @50</code>), and <code>nothing @20</code> is a blank branch that
-          mints nothing. Weights are relative — the page normalises them to percentages and
-          shows the draw before you sign.</p>
+          lottery. A branch can hand over an NFT (<code>907173 @50</code>), tokens
+          (<code>token 1.00000000 WAX @15</code>), a pre-minted NFT from a pool
+          (<code>pool volna @5</code>), or <code>nothing @20</code>. Weights are relative — the
+          page normalises them to percentages and shows the draw before you sign.</p>
+        <p>Filters on attributes are written
+          <code>attribute up.gear x2 where Rarity = Rare | Epic ; Generation = V3</code>, and a
+          trailing <code>{"description":"…"}</code> sets an ingredient's display data.</p>
         <div class="note">
           The preview spells out how many ingredients are <strong>burned</strong> versus
           <strong>transferred away</strong>. Burning is permanent, and once the blend exists

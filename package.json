@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:verify": "vite build --config vite.lib.config.mjs",
+    "verify:createblend": "npm run build:verify && node scripts/verify-createblend.mjs"
   },
   "dependencies": {
     "@wharfkit/session": "^1.4.0",
