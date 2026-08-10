@@ -129,8 +129,8 @@ export function buildSetBlendData(authorized_account: string, blend_id: string |
  *
  * The one author action that changes what a live recipe CONSUMES.
  * Unlike `setrolls` - which is Nefty-internal, has no
- * `authorized_account` and has been called 5 times ever - this is a
- * normal author action with 6,356 real uses.
+ * `authorized_account` at all, so no author can sign it - this one
+ * takes the account as its first field and is used by authors daily.
  *
  * It is a full REPLACEMENT, not a patch: whatever is passed becomes the
  * complete list, so the caller must start from the current ingredients.

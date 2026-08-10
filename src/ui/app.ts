@@ -5781,7 +5781,7 @@ function renderDropManage(): string {
  * whitespace), rather than presenting a box that would quietly drop it.
  *
  * The outcomes are NOT editable here on purpose: `setrolls` is a
- * Nefty-internal action with no `authorized_account`, called 5 times
+ * Nefty-internal action with no `authorized_account`, so unsignable
  * ever and only by their own accounts, so an author signature would be
  * rejected. That is a contract limit, not a missing button.
  */

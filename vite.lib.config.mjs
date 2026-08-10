@@ -5,6 +5,9 @@ import { defineConfig } from 'vite';
 // hand-written copies. Output is gitignored; `npm run build:verify`
 // regenerates it.
 export default defineConfig({
+  // The verify build has no page to serve, so it must not drag public/
+  // into scripts/.build/ as a second stale copy of anything in there.
+  publicDir: false,
   build: {
     lib: {
       entry: {

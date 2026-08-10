@@ -25,9 +25,12 @@
 
 ## tl;dr
 
-A **single HTML file** with bundled JavaScript that talks straight to
-six public WAX smart contracts (`blend.nefty`, `neftyblocksd`,
-`atomicpacksx`, `up.nefty`, `waxdaomarket`, `blenderizerx`). Your wallet signs the
+A **static page** with bundled JavaScript (one HTML entry point, one JS
+file, one CSS file) that talks straight to eight public WAX smart
+contracts (`blend.nefty`, `neftyblocksd`, `neftyblocksp`,
+`atomicpacksx`, `up.nefty`, `secure.nefty`, `waxdaomarket`,
+`blenderizerx`), plus `atomicassets` for the NFT transfers
+themselves. Your wallet signs the
 transactions; the page never sees a private key, never phones home,
 never stores anything. The blend / drop / upgrade / craft fees that
 always existed still go where they always went, nothing comes to me.
@@ -35,7 +38,8 @@ always existed still go where they always went, nothing comes to me.
 ```
 $ crucible --status
 contracts...... blend.nefty + neftyblocksd
-                + atomicpacksx + up.nefty
+                + neftyblocksp + atomicpacksx
+                + up.nefty + secure.nefty
                 + waxdaomarket + blenderizerx        [LIVE]
 backend........ none                                 [BY DESIGN]
 telemetry...... none                                 [BY DESIGN]
@@ -58,6 +62,7 @@ $ crucible --layout
                           #/waxdao/blend/1921
                           #/blenderizer/blend/336429
                           #/catalog/underpunks55   <- everything, one page
+                          #/status                 <- contract health monitor
                           #/lab                    <- guided creator (unlisted)
 ```
 
@@ -76,6 +81,9 @@ has been running for years and is enforced byte-for-byte by the chain.
 | `blend.nefty` contract      | Its on-chain code         | `cleos get code blend.nefty`, unchanged since 2024 |
 | `neftyblocksd` contract     | Its on-chain code         | Same |
 | `atomicpacksx` contract     | Its on-chain code         | Same, plus the ORNG oracle |
+| `neftyblocksp` contract     | Its on-chain code         | Same, the second pack contract |
+| `secure.nefty` contract     | Its on-chain code         | Same, it enforces whitelist / ownership gates |
+| `atomicassets` contract     | Its on-chain code         | Same, every NFT deposit is one of its transfers |
 | `up.nefty` contract         | Its on-chain code         | Same |
 | `waxdaomarket` contract     | Its on-chain code         | Same |
 | `blenderizerx` contract     | Its on-chain code         | Same |
@@ -83,10 +91,15 @@ has been running for years and is enforced byte-for-byte by the chain.
 | Crucible's front-end        | **You. Read it.**         | This repo + the [verifier scripts](#--verify-everything--) below |
 
 Remove every Crucible-specific layer from that table and trust only
-WAX and the six contracts above: the worst Crucible can do is *fail
+WAX and the eight contracts above: the worst Crucible can do is *fail
 to build the right transaction*. It can't steal funds, drain wallets,
 or front-run you. Your wallet shows every action before signing and
 would refuse anything weird.
+
+One caveat for collection authors. A create or edit action that is
+wrong but still VALID is accepted by the chain rather than reverted,
+and then has to be deleted and rebuilt. That is why every author flow
+goes through a tick-to-confirm summary of the exact payload.
 
 ---
 
@@ -95,12 +108,21 @@ would refuse anything weird.
 ```
 [*] no backend, no server, no API key, no database
 [*] no analytics, no telemetry, no Sentry, no Google Tag, nothing
-[*] no cookies; localStorage is never written (zero session state
-    persists between visits, every page load is a clean boot)
+[*] no cookies. localStorage holds exactly two things, both from code
+    you can delete in one edit: the theme you picked (`crucible-theme`,
+    written by the inline script in index.html) and WharfKit's wallet
+    session (`wharf-*`), so you do not reconnect on every visit.
+    Neither is ever sent anywhere. Log out to drop the session key
 [*] third-party requests are limited to public WAX RPC nodes (chain
-    reads), AtomicHub's public AtomicAssets API (NFT name enrichment),
-    an IPFS gateway (NFT artwork -- see below), and Google Fonts
-    (purely cosmetic, remove in 30s by editing index.html)
+    reads), WAX Hyperion history nodes (`wax.eosphere.io`,
+    `api.waxsweden.org`, used by #/status), the public AtomicAssets
+    indexers (`aa.wax.atomichub.io`, failing over to
+    `wax.api.atomicassets.io` and `aa-wax-public1.neftyblocks.com`)
+    for NFT name enrichment, an IPFS gateway (NFT artwork -- see
+    below), and Google Fonts (purely cosmetic, remove in 30s by
+    editing index.html). Clicking "connect wallet" adds that wallet's
+    own hosts: `cb.anchor.link` for Anchor, `*.mycloudwallet.com` for
+    WAX Cloud Wallet
 [*] your private key never leaves your wallet. WharfKit hands the
     unsigned transaction to Anchor / WAX Cloud Wallet, which signs
     locally and returns a signature. The page never sees a secret.
@@ -115,9 +137,11 @@ the chain. Three mitigations, none of which make it disappear:
 - requests carry `referrerpolicy="no-referrer"`, so the gateway never
   learns which page you were on
 - the gateway list lives in one constant (`IPFS_GATEWAYS` in
-  `src/ui/media.ts`). **Empty it and artwork is disabled everywhere**,
-  with no other change needed -- same escape hatch as the Google Fonts
-  link
+  `src/ui/media.ts`). **Empty it and every IPFS request stops**, same
+  escape hatch as the Google Fonts link. One residue: the few templates
+  whose image field is already a full `https://` URL are fetched as
+  written, so drop the `return [v]` line in `candidatesForRef` as well
+  if you want literally zero artwork requests
 - nothing is requested until a card that has artwork is actually
   rendered; browsing without opening a blend costs zero image requests
 
@@ -147,8 +171,10 @@ that decodes wins.
 
 ### BLEND tab · `blend.nefty`
 
-Every blend Nefty's UI ever submitted was a 3-or-5 action transaction
-signed by your wallet. Crucible builds the same thing:
+Every blend Nefty's UI ever submitted was a short action sequence
+signed by your wallet. Crucible rebuilds it as 3 actions, or 5 when
+tokens are involved, dropping only the `neftybrespay::paycpu` action
+whose payer no longer signs:
 
 ```
 1. blend.nefty::announcedepo            "I'm depositing N NFTs"
@@ -231,8 +257,10 @@ called out before you deposit anything.
 recipe. It is **not on the BLEND tab**: creation lives on the guided
 creator below, so there is one path to it rather than two. What follows
 is the builder's own one-per-line syntax, which is what the verify suite
-replays every real creation through, and what the ingredient editor in
-the Manage panel still reads and writes:
+replays every real creation through. Its left column is still live: the
+ingredient editor in the Manage panel reads and writes exactly this. The
+right column is now read-only history, since outcomes cannot be edited
+after creation and the guided creator collects them as form state:
 
 ```
 INGREDIENTS                          OUTCOMES
@@ -308,17 +336,23 @@ diffing against real on-chain creations:
 the form: the contract does not normalise it, so a hand-entered total
 that disagrees with the outcomes silently skews the draw.
 
-Every ingredient kind the contract accepts is supported, attribute
-filters included (`where a = x | y ; b = z`), along with each
-ingredient's optional `display_data` JSON blob.
+The encoder covers every ingredient kind the contract accepts,
+cooldown gates included, and the text syntax covers all but those:
+multi-attribute filters (`where a = x | y ; b = z`) and per-ingredient
+`display_data` round-trip through the ingredient editor and the verify
+suite. The guided creator asks for the common subset: one attribute
+filter per ingredient, no cooldown, no display_data.
 
 #### Editing after creation
 
 The contract lets an author change nearly everything about a live
-blend, and the Manage panel wires most of it: `setblenddata` (name /
-image / description), `setblendcat`, `setblendtime`, `setblendmax`,
-`setblendlim`, `setblendhide`, `setblendsec` (whitelist) and
-`delblend`. Upgrades expose the same set under `setupgrd*`.
+blend, and the Manage panel wires most of it: `setblenddata` (used for
+the display name only, image and description are preserved untouched),
+`setblendtime`, `setblendmax`, `setblendlim`, `setblendhide`,
+`setblendsec` (whitelist) and `delblend`. `setblendcat` has a builder
+but no control. Upgrades have no equivalent panel: none of `up.nefty`'s
+author actions are wired, so an upgrade can be created (at the guided
+creator) but not edited or deleted from Crucible.
 
 `setblendmix` (the ingredients) is wired too: the Manage panel offers
 an editor pre-filled with the recipe as it stands on chain, because the
@@ -327,19 +361,24 @@ everything not retyped. It refuses to open at all for a recipe the text
 syntax cannot round-trip, rather than offering a lossy box.
 
 `setrolls` (the outcomes) is deliberately NOT wired, and never will be
-from here. It is the only author-looking action in the ABI with no
-`authorized_account` parameter, and the history says why: **5 calls in
-four years, every one signed by `blend.nefty` or `setup.nefty`
-themselves**, against 6,356 author-signed `setblendmix` calls. It is a
-NeftyBlocks maintenance action, so an author signature would simply be
-rejected. Changing what a blend PRODUCES therefore means deleting it
+from here. The live ABI settles it: `setblendmix` takes
+`(authorized_account, blend_id, ingredients)`, `setrolls` takes only
+`(blend_id, rolls)`. It is **the one author-looking action with no
+account to authorise against**, which makes it a NeftyBlocks
+maintenance action; an author's signature is simply rejected. The
+history agrees: author-signed `setblendmix` calls run into the
+hundreds, while every `setrolls` call that can be found was signed by
+NeftyBlocks' own accounts. Changing what a blend PRODUCES therefore means deleting it
 and creating a new one - a contract limit, not a missing button.
 
-Every create and every edit goes through a **beta confirmation**: an
+Every edit of a live blend goes through a **beta confirmation**: an
 in-app dialog stating that this flow is new, showing the exact summary
 of what is about to be signed, and requiring an explicit tick before
 the sign button enables. It is not a browser `confirm()` - it renders
 outside `#root` so an app re-render cannot dismiss it mid-decision.
+The guided creator carries its own gate, built the same way. The drop
+panels on the CLAIM tab predate both and still use a plain browser
+`confirm()`, for creating a drop and for every Manage write.
 
 #### Manage panel · collection authors
 
@@ -376,7 +415,7 @@ Drop claims. Same idea, different contract:
 3. neftyblocksd::<claim variant>        "Claim my drop"
 ```
 
-Crucible handles four claim variants:
+Crucible recognises four claim variants and can sign three:
 
 | Variant         | Gate                                          | Action          |
 | --------------- | --------------------------------------------- | --------------- |
@@ -485,7 +524,7 @@ so the right open/claim flow is used automatically.
 
 ### UPGRADE tab · `up.nefty`
 
-The fourth pillar, new in v0.4. Upgrades **mutate** existing NFTs you
+The fourth pillar. Upgrades **mutate** existing NFTs you
 own: the asset stays in your wallet, only its on-chain `mutable_data`
 changes (image, colour, level, etc.). The action set mirrors
 `blend.nefty` but the differentiator is `assets_to_upgrade`:
@@ -512,13 +551,15 @@ see [Limitations](#--limitations--).
 
 ```
 [*] per-collection discovery from up.nefty/upgrades
-[*] alphabetical sort by name, status badges (active / sold-out /
-    ended / upcoming / hidden)
+[*] active ones first, alphabetical by name inside each status, with
+    status badges (active / sold-out / ended / upcoming / hidden)
 [*] per-spec NFT picker (matches schema + template requirements
     against your wallet)
 [*] per-ingredient FT balance check
-[*] zero-CPU sanity check: the contract row is read live each time,
-    no stale cache
+[*] Simulate serialises the transaction locally against the ABI, so
+    checking a recipe costs no CPU and signs nothing. The upgrade list
+    itself is cached for five minutes; a deep link or a manual id
+    re-reads the row live
 ```
 
 ### WAXDAO BLEND tab · `waxdaomarket`
@@ -672,6 +713,12 @@ first, so none of that is asked:
 [*] one plain sentence on every step. If the sentence is wrong, the
     recipe is wrong, with no payload to decode
 [*] Simulate before signing, then a confirmation you have to tick
+[*] one roll per blend and one spec per upgrade. The contract allows
+    several of each (a second roll is a second, independent draw paid
+    out on the same blend); that shape has to be built elsewhere
+[*] whitelists are read, not created: the creator offers the collection's
+    existing lists, and a drop it creates with the whitelist flag is
+    still empty, so both finish in the Manage panels on the main page
 ```
 
 **The attribute question.** An upgrade's `attribute_type` must match what
@@ -705,11 +752,13 @@ and the calculation redoes itself against just that template.
 `npm run verify:lab` checks all of it: 18 payloads built from form state
 and serialised against the LIVE `blend.nefty` / `up.nefty` /
 `neftyblocksd` ABIs, 12 recipes that must be rejected and for the stated
-reason, and the attribute gate replayed against five real collections
-including every attribute their live upgrades actually rewrite.
+reason, and the attribute gate replayed against five real collections,
+four of them cross-checked against every attribute their live upgrades
+actually rewrite.
 
 Self-contained in `src/ui/lab.ts`: its own state, its own render, its own
-confirmation gate. Delete the file to remove the page.
+confirmation gate, and nothing in the app reads from it. Removing the
+page is that file plus its import and route in `app.ts`.
 
 ### CATALOGUE · `#/catalog/<collection>`
 
@@ -719,7 +768,9 @@ browsing, that is the wrong axis. They want *boots*, and the boots
 might be a blend, a Blenderizer recipe, a drop or a pack, on four
 different contracts, with nothing listing them together.
 
-The catalogue inverts it. One collection, all six contracts scanned in
+The catalogue inverts it. One collection, seven contracts scanned in
+parallel as six sources (both pack contracts feed one badge), every
+result normalised into one row shape and grouped by
 parallel, every result normalised into one row shape and grouped by
 **category** -- the schema of the item produced -- with a coloured
 badge per source. Grouping by contract is one click away.
@@ -800,7 +851,7 @@ $ node scripts/verify-trace.mjs
 
 === Token blend 43802 ===
    ✓ blend.nefty::openbal
-   ✓ underpunks55::transfer  (105.00000000 UPMAX)
+   ✓ underpunks55::transfer
    ✓ blend.nefty::announcedepo
    ✓ atomicassets::transfer
    ✓ blend.nefty::nosecfuse
@@ -869,12 +920,13 @@ $ node scripts/verify-blenderizer.mjs
    ✓ 10x template 362363 + 1x template 20562 deposited
    ✓ the whole blend is ONE transfer (no announce, no 2nd signature)
    ✓ atomicassets::transfer matches the trace byte for byte
-   ✓ discovery finds it by scanning 17748 rows (18 calls, 4.6s)
+   ✓ discovery finds it by scanning 17748 rows (18 calls, ~4s)
 ```
 
 ```bash
 $ node scripts/verify-discover-chain.mjs
-# Walks ~30K+ rows of blend.nefty/blends in 16 parallel chunks
+# Walks ~33K rows of blend.nefty/blends in parallel chunks of 5,000
+# blend_ids (10 chunks at today's table head, capped at 16).
 # (~5 seconds). Confirms every Underpunks blend is reachable
 # on-chain and that two specific reference blends appear.
 ```
@@ -907,7 +959,8 @@ another defunct platform.
    our actions and compare hex to the chain's recorded payload. One
    byte off and the test catches it.
 5. **Built defensive fallbacks**: if the AtomicHub indexer is down,
-   walk the on-chain tables directly (16 parallel chunks). If the
+   walk the on-chain tables directly (parallel chunks of 5,000
+   blend_ids, capped at 16 chunks). If the
    indexer comes back, use it for speed.
 6. **Wired UX guard rails**: pre-flight every claim against the
    per-user `accstats` row so the wallet never signs a transaction
@@ -928,6 +981,9 @@ git clone https://github.com/<you>/crucible.git
 cd crucible
 npm install
 npm run dev          # localhost:5173 with HMR
+npm run build        # tsc --noEmit + vite build -> dist/
+npm run preview      # serve the built dist/ locally
+npm run build:verify # compile the author-side builders for the verify scripts
 ```
 
 To publish to **GitHub Pages** (recommended: source and runtime live
@@ -960,14 +1016,21 @@ ipfs add -r dist
 # Pin the resulting CID via Pinata, Web3.Storage, Filebase, ...
 ```
 
-Same bundle, no single point of failure.
+Same bundle, no single point of failure. The build is multi-page:
+`dist/index.html` (the app) and `dist/guide.html` (the user guide),
+plus everything under `public/`.
 
 ---
 
 ## --- Architecture ---
 
 ```
+index.html            : app shell (loads src/main.ts + src/ui/style.css)
+guide.html            : standalone themed user guide, 2nd Vite build input
+                        (vite.config.ts rollupOptions.input.guide)
 src/
+  main.ts              : entry point - hands off to ui/app::mount(),
+                         renders a fail-safe error card if mount throws
   chain/
     rpc.ts             : APIClient + failover across 4 public WAX RPCs,
                          per-request timeouts so a hung host can't stall
@@ -1018,17 +1081,22 @@ src/
   ui/
     app.ts             : shell, state, render loop, event wiring
     about.ts           : collapsible in-page guide
-    catalog.ts         : #/catalog - one collection across all six
-                         contracts, grouped by category
+    catalog.ts         : #/catalog - one collection across all seven
+                         contracts (six scan sources, the two pack
+                         contracts share one), grouped by category
     media.ts           : IPFS resolution + non-distorting thumbnails
                          (gateway fallback, removes itself on failure)
     lab.ts             : #/lab - unlisted guided creator for blends,
                          upgrades and drops (reads schemas, signs)
     status.ts          : #/status - contract health monitor
     dryrun.ts          : local ABI serialisation, "simulate without signing"
-    theme.css          : palette, fonts, scanlines, motion (fork to re-skin)
+    style.css          : entry point - @imports the five files below in order
+    theme.css          : default "cyber" skin: palette, fonts, scanlines,
+                         motion (fork this to re-skin)
     layout.css         : page structure, cards, header, footer
     components.css     : pickers, chips, buttons, tabs, pack rows, etc.
+    neutral.css        : "Clair" light theme (data-theme="neutral")
+    modern.css         : "Sombre" dark theme (data-theme="modern", the default)
 scripts/
   verify-trace.mjs             : byte-for-byte for blend traces
   verify-drops.mjs             : byte-for-byte for drop traces
@@ -1036,9 +1104,13 @@ scripts/
   verify-upgrades.mjs          : byte-for-byte for upgrade traces
   verify-waxdao.mjs            : byte-for-byte for waxdaomarket blends
   verify-blenderizer.mjs       : byte-for-byte for blenderizerx blends
+  verify-admin.mjs             : byte-for-byte for the 10 author/admin
+                                 actions (blend settings + secure.nefty)
   verify-createblend.mjs       : byte-for-byte for createblend across
                                  every creation on chain + the parsers
   verify-createupgrade.mjs     : the same, for createupgrde
+                                 (both need `npm run build:verify` first,
+                                  which their npm scripts run for you)
   verify-lab.mjs               : the #/lab creator: form state -> args ->
                                  live ABI, plus the attribute gate against
                                  five real collections
@@ -1046,7 +1118,6 @@ scripts/
   verify-discover-chain.mjs    : on-chain discovery sanity check
 public/
   favicon.svg         : crucible glyph (animated molten core)
-  README.md           : user-facing guide (linked in the app footer)
 ```
 
 ---
@@ -1057,7 +1128,11 @@ public/
 [*] every collection input starts empty -- no auto-load, no stale
     state from a previous session
 [*] discovery is on-demand. The user clicks "Discover ..." when they
-    want results, never on mount / tab switch / login
+    want results, never on tab switch or login. Deep links are the
+    deliberate exception, because opening one IS the request: #/status
+    scans the monitored contracts on arrival, and
+    #/catalog/<collection> starts the six-source scan straight from
+    the URL
 [*] re-renders preserve scroll position, focus, and caret offset so
     state changes don't feel like a page refresh
 [*] picker dropdowns float ABOVE every card, even the loaded info /
@@ -1170,7 +1245,8 @@ the front-end wiring, so they're the highest-value things to add next.
   isn't in the app yet - create them on AtomicHub, then build the drop
   here.
 - **Other NeftyBlocks contracts** (redemptions, NFT swaps, marketplace
-  listings) aren't covered yet. PRs welcome.
+  listings) aren't covered yet, beyond the read-only health cards on
+  #/status. PRs welcome.
 
 ---
 
@@ -1186,13 +1262,15 @@ Built on top of, and indebted to:
 - **[Greymass](https://greymass.com/)** for [WharfKit](https://wharfkit.com/),
   the JavaScript signing stack that makes wallet integration boring
   (in the best way).
-- **[Pink.gg](https://pink.gg)** for the AtomicAssets standard and
+- **[pink.network](https://pink.network)** for the AtomicAssets standard and
   the public AtomicHub indexer that survived Nefty.
 - **[NeftyBlocks](https://neftyblocks.com)** for `blend.nefty`,
-  `neftyblocksd`, `atomicpacksx` and `up.nefty`, and
-  **[WaxDAO](https://waxdao.io)** for `waxdaomarket`. The contracts
-  outlive the platforms that deployed them. That's exactly what smart
-  contracts are supposed to do.
+  `neftyblocksd`, `neftyblocksp`, `up.nefty` and `secure.nefty`,
+  **[WaxDAO](https://waxdao.io)** for `waxdaomarket`, and
+  **3DkRender** for `blenderizerx`. Packs also lean on AtomicHub's
+  `atomicpacksx`, which is pink.network's contract, not NeftyBlocks'.
+  The contracts outlive the platforms that deployed them. That's
+  exactly what smart contracts are supposed to do.
 
 ```
 > SESSION CLOSE

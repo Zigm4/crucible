@@ -120,7 +120,7 @@
         <h2>Before you start</h2>
         <ol class="steps">
           <li><strong>Connect a wallet</strong> - Anchor or WAX Cloud Wallet. Connecting is read-only until you sign.</li>
-          <li><strong>Stake a little CPU/NET.</strong> Nefty used to sponsor your CPU; that sponsor no longer signs, so keep roughly <strong>5-10 WAX staked to CPU</strong> (and a little to NET) from your wallet's Resources tab.</li>
+          <li><strong>Stake a little CPU/NET.</strong> Nefty used to sponsor your CPU; that sponsor no longer signs, so keep roughly <strong>5-10 WAX staked to CPU</strong> (and a little to NET) from your wallet's Resources tab. For scale: a blend costs about 1.5 ms of CPU, and opening a pack about 3 ms across its two transactions. Too little and the chain answers <code>exceeded the account CPU limit</code>; stake more and retry.</li>
           <li><strong>Pick a theme</strong> (top-right): Neon, Clair, or Sombre. Your choice is remembered.</li>
         </ol>
         <div class="note">
@@ -163,6 +163,11 @@
           <li>Sign once more to mint the revealed cards.</li>
         </ol>
         <p>Crucible scans both contracts globally and only lists collections where your wallet holds an openable pack, then uses the right open/claim flow for that pack automatically.</p>
+        <div class="note">
+          <strong>Interrupted between the two signatures?</strong> Your pack is still safe: it is held
+          by the pack contract, not lost. Reload the page, pick the same pack again, and Crucible
+          offers the second signature. Nothing is minted until you sign it.
+        </div>
       </section>
 
       <section class="gcard" id="upgrade">
