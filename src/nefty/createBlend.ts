@@ -603,6 +603,52 @@ export function parseOutcomeLines(text: string): ParseResult<NewOutcome> {
   return { items, errors };
 }
 
+/**
+ * Renders ingredients back into the form's text syntax — the exact
+ * inverse of parseIngredientLines.
+ *
+ * Needed to PRE-FILL the edit box with a recipe's current ingredients:
+ * an author editing `setblendmix` must start from what is actually on
+ * chain, not from a blank textarea, or they will silently drop whatever
+ * they forget to retype.
+ *
+ * Returns null for a recipe the text syntax cannot express (a cooldown
+ * gate, an attribute filter whose whitespace is significant), so the
+ * caller can refuse to offer editing rather than offer a lossy box.
+ */
+export function formatIngredientLines(
+  ingredients: NewIngredient[],
+  collection: string,
+): string | null {
+  const dd = (d?: string) => (d ? ` ${d}` : '');
+  const lines = ingredients.map((i) => {
+    const to = 'transfer_to' in i && i.transfer_to ? ` -> ${i.transfer_to}` : '';
+    const pre = 'collection_name' in i && i.collection_name && i.collection_name !== collection
+      ? `${i.collection_name}:` : '';
+    switch (i.kind) {
+      case 'template':   return `template ${pre}${i.template_id} x${i.amount}${to}`;
+      case 'schema':     return `schema ${pre}${i.schema_name} x${i.amount}${to}${dd(i.display_data)}`;
+      case 'collection': return `collection ${i.collection_name} x${i.amount}${to}`;
+      case 'ft':         return `token ${i.quantity}${i.to ? ` -> ${i.to}` : ''}`;
+      case 'attribute': {
+        if (!i.attributes?.length) return null;
+        const unsafe = i.attributes.some((a) =>
+          a.attribute_name !== a.attribute_name.trim() ||
+          a.attribute_name.includes(';') || a.attribute_name.includes('=') ||
+          a.allowed_values.some((v) => v !== v.trim() || v.includes('|') || v.includes(';')));
+        if (unsafe) return null;
+        const clauses = i.attributes
+          .map((a) => `${a.attribute_name} = ${a.allowed_values.join(' | ')}`)
+          .join(' ; ');
+        return `attribute ${pre}${i.schema_name} x${i.amount}${to} where ${clauses}${dd(i.display_data)}`;
+      }
+      case 'cooldown':   return null; // time gate: no text syntax
+      default:           return null;
+    }
+  });
+  return lines.some((l) => l === null) ? null : (lines as string[]).join('\n');
+}
+
 /** Human summary of the draw, so an author can sanity-check the odds. */
 export function describeOdds(outcomes: NewOutcome[]): string[] {
   const total = outcomes.reduce((n, o) => n + o.odds, 0);

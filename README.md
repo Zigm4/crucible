@@ -317,14 +317,20 @@ image / description), `setblendcat`, `setblendtime`, `setblendmax`,
 `setblendlim`, `setblendhide`, `setblendsec` (whitelist) and
 `delblend`. Upgrades expose the same set under `setupgrd*`.
 
-Two are **not** wired yet, and they are the two the create form
-produces: `setblendmix` (the ingredients) and `setrolls` (the
-outcomes). Changing what a blend consumes or produces therefore means
-deleting it and creating a new one. Worth knowing before you publish a
-recipe. Note also that `setrolls` is the odd one out in the ABI — it
-takes no `authorized_account`, so its authorisation model differs from
-every other author action and wants checking against a real trace
-before being exposed.
+`setblendmix` (the ingredients) is wired too: the Manage panel offers
+an editor pre-filled with the recipe as it stands on chain, because the
+action REPLACES the whole list and a blank box would silently drop
+everything not retyped. It refuses to open at all for a recipe the text
+syntax cannot round-trip, rather than offering a lossy box.
+
+`setrolls` (the outcomes) is deliberately NOT wired, and never will be
+from here. It is the only author-looking action in the ABI with no
+`authorized_account` parameter, and the history says why: **5 calls in
+four years, every one signed by `blend.nefty` or `setup.nefty`
+themselves**, against 6,356 author-signed `setblendmix` calls. It is a
+NeftyBlocks maintenance action, so an author signature would simply be
+rejected. Changing what a blend PRODUCES therefore means deleting it
+and creating a new one — a contract limit, not a missing button.
 
 Every create and every edit goes through a **beta confirmation**: an
 in-app dialog stating that this flow is new, showing the exact summary
@@ -599,6 +605,29 @@ checked before you deposit anything:
   author pre-paid (`rambalance`). A collection with no balance fails
   every blend until they top it up; the amount left is shown inline.
 
+### UPGRADE tab · creating one
+
+`up.nefty::createupgrde`, behind the same opt-in and the same beta gate
+as the blend creator. An upgrade mints nothing — it rewrites attributes
+on an NFT the player already owns — so the form has three boxes: the
+cost, which NFTs qualify, and what changes.
+
+```
+COST                          APPLIES TO
+token 10.00000000 WAX ->      templates 906678 + 906679
+    payout.wam                attribute uint64 level = 1 | 2
+template 877088 x1
+
+WHAT CHANGES
+name = Upgraded Sword         image img = Qm…
+uint64 level += 1             bool engine = true
+```
+
+The leading word is the attribute's **declared type on the schema**,
+stated rather than guessed: it decides the wire encoding, and getting
+it wrong is the one mistake the chain will not catch. Verified against
+every createupgrde on chain — see the verify section.
+
 ### CATALOGUE · `#/catalog/<collection>`
 
 Every tab above is organised the way the CHAIN is: one per contract,
@@ -863,7 +892,10 @@ src/
     drops.ts           : lists drops per collection + 4 auth flavours
     dropExecute.ts     : claim tx (assertprice + transfer + claim*)
     createBlend.ts     : author action - build a createblend tx
-                         (+ the form's ingredient/outcome parsers)
+                         (+ the form's ingredient/outcome parsers,
+                          shared with createUpgrade)
+    createUpgrade.ts   : author action - build a createupgrde tx
+                         (+ the requirement/rewrite parsers)
     createDrop.ts      : author action - build a createdrop tx
     dropAdmin.ts       : author actions - drop whitelist + settings + reads
     packs.ts           : lists atomicpacksx pack designs, pairs with wallet
@@ -905,8 +937,9 @@ scripts/
   verify-upgrades.mjs          : byte-for-byte for upgrade traces
   verify-waxdao.mjs            : byte-for-byte for waxdaomarket blends
   verify-blenderizer.mjs       : byte-for-byte for blenderizerx blends
-  verify-createblend.mjs       : byte-for-byte for createblend, 5
-                                 collections + the form's text parsers
+  verify-createblend.mjs       : byte-for-byte for createblend across
+                                 every creation on chain + the parsers
+  verify-createupgrade.mjs     : the same, for createupgrde
   verify-pool-blend.mjs        : POOL_NFT blend path against chain state
   verify-discover-chain.mjs    : on-chain discovery sanity check
 public/

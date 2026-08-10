@@ -63,12 +63,22 @@ import {
 } from '../nefty/rngExecute';
 import {
   listUpgrades,
+  clearUpgradesCache,
   loadUpgradeById,
   type DiscoveredUpgrade,
   type UpgradeStatus,
   type UpgradeIngredient,
 } from '../nefty/upgrades';
 import { buildUpgradeActions, executeUpgrade } from '../nefty/upgradeExecute';
+import {
+  buildCreateUpgradeAction,
+  executeCreateUpgrade,
+  parseRequirementLines,
+  parseUpgradeResultLines,
+  describeSpec,
+  validateNewUpgrade,
+  type CreateUpgradeArgs,
+} from '../nefty/createUpgrade';
 import {
   listWaxdaoBlends,
   loadWaxdaoBlendById,
@@ -80,7 +90,10 @@ import { buildWaxdaoBlendActions, executeWaxdaoBlend } from '../waxdao/blendExec
 import {
   buildCreateBlendAction,
   executeCreateBlend,
+  encodeIngredient,
+  formatIngredientLines,
   parseIngredientLines,
+  type NewIngredient,
   parseOutcomeLines,
   describeOdds,
   validateNewBlend,
@@ -106,6 +119,7 @@ import {
   buildSetBlendTime,
   buildDelBlend,
   buildSetBlendMax,
+  buildSetBlendMix,
   buildSetBlendLim,
   buildSetBlendData,
   buildSetBlendSec,
@@ -445,6 +459,7 @@ interface AppState {
   /** Collection-author "create a drop" panel (CLAIM/drops tab). */
   createDrop: CreateDropState;
   createBlend: CreateBlendState;
+  createUpgrade: CreateUpgradeState;
   /** Collection-author "manage a drop" panel (whitelist + settings). */
   manageDrop: DropManageState;
 }
@@ -512,6 +527,42 @@ interface CreateBlendState {
   accountLimit: string;
   cooldown: string;
   /** secure.nefty whitelist id; '' or '0' = open. */
+  securityId: string;
+  hidden: boolean;
+  lastDryRun?: unknown;
+  lastTrxId?: string;
+}
+
+/**
+ * Inline "create an upgrade" form (UPGRADE tab, collection authors).
+ *
+ * Same three-box shape as the blend creator, but the middle box is
+ * different in kind: a blend describes what it MINTS, an upgrade
+ * describes which NFTs it applies to and which attributes it rewrites
+ * on them, in place.
+ */
+interface CreateUpgradeState {
+  enabled: boolean;
+  collection: string;
+  authChecked?: string;
+  authorized?: boolean;
+  authChecking: boolean;
+  busy: boolean;
+  name: string;
+  description: string;
+  image: string;
+  category: string;
+  /** Schema the upgrade applies to. */
+  schema: string;
+  /** Cost — same syntax as the blend form. */
+  ingredientsInput: string;
+  /** Which NFTs qualify. */
+  requirementsInput: string;
+  /** Which attributes get rewritten. */
+  resultsInput: string;
+  startTime: string;
+  endTime: string;
+  maxUses: string;
   securityId: string;
   hidden: boolean;
   lastDryRun?: unknown;
@@ -593,6 +644,15 @@ interface ManageState {
   newMaxInput: string;
   newLimitInput: string;
   newCooldownInput: string;
+  /**
+   * Ingredient editor (`setblendmix`). Pre-filled from the loaded
+   * blend's current ingredients the first time it is shown, because the
+   * action REPLACES the whole list — starting from a blank box would
+   * silently drop everything the author does not retype.
+   */
+  mixInput: string;
+  /** blend_id the mixInput was primed from, so switching blends re-primes. */
+  mixPrimedFor?: string;
 }
 
 type RngPhase =
@@ -806,6 +866,17 @@ const state: AppState = {
     newMaxInput: '',
     newLimitInput: '',
     newCooldownInput: '',
+    mixInput: '',
+  },
+  createUpgrade: {
+    enabled: false,
+    collection: '',
+    authChecking: false,
+    busy: false,
+    name: '', description: '', image: '', category: '', schema: '',
+    ingredientsInput: '', requirementsInput: '', resultsInput: '',
+    startTime: '', endTime: '', maxUses: '', securityId: '',
+    hidden: false,
   },
   createBlend: {
     enabled: false,
@@ -4286,6 +4357,8 @@ function renderBlendManage(b: BlendRow): string {
         </div>
       </div>
 
+      ${renderManageMixEditor(b, disabled)}
+
       <div class="manage-row">
         <span class="manage-label">max uses</span>
         <div class="manage-ctl row" style="gap:8px">
@@ -5792,6 +5865,135 @@ function renderDropManage(): string {
 
 
 
+
+/**
+ * Ingredient editor for a live blend (`setblendmix`).
+ *
+ * The action REPLACES the whole ingredient list, so the box is primed
+ * with what is currently on chain — an author who starts from a blank
+ * textarea and types one line would silently delete the rest.
+ *
+ * Refuses to offer editing at all for a recipe the text syntax cannot
+ * round-trip (a cooldown gate, an attribute filter with significant
+ * whitespace), rather than presenting a box that would quietly drop it.
+ *
+ * The outcomes are NOT editable here on purpose: `setrolls` is a
+ * Nefty-internal action with no `authorized_account`, called 5 times
+ * ever and only by their own accounts, so an author signature would be
+ * rejected. That is a contract limit, not a missing button.
+ */
+function renderManageMixEditor(b: BlendRow, disabled: string): string {
+  const m = state.manage;
+  const current = formatIngredientLines(
+    foldRowIngredients(b.ingredients),
+    b.collection_name,
+  );
+
+  if (current === null) {
+    return `
+      <div class="manage-row">
+        <span class="manage-label">ingredients</span>
+        <div class="manage-ctl">
+          <p class="status-line warn" style="margin:0">This recipe uses an ingredient the text editor cannot represent exactly, so it is not offered here — editing it would risk dropping part of the recipe.</p>
+        </div>
+      </div>`;
+  }
+
+  // Prime once per blend so the author's edits survive re-renders.
+  if (m.mixPrimedFor !== String(b.blend_id)) {
+    m.mixInput = current;
+    m.mixPrimedFor = String(b.blend_id);
+  }
+  const changed = m.mixInput.trim() !== current.trim();
+
+  return `
+    <div class="manage-row">
+      <span class="manage-label">ingredients</span>
+      <div class="manage-ctl">
+        ${riskBox(
+          'This REPLACES the whole ingredient list of a live blend. Anything you remove from this box stops being required; anything you add is required from the next blend on. Players mid-recipe are affected immediately.',
+          `<textarea id="manageMix" rows="4" spellcheck="false">${escapeHtml(m.mixInput)}</textarea>
+           <div class="row" style="margin-top:8px; gap:8px">
+             <button data-action="manageSetMix" ${changed ? disabled : 'disabled'}>Replace ingredients</button>
+             <button data-action="manageResetMix" ${changed ? '' : 'disabled'}>Revert</button>
+             <span class="term">${changed ? 'modified' : 'unchanged'}</span>
+           </div>`,
+        )}
+        <p class="status-line term" style="margin-top:6px">Outcomes cannot be edited: <code>setrolls</code> is reserved to the contract owner, so an author signature would be rejected.</p>
+      </div>
+    </div>`;
+}
+
+/** On-chain ingredient variants -> the shape the text formatter takes. */
+function foldRowIngredients(ings: BlendRow['ingredients']): NewIngredient[] {
+  const eff = (e: unknown) =>
+    Array.isArray(e) && e[0] === 'TRANSFER_EFFECT'
+      ? (e[1] as { to?: string }).to
+      : undefined;
+  const out: NewIngredient[] = [];
+  for (const [tag, p] of ings as unknown as [string, Record<string, never>][]) {
+    const q = p as unknown as Record<string, string & number & never[]>;
+    switch (tag) {
+      case 'TEMPLATE_INGREDIENT':
+        out.push({ kind: 'template', template_id: Number(q.template_id), collection_name: String(q.collection_name), amount: Number(q.amount), transfer_to: eff(q.effect) });
+        break;
+      case 'SCHEMA_INGREDIENT':
+        out.push({ kind: 'schema', collection_name: String(q.collection_name), schema_name: String(q.schema_name), amount: Number(q.amount), display_data: q.display_data ? String(q.display_data) : undefined, transfer_to: eff(q.effect) });
+        break;
+      case 'ATTRIBUTE_INGREDIENT':
+        out.push({ kind: 'attribute', collection_name: String(q.collection_name), schema_name: String(q.schema_name), amount: Number(q.amount), attributes: q.attributes as unknown as { attribute_name: string; allowed_values: string[] }[], display_data: q.display_data ? String(q.display_data) : undefined, transfer_to: eff(q.effect) });
+        break;
+      case 'COLLECTION_INGREDIENT':
+        out.push({ kind: 'collection', collection_name: String(q.collection_name), amount: Number(q.amount), transfer_to: eff(q.effect) });
+        break;
+      case 'FT_INGREDIENT':
+        out.push({ kind: 'ft', quantity: String(q.quantity), to: eff(q.effect) });
+        break;
+      default:
+        // COOLDOWN / CHEST / anything new: not representable in text.
+        // Surfaced as "cooldown" so formatIngredientLines returns null
+        // and the editor refuses rather than silently dropping it.
+        out.push({ kind: 'cooldown', schema_name: '', template_id: 0, attribute_name: '', wait_time: 0, requirements: [] });
+    }
+  }
+  return out;
+}
+
+/** Applies the edited ingredient list to the loaded blend. */
+function onManageSetMix() {
+  const b = state.blend;
+  const session = getCurrentSession();
+  if (!b || !session) return;
+  const parsed = parseIngredientLines(state.manage.mixInput, b.collection_name);
+  if (parsed.errors.length) { setStatus(parsed.errors[0], 'err'); return; }
+  if (parsed.items.length === 0) { setStatus('A blend needs at least one ingredient.', 'err'); return; }
+  void runAdminAction(
+    buildSetBlendMix(String(session.actor), b.blend_id, parsed.items.map(encodeIngredient)),
+    `Replace the ingredients of blend #${b.blend_id} with:\n\n` +
+      parsed.items.map((i) => '  ' + describeIngredient(i)).join('\n') +
+      `\n\nThis is the complete new list — anything not shown here stops being required.`,
+    { refresh: 'blend' },
+  );
+}
+
+function onManageResetMix() {
+  state.manage.mixPrimedFor = undefined; // re-primes from chain on render
+  render();
+}
+
+/** One-line description of an ingredient, for the confirmation summary. */
+function describeIngredient(i: NewIngredient): string {
+  const to = 'transfer_to' in i && i.transfer_to ? ` → ${i.transfer_to}` : ' (burned)';
+  switch (i.kind) {
+    case 'template':   return `${i.amount}× template ${i.template_id}${to}`;
+    case 'schema':     return `${i.amount}× schema ${i.schema_name}${to}`;
+    case 'attribute':  return `${i.amount}× ${i.schema_name} matching an attribute filter${to}`;
+    case 'collection': return `${i.amount}× any NFT from ${i.collection_name}${to}`;
+    case 'ft':         return `pay ${i.quantity}${i.to ? ` → ${i.to}` : ''}`;
+    default:           return 'an ingredient the editor cannot describe';
+  }
+}
+
 // ─── beta gate for author write-actions ──────────────────────────────── //
 
 /**
@@ -6730,7 +6932,283 @@ function renderUpgradeActions(): string {
 }
 
 function renderUpgradesView(): string {
-  return renderPickUpgrade() + renderUpgradeInfo() + renderUpgradeSlots() + renderUpgradeActions();
+  return renderPickUpgrade() + renderUpgradeInfo() + renderUpgradeSlots() + renderUpgradeActions() + renderUpgradeCreate();
+}
+
+
+// ─── create-upgrade panel (collection authors, UPGRADE tab) ───────────── //
+
+function onToggleCreateUpgradeEnabled(checked: boolean) {
+  const c = state.createUpgrade;
+  c.enabled = checked;
+  if (checked && !c.collection) {
+    c.collection = state.upgrades.picked?.collection_name || state.discoveryCollection || '';
+  }
+  render();
+  if (checked && c.collection) void refreshCreateUpgradeAuth();
+}
+
+async function refreshCreateUpgradeAuth() {
+  const c = state.createUpgrade;
+  const collection = c.collection.trim();
+  const session = getCurrentSession();
+  const actor = session ? String(session.actor) : '';
+  if (!collection || !actor) {
+    c.authChecked = collection;
+    c.authorized = false;
+    render();
+    return;
+  }
+  if (c.authChecked === collection && c.authorized !== undefined && !c.authChecking) return;
+  c.authChecking = true;
+  render();
+  try {
+    c.authorized = await canManageCollection(actor, collection);
+  } catch {
+    c.authorized = false;
+  } finally {
+    c.authChecked = collection;
+    c.authChecking = false;
+    render();
+  }
+}
+
+/** Folds the form into the builder's argument shape, with problems. */
+function readCreateUpgradeForm(): { args: CreateUpgradeArgs; problems: string[] } {
+  const c = state.createUpgrade;
+  const session = getCurrentSession();
+  const collection = c.collection.trim();
+
+  const ing = parseIngredientLines(c.ingredientsInput, collection);
+  const req = parseRequirementLines(c.requirementsInput);
+  const res = parseUpgradeResultLines(c.resultsInput);
+
+  const display: Record<string, string> = {};
+  if (c.name.trim()) display.name = c.name.trim();
+  if (c.description.trim()) display.description = c.description.trim();
+  if (c.image.trim()) display.image = c.image.trim();
+
+  const args: CreateUpgradeArgs = {
+    authorized_account: session ? String(session.actor) : '',
+    collection_name: collection,
+    ingredients: ing.items,
+    specs: [{
+      schema_name: c.schema.trim(),
+      requirements: req.items,
+      results: res.items,
+      display_data: '',
+    }],
+    start_time: datetimeLocalToUnix(c.startTime),
+    end_time: datetimeLocalToUnix(c.endTime),
+    max_uses: Number(c.maxUses) || 0,
+    display_data: Object.keys(display).length ? JSON.stringify(display) : '',
+    security_id: c.securityId.trim() || 0,
+    is_hidden: c.hidden,
+    category: c.category.trim(),
+  };
+
+  return {
+    args,
+    problems: [...ing.errors, ...req.errors, ...res.errors, ...validateNewUpgrade(args)],
+  };
+}
+
+async function onCreateUpgradeDryRun() {
+  const { args, problems } = readCreateUpgradeForm();
+  if (problems.length) { setStatus(problems[0], 'err'); render(); return; }
+  try {
+    setStatus('Simulating createupgrde (local ABI serialisation)…', 'info');
+    const action = buildCreateUpgradeAction(args);
+    const out = await dryRunActions([action]);
+    state.createUpgrade.lastDryRun = { action, abi_serialization: out };
+    const ok = out.every((r) => !r.error);
+    setStatus(ok ? 'Simulation OK, the action serialises cleanly.' : 'Simulation failed.', ok ? 'ok' : 'err');
+  } catch (err) {
+    setStatus((err as Error).message, 'err');
+  }
+  render();
+}
+
+async function onCreateUpgradeSubmit() {
+  const c = state.createUpgrade;
+  const session = getCurrentSession();
+  if (!session) { setStatus('Connect a wallet first.', 'err'); return; }
+  const { args, problems } = readCreateUpgradeForm();
+  if (problems.length) { setStatus(problems[0], 'err'); render(); return; }
+  if (!(c.authChecked === args.collection_name && c.authorized)) {
+    setStatus('That account is not authorized for this collection (the contract would reject it).', 'err');
+    return;
+  }
+
+  const spec = args.specs[0];
+  const accepted = await confirmBetaAction(
+    `Create an upgrade on ${args.collection_name}`,
+    `${describeSpec(spec).join('\n')}\n\n` +
+    `Cost: ${args.ingredients.length ? args.ingredients.map((i) => describeIngredient(i)).join(', ') : 'free'}\n\n` +
+    `${args.max_uses ? `Max ${args.max_uses} use(s).` : 'Unlimited uses.'}` +
+    `${args.is_hidden ? ' Created hidden.' : ' Visible immediately.'}\n\n` +
+    `An upgrade rewrites attributes on NFTs players already own. The old values are not kept.`,
+  );
+  if (!accepted) return;
+
+  c.busy = true;
+  render();
+  try {
+    setStatus('Awaiting wallet signature for createupgrde…', 'info');
+    const result = await executeCreateUpgrade(session, args);
+    const trxId =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    c.lastTrxId = trxId;
+    setStatus(`Upgrade created: ${trxId}`, 'ok', trxId);
+    clearUpgradesCache();
+  } catch (err) {
+    setStatus(`Create upgrade failed: ${(err as Error).message}`, 'err');
+  } finally {
+    c.busy = false;
+    render();
+  }
+}
+
+/** Inline "create an upgrade" form; mirrors the blend creator. */
+function renderUpgradeCreate(): string {
+  const c = state.createUpgrade;
+  const session = getCurrentSession();
+  const actor = session ? String(session.actor) : '';
+
+  if (!c.enabled) {
+    return `
+      <div class="manage-section create-section" style="margin-top:18px">
+        <div class="manage-head">
+          <span class="manage-title create-title">✦ CREATE AN UPGRADE · up.nefty</span>
+          <label class="inline-toggle">
+            <input id="createUpgradeEnable" type="checkbox" data-action="toggleCreateUpgradeEnable" />
+            <span>enable upgrade creation</span>
+          </label>
+        </div>
+        <p class="term" style="margin-top:6px">Rewrite attributes on NFTs players already own, in place — no minting.</p>
+      </div>`;
+  }
+
+  const collection = c.collection.trim();
+  const authLine = !actor
+    ? '<p class="status-line warn">Connect a wallet to create an upgrade.</p>'
+    : c.authChecking
+      ? '<p class="status-line">Checking whether you can manage this collection…</p>'
+      : c.authChecked === collection && c.authorized
+        ? `<p class="status-line ok">${escapeHtml(actor)} is authorized on ${escapeHtml(collection)}.</p>`
+        : collection
+          ? `<p class="status-line err">${escapeHtml(actor)} is not an authorized account of ${escapeHtml(collection)} — the contract would reject this.</p>`
+          : '';
+
+  const { args, problems } = readCreateUpgradeForm();
+  const spec = args.specs[0];
+  const summary = spec.results.length || spec.requirements.length
+    ? `<h3 style="margin-top:12px">Preview</h3><ul class="mint-info">${
+        describeSpec(spec).map((l) => `<li>${escapeHtml(l)}</li>`).join('')
+      }${args.ingredients.length ? `<li><strong>Cost:</strong> ${escapeHtml(args.ingredients.map((i) => describeIngredient(i)).join(', '))}</li>` : ''}</ul>`
+    : '';
+
+  const problemList = problems.length
+    ? `<div class="risk-box"><div class="risk-why">⚠ Fix before signing</div><ul class="mint-info">${problems.map((p) => `<li>${escapeHtml(p)}</li>`).join('')}</ul></div>`
+    : '';
+
+  const ready = problems.length === 0 && !!actor && c.authChecked === collection && c.authorized && !c.busy;
+
+  return `
+    <div class="manage-section create-section" style="margin-top:18px">
+      <div class="manage-head">
+        <span class="manage-title create-title">✦ CREATE AN UPGRADE · up.nefty</span>
+        <label class="inline-toggle">
+          <input id="createUpgradeEnable" type="checkbox" data-action="toggleCreateUpgradeEnable" checked />
+          <span>upgrade creation enabled</span>
+        </label>
+      </div>
+
+      <div class="manage-row">
+        <span class="manage-label">collection</span>
+        <div class="manage-ctl"><input id="cuCollection" type="text" value="${escapeHtml(c.collection)}" placeholder="e.g. underpunks55" autocomplete="off" /></div>
+      </div>
+      ${authLine}
+      <div class="manage-row">
+        <span class="manage-label">schema</span>
+        <div class="manage-ctl"><input id="cuSchema" type="text" value="${escapeHtml(c.schema)}" placeholder="the schema whose NFTs this applies to" autocomplete="off" /></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">name</span>
+        <div class="manage-ctl"><input id="cuName" type="text" value="${escapeHtml(c.name)}" autocomplete="off" /></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">image</span>
+        <div class="manage-ctl"><input id="cuImage" type="text" value="${escapeHtml(c.image)}" placeholder="IPFS hash" autocomplete="off" /></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">description</span>
+        <div class="manage-ctl"><input id="cuDescription" type="text" value="${escapeHtml(c.description)}" autocomplete="off" /></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">category</span>
+        <div class="manage-ctl"><input id="cuCategory" type="text" value="${escapeHtml(c.category)}" autocomplete="off" /></div>
+      </div>
+
+      ${riskBox(
+        'The cost is consumed on every use. "-> account" sends the NFTs there instead of burning them.',
+        `<label>Cost — one per line (optional)</label>
+         <textarea id="cuIngredients" rows="3" spellcheck="false" placeholder="token 10.00000000 WAX -> payout.wam
+template 877088 x1">${escapeHtml(c.ingredientsInput)}</textarea>`,
+      )}
+
+      <div class="manage-row">
+        <span class="manage-label">applies to</span>
+        <div class="manage-ctl">
+          <label>Which NFTs qualify — one condition per line (empty = any NFT of the schema)</label>
+          <textarea id="cuRequirements" rows="3" spellcheck="false" placeholder="template 906678
+templates 906678 + 906679
+attribute name = Farmer | Level 69
+attribute uint64 level = 3">${escapeHtml(c.requirementsInput)}</textarea>
+        </div>
+      </div>
+
+      ${riskBox(
+        'These attributes are OVERWRITTEN on the player\'s NFT. The previous values are not kept anywhere. The leading word is the attribute\'s type as declared on the schema — get it wrong and the chain will not catch it for you.',
+        `<label>What changes — one rewrite per line</label>
+         <textarea id="cuResults" rows="4" spellcheck="false" placeholder="name = Upgraded Sword
+image img = Qm…
+uint64 level += 1
+bool engine = true">${escapeHtml(c.resultsInput)}</textarea>`,
+      )}
+
+      <div class="manage-row">
+        <span class="manage-label">starts</span>
+        <div class="manage-ctl"><input id="cuStart" type="datetime-local" value="${escapeHtml(c.startTime)}" /> <span class="term">empty = immediately</span></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">ends</span>
+        <div class="manage-ctl"><input id="cuEnd" type="datetime-local" value="${escapeHtml(c.endTime)}" /> <span class="term">empty = never</span></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">max uses</span>
+        <div class="manage-ctl"><input id="cuMaxUses" type="number" min="0" value="${escapeHtml(c.maxUses)}" placeholder="0" /> <span class="term">0 = unlimited</span></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">whitelist</span>
+        <div class="manage-ctl"><input id="cuSecurityId" type="text" value="${escapeHtml(c.securityId)}" placeholder="0" autocomplete="off" /> <span class="term">secure.nefty id · 0 = open</span></div>
+      </div>
+      <div class="manage-row">
+        <span class="manage-label">hidden</span>
+        <div class="manage-ctl"><label class="inline-toggle"><input id="cuHidden" type="checkbox" ${c.hidden ? 'checked' : ''} /> <span>create it hidden</span></label></div>
+      </div>
+
+      ${summary}
+      ${problemList}
+
+      <div class="row" style="margin-top:12px">
+        <button data-action="createUpgradeDryRun" ${problems.length ? 'disabled' : ''}>Simulate (no signature)</button>
+        <button class="create-btn" data-action="createUpgradeSubmit" ${ready ? '' : 'disabled'}>${c.busy ? 'Creating…' : 'Create upgrade'}</button>
+      </div>
+      ${c.lastDryRun ? `<h3>Dry-run output</h3><pre>${escapeHtml(JSON.stringify(c.lastDryRun, null, 2))}</pre>` : ''}
+      ${c.lastTrxId ? `<p class="status-line ok">Created: <a target="_blank" href="https://waxblock.io/transaction/${escapeHtml(c.lastTrxId)}">${escapeHtml(c.lastTrxId)}</a></p>` : ''}
+    </div>`;
 }
 
 // ─── WAXDAO BLEND view: handlers + rendering ─────────────────────── //
@@ -8213,6 +8691,15 @@ function attachHandlers() {
   if (toggleWaxdaoInactive) {
     toggleWaxdaoInactive.addEventListener('change', () => onToggleWaxdaoShowInactive(toggleWaxdaoInactive.checked));
   }
+  // Manage: ingredient editor textarea.
+  const manageMix = document.getElementById('manageMix') as HTMLTextAreaElement | null;
+  if (manageMix) {
+    manageMix.addEventListener('input', (e) => {
+      state.manage.mixInput = (e.target as HTMLTextAreaElement).value;
+      render();
+    });
+  }
+
   // CREATE A BLEND panel inputs.
   const cbEnable = document.getElementById('createBlendEnable') as HTMLInputElement | null;
   if (cbEnable) {
@@ -8251,6 +8738,34 @@ function attachHandlers() {
   bindCb('cbSecurityId', (v) => { state.createBlend.securityId = v; });
   const cbHidden = document.getElementById('cbHidden') as HTMLInputElement | null;
   if (cbHidden) cbHidden.addEventListener('change', () => { state.createBlend.hidden = cbHidden.checked; render(); });
+
+  // CREATE AN UPGRADE panel inputs.
+  const cuEnable = document.getElementById('createUpgradeEnable') as HTMLInputElement | null;
+  if (cuEnable) cuEnable.addEventListener('change', () => onToggleCreateUpgradeEnabled(cuEnable.checked));
+  const bindCu = (id: string, set: (v: string) => void, commit = false) => {
+    const el = document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;
+    if (!el) return;
+    el.addEventListener('input', (e) => { set((e.target as HTMLInputElement).value); render(); });
+    if (commit) {
+      el.addEventListener('change', () => { void refreshCreateUpgradeAuth(); });
+      el.addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Enter') void refreshCreateUpgradeAuth(); });
+    }
+  };
+  bindCu('cuCollection', (v) => { state.createUpgrade.collection = v.trim().toLowerCase(); }, true);
+  bindCu('cuSchema', (v) => { state.createUpgrade.schema = v.trim(); });
+  bindCu('cuName', (v) => { state.createUpgrade.name = v; });
+  bindCu('cuImage', (v) => { state.createUpgrade.image = v; });
+  bindCu('cuDescription', (v) => { state.createUpgrade.description = v; });
+  bindCu('cuCategory', (v) => { state.createUpgrade.category = v; });
+  bindCu('cuIngredients', (v) => { state.createUpgrade.ingredientsInput = v; });
+  bindCu('cuRequirements', (v) => { state.createUpgrade.requirementsInput = v; });
+  bindCu('cuResults', (v) => { state.createUpgrade.resultsInput = v; });
+  bindCu('cuStart', (v) => { state.createUpgrade.startTime = v; });
+  bindCu('cuEnd', (v) => { state.createUpgrade.endTime = v; });
+  bindCu('cuMaxUses', (v) => { state.createUpgrade.maxUses = v; });
+  bindCu('cuSecurityId', (v) => { state.createUpgrade.securityId = v; });
+  const cuHidden = document.getElementById('cuHidden') as HTMLInputElement | null;
+  if (cuHidden) cuHidden.addEventListener('change', () => { state.createUpgrade.hidden = cuHidden.checked; render(); });
 
   // BLENDERIZER tab inputs.
   const blenderizerIdInput = document.getElementById('blenderizerBlendIdInput') as HTMLInputElement | null;
@@ -8351,6 +8866,7 @@ function attachHandlers() {
       action === 'toggleManageEnable' ||
       action === 'toggleCreateEnable' ||
       action === 'toggleCreateBlendEnable' ||
+      action === 'toggleCreateUpgradeEnable' ||
       action === 'toggleCreateFree' ||
       action === 'toggleCreateUnlimited' ||
       action === 'toggleCreateAuthReq' ||
@@ -8550,6 +9066,12 @@ function attachHandlers() {
         case 'manageEndNow':
           onManageEndNow();
           break;
+        case 'manageSetMix':
+          onManageSetMix();
+          break;
+        case 'manageResetMix':
+          onManageResetMix();
+          break;
         case 'manageSetName':
           onManageSetName();
           break;
@@ -8576,6 +9098,12 @@ function attachHandlers() {
           break;
         case 'manageDelete':
           onManageDelete();
+          break;
+        case 'createUpgradeDryRun':
+          void onCreateUpgradeDryRun();
+          break;
+        case 'createUpgradeSubmit':
+          void onCreateUpgradeSubmit();
           break;
         case 'createBlendDryRun':
           void onCreateBlendDryRun();

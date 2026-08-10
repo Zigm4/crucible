@@ -274,11 +274,31 @@
         <p>Everything except the recipe itself can be changed after creation, from the
           <em>Manage</em> panel: name and image, category, time window, max uses, per-account
           limit, whitelist, hidden flag — and deleting it outright.</p>
+        <p>The <strong>ingredients</strong> can now be edited too, from the Manage panel. The box is
+          pre-filled with the recipe as it stands on chain, because the action replaces the whole
+          list — anything you delete from the box stops being required.</p>
         <div class="note">
-          The <strong>ingredients and outcomes cannot be edited from Crucible yet</strong>. The
-          contract does allow it (<code>setblendmix</code> / <code>setrolls</code>), but those
-          two are not wired into the Manage panel. To change what a blend consumes or produces
-          today, delete it and create a new one.
+          The <strong>outcomes cannot be changed by an author at all</strong>. That is a contract
+          limit, not a missing button: <code>setrolls</code> takes no <code>authorized_account</code>
+          and has only ever been called by NeftyBlocks' own accounts, so your signature would be
+          rejected. To change what a blend produces, delete it and create a new one.
+        </div>
+
+        <h3>Create an upgrade (UPGRADE tab)</h3>
+        <p>An upgrade mints nothing: it <strong>rewrites attributes</strong> on an NFT the player
+          already owns. The form has three boxes — what it costs, which NFTs qualify, and what
+          changes:</p>
+        <ul>
+          <li><code>templates 906678 + 906679</code> — applies to either of those</li>
+          <li><code>attribute uint64 level = 1 | 2</code> — ...only if the attribute matches</li>
+          <li><code>name = Upgraded Sword</code> — set a value</li>
+          <li><code>uint64 level += 1</code> — add to the current value</li>
+          <li><code>image img = Qm…</code> / <code>bool engine = true</code></li>
+        </ul>
+        <div class="note">
+          The leading word is the attribute's <strong>type as declared on the schema</strong>. It is
+          the one thing the chain will not catch for you, so state it rather than letting the page
+          guess. And the old values are <strong>overwritten</strong> — they are not kept anywhere.
         </div>
 
         <h3>Manage blends &amp; whitelists (BLEND tab)</h3>
