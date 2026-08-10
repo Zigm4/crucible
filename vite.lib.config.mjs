@@ -1,8 +1,20 @@
 import { defineConfig } from 'vite';
+
+// Compiles the author-side builders to ESM so the verify scripts can
+// exercise the REAL parsers and validators instead of hand-written
+// copies. Output is gitignored; `npm run build:verify` regenerates it.
 export default defineConfig({
   build: {
-    lib: { entry: 'src/nefty/createBlend.ts', formats: ['es'], fileName: () => 'createBlend.mjs' },
-    outDir: 'scripts/.build', emptyOutDir: true, minify: false,
-    rollupOptions: { external: ['@wharfkit/session'] },
+    lib: {
+      entry: {
+        createBlend: 'src/nefty/createBlend.ts',
+        createUpgrade: 'src/nefty/createUpgrade.ts',
+      },
+      formats: ['es'],
+    },
+    outDir: 'scripts/.build',
+    emptyOutDir: true,
+    minify: false,
+    rollupOptions: { external: ['@wharfkit/session'], output: { entryFileNames: '[name].mjs' } },
   },
 });

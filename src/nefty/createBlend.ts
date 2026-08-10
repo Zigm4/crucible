@@ -338,7 +338,7 @@ export function validateNewBlend(args: CreateBlendArgs): string[] {
  * contain "#" ("Mint #1 Rare Riley", "VegasKitties#3"). Cutting there
  * silently truncated the recipe.
  */
-function stripComment(line: string): string {
+export function stripComment(line: string): string {
   let depth = 0;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
