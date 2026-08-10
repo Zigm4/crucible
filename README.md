@@ -25,8 +25,8 @@
 
 ## tl;dr
 
-A **static page** with bundled JavaScript (one HTML entry point, one JS
-file, one CSS file) that talks straight to eight public WAX smart
+A **static page** with bundled JavaScript (two HTML pages, the app
+and a standalone guide; one JS file, one CSS file) that talks straight to eight public WAX smart
 contracts (`blend.nefty`, `neftyblocksd`, `neftyblocksp`,
 `atomicpacksx`, `up.nefty`, `secure.nefty`, `waxdaomarket`,
 `blenderizerx`), plus `atomicassets` for the NFT transfers
@@ -35,18 +35,6 @@ transactions; the page never sees a private key, never phones home,
 never stores anything. The blend / drop / upgrade / craft fees that
 always existed still go where they always went, nothing comes to me.
 
-```
-$ crucible --status
-contracts...... blend.nefty + neftyblocksd
-                + neftyblocksp + atomicpacksx
-                + up.nefty + secure.nefty
-                + waxdaomarket + blenderizerx        [LIVE]
-backend........ none                                 [BY DESIGN]
-telemetry...... none                                 [BY DESIGN]
-cookies........ none                                 [BY DESIGN]
-service charge. 0 %                                  [GUARANTEED]
-audit.......... open source                          [GO READ IT]
-```
 
 ```
 $ crucible --layout
@@ -68,6 +56,21 @@ $ crucible --layout
 
 ---
 
+## Contents
+
+**Use it** &middot; [What it does](#what-it-does) &middot; [Shareable links](#shareable-links) &middot; [Limitations](#limitations) &middot; [Themes](#themes)
+
+**Audit it** &middot; [Threat model](#threat-model) &middot; [Privacy](#privacy) &middot; [Verify everything](#verify-everything)
+
+**Fork it** &middot; [Run your own copy](#run-your-own-copy) &middot; [Architecture](#architecture) &middot; [Taking the mechanics out](INTEGRATING.md)
+
+Also here: [the user guide](guide.html) for players, and
+[CHANGELOG.md](CHANGELOG.md) for what changed when.
+
+---
+
+<a id="threat-model"></a>
+
 ## --- Threat model ---
 
 Crucible's whole point is to **remove people from the trust path**.
@@ -88,49 +91,35 @@ has been running for years and is enforced byte-for-byte by the chain.
 | `waxdaomarket` contract     | Its on-chain code         | Same |
 | `blenderizerx` contract     | Its on-chain code         | Same |
 | WharfKit (signing library)  | Greymass + audit-friendly | Open source on GitHub |
-| Crucible's front-end        | **You. Read it.**         | This repo + the [verifier scripts](#--verify-everything--) below |
+| Crucible's front-end        | **You. Read it.**         | This repo + the [verifier scripts](#verify-everything) below |
 
 Remove every Crucible-specific layer from that table and trust only
-WAX and the eight contracts above: the worst Crucible can do is *fail
+WAX and the nine contracts above: the worst Crucible can do is *fail
 to build the right transaction*. It can't steal funds, drain wallets,
 or front-run you. Your wallet shows every action before signing and
 would refuse anything weird.
 
 One caveat for collection authors. A create or edit action that is
 wrong but still VALID is accepted by the chain rather than reverted,
-and then has to be deleted and rebuilt. That is why every author flow
-goes through a tick-to-confirm summary of the exact payload.
+and then has to be deleted and rebuilt. That is why the blend and
+upgrade author flows go through a tick-to-confirm summary of the exact
+payload; the older drop panels still use a plain browser `confirm()`.
 
 ---
 
+<a id="privacy"></a>
+
 ## --- Privacy ---
 
-```
-[*] no backend, no server, no API key, no database
-[*] no analytics, no telemetry, no Sentry, no Google Tag, nothing
-[*] no cookies. localStorage holds exactly two things, both from code
-    you can delete in one edit: the theme you picked (`crucible-theme`,
-    written by the inline script in index.html) and WharfKit's wallet
-    session (`wharf-*`), so you do not reconnect on every visit.
-    Neither is ever sent anywhere. Log out to drop the session key
-[*] third-party requests are limited to public WAX RPC nodes (chain
-    reads), WAX Hyperion history nodes (`wax.eosphere.io`,
-    `api.waxsweden.org`, used by #/status), the public AtomicAssets
-    indexers (`aa.wax.atomichub.io`, failing over to
-    `wax.api.atomicassets.io` and `aa-wax-public1.neftyblocks.com`)
-    for NFT name enrichment, an IPFS gateway (NFT artwork -- see
-    below), and Google Fonts (purely cosmetic, remove in 30s by
-    editing index.html). Clicking "connect wallet" adds that wallet's
-    own hosts: `cb.anchor.link` for Anchor, `*.mycloudwallet.com` for
-    WAX Cloud Wallet
-[*] your private key never leaves your wallet. WharfKit hands the
-    unsigned transaction to Anchor / WAX Cloud Wallet, which signs
-    locally and returns a signature. The page never sees a secret.
-```
+- no backend, no server, no API key, no database
+- no analytics, no telemetry, no Sentry, no Google Tag, nothing
+- no cookies. localStorage holds exactly two things, both from code you can delete in one edit: the theme you picked (`crucible-theme`, written by the inline script in index.html) and WharfKit's wallet session (`wharf-*`), so you do not reconnect on every visit. Neither is ever sent anywhere. Log out to drop the session key
+- third-party requests are limited to public WAX RPC nodes (chain reads), WAX Hyperion history nodes (`wax.eosphere.io`, `api.waxsweden.org`, used by #/status), the public AtomicAssets indexers (`aa.wax.atomichub.io`, failing over to `wax.api.atomicassets.io` and `aa-wax-public1.neftyblocks.com`) for NFT name enrichment, an IPFS gateway (NFT artwork, see below), and Google Fonts (purely cosmetic, remove in 30s by editing index.html). Clicking "connect wallet" adds that wallet's own hosts: `cb.anchor.link` for Anchor, `*.mycloudwallet.com` for WAX Cloud Wallet
+- your private key never leaves your wallet. WharfKit hands the unsigned transaction to Anchor / WAX Cloud Wallet, which signs locally and returns a signature. The page never sees a secret.
 
 **On the IPFS gateway.** Artwork is stored on-chain only as an IPFS
 hash, so showing it means asking some gateway for the bytes. That
-gateway sees your IP and which NFT you are looking at -- the one
+gateway sees your IP and which NFT you are looking at: the one
 third-party request in this app that is about *you* rather than about
 the chain. Three mitigations, none of which make it disappear:
 
@@ -146,9 +135,9 @@ the chain. Three mitigations, none of which make it disappear:
   rendered; browsing without opening a blend costs zero image requests
 
 Worth knowing: the obvious gateways are already dead.
-`ipfs.atomichub.io`, `atomichub-ipfs.com` and `cloudflare-ipfs.com`
-have no DNS records at all, and `ipfs.neftyblocks.io` now serves a
-domain-parking page. The same decay that took the websites took their
+`ipfs.atomichub.io` and `atomichub-ipfs.com` have no DNS records at
+all, `cloudflare-ipfs.com` no longer resolves to an address, and
+`ipfs.neftyblocks.io` now serves a domain-parking page. The same decay that took the websites took their
 gateways.
 
 What replaced them matters for coverage: **WAX block-producer gateways
@@ -159,13 +148,15 @@ that reason, with `ipfs.io` / `dweb.link` / `w3s.link` /
 WAX world.
 
 Gateways are also **raced, not queued**. A dead IPFS gateway usually
-does not fail, it hangs - so a strict try-then-timeout chain spends the
+does not fail, it hangs. So a strict try-then-timeout chain spends the
 whole budget on the first stalled host and the artwork looks missing
 even when it is perfectly available. Each gateway instead gets a 1.2s
 head start before the next joins in parallel, and the first response
 that decodes wins.
 
 ---
+
+<a id="what-it-does"></a>
 
 ## --- What it does ---
 
@@ -191,19 +182,12 @@ actions lead the sequence:
 0b. <token>::transfer         "Here's the payment"
 ```
 
-```
-[*] auto-detects active blends per collection
-[*] reads the live recipe + ingredient list straight from the chain
-[*] checks secure.nefty whitelists before letting you sign
-[*] resolves the token contract from blend.nefty/config/supported_tokens
-    (159 tokens registered as of 2026)
-[*] random blends (fuse + claim, two signatures) with auto-wait
-    between TX1 and TX2 and a full breakdown of the resolved outcome
-    + the in-roll odds
-[*] pool blends (POOL_NFT_RESULT): reward pre-minted into an escrow
-    pool instead of minted on demand, with live pool stock and a
-    "guaranteed" badge when the pool holds a single template
-```
+- auto-detects active blends per collection
+- reads the live recipe + ingredient list straight from the chain
+- checks secure.nefty whitelists before letting you sign
+- resolves the token contract from blend.nefty/config/supported_tokens (159 tokens registered as of 2026)
+- random blends (fuse + claim, two signatures) with auto-wait between TX1 and TX2 and a full breakdown of the resolved outcome + the in-roll odds
+- pool blends (POOL_NFT_RESULT): reward pre-minted into an escrow pool instead of minted on demand, with live pool stock and a "guaranteed" badge when the pool holds a single template
 
 Random blends (any roll with 2+ outcomes) follow:
 
@@ -228,7 +212,7 @@ the contract hands you one of the assets still escrowed there.
 
 That's how a capped reward stays craftable. Blend 42787
 (`underpunks55`, *Volna-57 Geiger Counter*) pays out template 893664,
-whose supply is 16/16 already minted - no on-demand mint could ever
+whose supply is 16/16 already minted. No on-demand mint could ever
 produce another one, so all 16 went into the `volna` pool instead.
 
 Because the contract picks *which* escrowed asset you get, the exact
@@ -245,7 +229,7 @@ Template:   893664  Volna-57
 Pool stock: 9 left (of 16 ever added)
 
 ✓ every asset in this pool is template 893664, so the reward NFT is
-  certain - only its serial number is drawn
+  certain: only its serial number is drawn
 ```
 
 A pool holding several templates says so instead, and an empty pool is
@@ -292,7 +276,7 @@ creator exists.
 PHASE A · encoder      10000/10000 rebuilt to identical bytes
 PHASE B · form syntax   9991 round-tripped through the text form,
                            9 reported as not expressible
-PHASE C · live rows    3003/3003 across 10 collections rebuildable
+PHASE C · live rows    every live row across 10 collections rebuildable
                        exactly as they exist today
 PHASE D · validation   10000/10000 real recipes accepted by our own
                        validator (any rejection is a false negative)
@@ -302,10 +286,10 @@ Phase A folds each trace down into the shape the UI works in and
 rebuilds it; phase B goes further and renders it into the form's
 one-per-line text, parses that back, and demands the same bytes again.
 Phase C reads LIVE `blends` rows, covering recipes whose creation
-predates the history window. Phase D is the mirror image of the others:
+predates the history window. It rebuilds every one of them. Phase D is the mirror image of the others:
 every recipe in the corpus was accepted by the contract, so anything
 our own validation refuses is a blend an author could not create
-through Crucible - it caught a token-precision rule that rejected
+through Crucible. It caught a token-precision rule that rejected
 zero-decimal assets like `1000000 MSOURCE`, and a JSON check that
 refused the 202 real blends whose display_data is not JSON.
 
@@ -317,8 +301,8 @@ which the form trims.
 Things the builder handles that are easy to get wrong, each found by
 diffing against real on-chain creations:
 
-- **NFTs are not always burned.** 18 of the 362 NFT ingredients across
-  the 250 most recent real creations are *transferred* to a vault
+- **NFTs are not always burned.** A steady minority of the NFT
+  ingredients across the most recent real creations are *transferred* to a vault
   instead. Assuming "burn" silently destroys NFTs an author meant to
   keep, so `-> account` is explicit and the preview says which is which.
 - **Ingredients can come from another collection.** `streamingart`
@@ -369,12 +353,12 @@ maintenance action; an author's signature is simply rejected. The
 history agrees: author-signed `setblendmix` calls run into the
 hundreds, while every `setrolls` call that can be found was signed by
 NeftyBlocks' own accounts. Changing what a blend PRODUCES therefore means deleting it
-and creating a new one - a contract limit, not a missing button.
+and creating a new one: a contract limit, not a missing button.
 
 Every edit of a live blend goes through a **beta confirmation**: an
 in-app dialog stating that this flow is new, showing the exact summary
 of what is about to be signed, and requiring an explicit tick before
-the sign button enables. It is not a browser `confirm()` - it renders
+the sign button enables. It is not a browser `confirm()`: it renders
 outside `#root` so an app re-render cannot dismiss it mid-decision.
 The guided creator carries its own gate, built the same way. The drop
 panels on the CLAIM tab predate both and still use a plain browser
@@ -384,23 +368,17 @@ panels on the CLAIM tab predate both and still use a plain browser
 
 When the connected wallet is authorized on a blend's collection, the
 loaded blend exposes a **Manage** panel (off by default behind a safety
-switch). It signs `blend.nefty` author actions one at a time - name,
-status, max uses, per-account limit, cooldown, delete - plus full
+switch). It signs `blend.nefty` author actions one at a time (name,
+status, max uses, per-account limit, cooldown, delete), plus full
 whitelist management:
 
-```
-[*] pick any whitelist on the collection from a dropdown
-    (the one gating the current blend is marked "attached")
-[*] see its wallets as chips, add wallets, remove one, or clear all
-    (addtowl / erasefromwl / clearwl)
-[*] create a new whitelist (addwhitelist) - this only NAMES an empty
-    list; you then add wallets to it below. The newest list is
-    auto-selected after creation so you can populate it right away
-[*] attach / detach a whitelist to the current blend (setblendsec)
-```
+- pick any whitelist on the collection from a dropdown (the one gating the current blend is marked "attached")
+- see its wallets as chips, add wallets, remove one, or clear all (addtowl / erasefromwl / clearwl)
+- create a new whitelist (addwhitelist): this only NAMES an empty list; you then add wallets to it below. The newest list is auto-selected after creation so you can populate it right away
+- attach / detach a whitelist to the current blend (setblendsec)
 
 A whitelist (`security_id`) lives on the collection and can gate several
-blends at once - editing its wallets affects all of them. "Attach" is
+blends at once, so editing its wallets affects all of them. "Attach" is
 what gates *this* blend behind the selected list. Naming a list and
 filling it with wallets are two separate steps: the name is a label
 (e.g. "OG holders"), never a wallet.
@@ -427,19 +405,9 @@ Crucible recognises four claim variants and can sign three:
 For free drops, steps 1 and 2 are skipped entirely, only the claim
 action is signed.
 
-```
-[*] drop names resolved from the primary mint template via the
-    AtomicAssets indexer when on-chain display_data is empty, so
-    the picker shows "Triglave Hero" instead of "Drop #237418"
-[*] paid drops: pre-flight balance check per settlement token. If
-    you're eligible but short on tokens, the action card shows the
-    exact top-up needed and disables Sign & claim until you fund
-    your wallet
-[*] NFT-proof drops: even when your wallet doesn't satisfy the
-    rule, the row stays selectable so you can read the requirement
-    in plain English ("hold 1 NFT from template 12345 + 2 NFTs
-    from schema X") and know exactly what to buy
-```
+- drop names resolved from the primary mint template via the AtomicAssets indexer when on-chain display_data is empty, so the picker shows "Triglave Hero" instead of "Drop #237418"
+- paid drops: pre-flight balance check per settlement token. If you're eligible but short on tokens, the action card shows the exact top-up needed and disables Sign & claim until you fund your wallet
+- NFT-proof drops: even when your wallet doesn't satisfy the rule, the row stays selectable so you can read the requirement in plain English ("hold 1 NFT from template 12345 + 2 NFTs from schema X") and know exactly what to buy
 
 #### Create & manage drops · collection authors
 
@@ -455,34 +423,26 @@ payments. Touchy options (the minted templates, unlimited/free supply,
 the payout account) are boxed in **red** with a plain-language reason;
 routine controls keep the calmer amber style.
 
-```
-[*] free drops encode as "0 NULL" / "0,NULL"; priced drops as
-    "<amount>.<decimals> SYM" / "<decimals>,SYM" (verified against
-    real on-chain drops)
-[*] on success the new drop_id is reported and the drop is auto-loaded
-    into "Manage a drop"
-```
+- free drops encode as "0 NULL" / "0,NULL"; priced drops as "<amount>.<decimals> SYM" / "<decimals>,SYM" (verified against real on-chain drops)
+- on success the new drop_id is reported and the drop is auto-loaded into "Manage a drop"
 
 > **Whitelisting is a two-step flow, by contract design.** `createdrop`
-> only carries an `auth_required` flag - it takes no account list. The
+> only carries an `auth_required` flag: it takes no account list. The
 > allowed accounts live in a separate `whitelists` table keyed by
 > `drop_id`, which can only be written *after* the drop exists (you need
 > its id). So a drop created with "require whitelist" starts **empty**
 > (nobody can claim) until you add accounts in **Manage a drop**. The
 > create panel says this, and the drop is loaded there automatically.
 
-**Manage a drop** loads any drop you manage - picked from "drops I can
+**Manage a drop** loads any drop you manage. Pick it from "drops I can
 manage" (it lists the drops across the collections you're authorized on,
-so you don't need the id) or typed by `drop_id` (works for hidden /
+so you don't need the id), or type a `drop_id` (this works for hidden /
 gated drops the claim list hides). From there you can:
 
-```
-[*] edit the whitelist: add / remove accounts, or clear it
-    (addtowl / erasefromwl) - per-drop, scoped by drop_id
-[*] toggle the whitelist requirement (setdropauth)
-[*] hide / unhide (setdrophiddn)
-[*] delete the drop (erasedrop)
-```
+- edit the whitelist: add / remove accounts, or clear it (addtowl / erasefromwl), per-drop, scoped by drop_id
+- toggle the whitelist requirement (setdropauth)
+- hide / unhide (setdrophiddn)
+- delete the drop (erasedrop)
 
 Unlike blend whitelists, a drop's whitelist is **per-drop**:
 `neftyblocksd` has no reusable named lists, so you add wallets directly
@@ -506,7 +466,7 @@ Crucible handles **both** pack contracts and merges them into one list:
 
 | Contract        | Reveal action                          | Result staged in            |
 | --------------- | -------------------------------------- | --------------------------- |
-| `atomicpacksx`  | `claimunboxed(pack_asset_id, roll_ids)`| `unboxassets` (by asset_id) |
+| `atomicpacksx`  | `claimunboxed(pack_asset_id, origin_roll_ids)` | `unboxassets` (by asset_id) |
 | `neftyblocksp`  | `claim(claim_id, roll_indexes)`        | `claimassets` (claim_id == pack asset_id) |
 
 Both are scanned globally; the tab only lists collections where your
@@ -514,13 +474,10 @@ wallet currently holds an openable pack (from either contract). You then
 pick: collection, pack type, specific mint. Each pack carries its source,
 so the right open/claim flow is used automatically.
 
-```
-[*] cross-collection pack discovery
-[*] auto-wait between TX1 and TX2, with a cancel button if ORNG
-    stalls (your pack stays safe on-chain, resume later)
-[*] full odds breakdown per roll, with resolved template names
-[*] reset and open another mint without re-discovering
-```
+- cross-collection pack discovery
+- auto-wait between TX1 and TX2, with a cancel button if ORNG stalls (your pack stays safe on-chain, resume later)
+- full odds breakdown per roll, with resolved template names
+- reset and open another mint without re-discovering
 
 ### UPGRADE tab · `up.nefty`
 
@@ -547,20 +504,13 @@ ingredients, verified against trx `64054c0b…`). Whitelist / ownership
 -gated upgrades use `upgradesec` (same shape + a `security_check`
 variant); RNG upgrades resolve through `up.nefty/orngjobs`. Both are
 decoded and tagged in the picker but not yet executable from the UI -
-see [Limitations](#--limitations--).
+see [Limitations](#limitations).
 
-```
-[*] per-collection discovery from up.nefty/upgrades
-[*] active ones first, alphabetical by name inside each status, with
-    status badges (active / sold-out / ended / upcoming / hidden)
-[*] per-spec NFT picker (matches schema + template requirements
-    against your wallet)
-[*] per-ingredient FT balance check
-[*] Simulate serialises the transaction locally against the ABI, so
-    checking a recipe costs no CPU and signs nothing. The upgrade list
-    itself is cached for five minutes; a deep link or a manual id
-    re-reads the row live
-```
+- per-collection discovery from up.nefty/upgrades
+- active ones first, alphabetical by name inside each status, with status badges (active / sold-out / ended / upcoming / hidden)
+- per-spec NFT picker (matches schema + template requirements against your wallet)
+- per-ingredient FT balance check
+- Simulate serialises the transaction locally against the ABI, so checking a recipe costs no CPU and signs nothing. The upgrade list itself is cached for five minutes; a deep link or a manual id re-reads the row live
 
 ### WAXDAO BLEND tab · `waxdaomarket`
 
@@ -587,15 +537,11 @@ access it. All three platforms have independent ID spaces, so blend
 `#1127` on `blend.nefty` and blend `#1127` on `waxdaomarket` are
 totally different recipes.
 
-```
-[*] per-collection discovery from waxdaomarket/blends
-[*] picker with active / sold-out / ended / upcoming status chips
-[*] per-slot NFT picker filtered by template / schema / collection
-[*] per-slot FT balance check (token contract resolved from the
-    ingredient's own field, no global registry needed)
-[*] one signature for the whole multi-action transaction, byte-for-
-    byte equivalent to a real WaxDAO blend from 2024
-```
+- per-collection discovery from waxdaomarket/blends
+- picker with active / sold-out / ended / upcoming status chips
+- per-slot NFT picker filtered by template / schema / collection
+- per-slot FT balance check (token contract resolved from the ingredient's own field, no global registry needed)
+- one signature for the whole multi-action transaction, byte-for- byte equivalent to a real WaxDAO blend from 2024
 
 ### BLENDERIZER tab · `blenderizerx`
 
@@ -630,14 +576,10 @@ mixture lists templates to burn WITH repetition, e.g.
 
 No odds, no pool, no whitelist, no time window, no token cost.
 
-```
-[*] per-collection discovery: `blenders` has no index on collection,
-    so Crucible walks all ~17.7K rows in 16 parallel chunks (~3s)
-[*] target templates resolved in one batched indexer call, so the
-    picker shows real names instead of bare ids
-[*] multi-select NFT picker per slot, since amounts are usually >1
-[*] recipe id == target template id: #/blenderizer/blend/336429
-```
+- per-collection discovery: `blenders` has no index on collection, so Crucible walks all ~17.7K rows in 16 parallel chunks (~3s)
+- target templates resolved in one batched indexer call, so the picker shows real names instead of bare ids
+- multi-select NFT picker per slot, since amounts are usually >1
+- recipe id == target template id: #/blenderizer/blend/336429
 
 Two things stop a recipe paying out, neither visible in the ABI, both
 checked before you deposit anything:
@@ -680,8 +622,8 @@ creator and it signs real transactions.
 
 It is also the **only** way to create a blend or an upgrade. Those panels
 used to sit on the BLEND and UPGRADE tabs behind a safety toggle; they
-were removed rather than kept alongside, because two creation paths mean
-two sets of mistakes to guard against and only one of them reads the
+were removed rather than kept alongside: two creation paths mean two
+sets of mistakes to guard against, and only one of them reads the
 schema before writing to it. Editing an existing blend, whitelists, and
 drop creation stay on the main page.
 
@@ -702,24 +644,13 @@ ids typed from memory, weights as abstract numbers, and for upgrades an
 attribute type the author had to DECLARE. This reads the collection
 first, so none of that is asked:
 
-```
-[*] blends (blend.nefty), upgrades (up.nefty) and drops (neftyblocksd),
-    one question per screen, five screens each. Drops can also still be
-    created from the CLAIM tab
-[*] templates picked from a searchable grid with artwork, name, schema
-    and supply, read live from the collection
-[*] weights drawn as a stacked bar, so "50 / 30 / 20" is a shape before
-    it is arithmetic
-[*] one plain sentence on every step. If the sentence is wrong, the
-    recipe is wrong, with no payload to decode
-[*] Simulate before signing, then a confirmation you have to tick
-[*] one roll per blend and one spec per upgrade. The contract allows
-    several of each (a second roll is a second, independent draw paid
-    out on the same blend); that shape has to be built elsewhere
-[*] whitelists are read, not created: the creator offers the collection's
-    existing lists, and a drop it creates with the whitelist flag is
-    still empty, so both finish in the Manage panels on the main page
-```
+- blends (blend.nefty), upgrades (up.nefty) and drops (neftyblocksd), one question per screen, five screens each. Drops can also still be created from the CLAIM tab
+- templates picked from a searchable grid with artwork, name, schema and supply, read live from the collection
+- weights drawn as a stacked bar, so "50 / 30 / 20" is a shape before it is arithmetic
+- one plain sentence on every step. If the sentence is wrong, the recipe is wrong, with no payload to decode
+- Simulate before signing, then a confirmation you have to tick
+- one roll per blend and one spec per upgrade. The contract allows several of each (a second roll is a second, independent draw paid out on the same blend); that shape has to be built elsewhere
+- whitelists are read, not created: the creator offers the collection's existing lists, and a drop it creates with the whitelist flag is still empty, so both finish in the Manage panels on the main page
 
 **The attribute question.** An upgrade's `attribute_type` must match what
 the schema declares, and the README's own warning about the classic form
@@ -727,22 +658,9 @@ was that getting it wrong is the one mistake the chain will not catch.
 Here the type is never typed: the schema `format` is the authority, and
 the picker enforces two rules on top of it.
 
-```
-[*] only the 7 types the encoder actually models are selectable
-    (string image ipfs uint64 double bool uint8). A uint16 attribute
-    would fall through wireTypeFor() to `string` and be written as
-    nonsense, so it is shown disabled with the reason
-[*] an attribute frozen in the immutable_data of EVERY template it would
-    apply to is BLOCKED. Upgrades write mutable_data, and every indexer
-    applies template immutable data last, so the change is stored and
-    nothing anyone sees ever changes: the ingredients burn for nothing
-[*] frozen on only SOME of them is a warning, not a block, saying how
-    many. That distinction is not academic: `kingsburynft/tv` pins `img`
-    on 70 of its 71 templates and its live upgrades rewrite `img`
-    anyway. All 124 upgraded assets belong to the one template that
-    leaves it free. A blanket block would have refused a recipe that
-    demonstrably works
-```
+- only the 7 types the encoder actually models are selectable (string image ipfs uint64 double bool uint8). A uint16 attribute would fall through wireTypeFor() to `string` and be written as nonsense, so it is shown disabled with the reason
+- an attribute frozen in the immutable_data of EVERY template it would apply to is BLOCKED. Upgrades write mutable_data, and every indexer applies template immutable data last, so the change is stored and nothing anyone sees ever changes: the ingredients burn for nothing
+- frozen on only SOME of them is a warning, not a block, saying how many. That distinction is not academic: `kingsburynft/tv` pins `img` on 70 of its 71 templates and its live upgrades rewrite `img` anyway. All 124 upgraded assets belong to the one template that leaves it free. A blanket block would have refused a recipe that demonstrably works
 
 The scope narrows as you restrict. On `underpunks55/up.armour` all 33
 templates pin `protection`, so it is blocked outright; `air+` is pinned on
@@ -769,11 +687,10 @@ might be a blend, a Blenderizer recipe, a drop or a pack, on four
 different contracts, with nothing listing them together.
 
 The catalogue inverts it. One collection, seven contracts scanned in
-parallel as six sources (both pack contracts feed one badge), every
-result normalised into one row shape and grouped by
-parallel, every result normalised into one row shape and grouped by
-**category** -- the schema of the item produced -- with a coloured
-badge per source. Grouping by contract is one click away.
+parallel as six sources (both pack contracts feed one badge). Every
+result is normalised into one row shape and grouped by **category**
+(the schema of the item produced), with a coloured badge per source.
+Grouping by contract is one click away.
 
 ```
 $ crucible #/catalog/underpunks55
@@ -790,19 +707,15 @@ $ crucible #/catalog/underpunks55
     #5 The Evil Dice of Similarly Evil Death [BLEND]      9 NFTs  ✓ ready
 ```
 
-```
-[*] six sources scanned concurrently; one failing contract degrades to
-    a warning line instead of taking the page down
-[*] categories resolved from the produced template's schema in batched
-    indexer calls (one call per 100 entries)
-[*] wallet-aware: entries your NFTs satisfy are marked "ready" and
-    sorted first; the rest say what you're missing, by template
-[*] search, group-by toggle, "only what I can do", collapsible groups
-[*] read-only. Every row deep-links back into the normal tab, which
-    still does all the signing: no second transaction implementation
-```
+- six sources scanned concurrently; one failing contract degrades to a warning line instead of taking the page down
+- categories resolved from the produced template's schema in batched indexer calls (one call per 100 entries)
+- wallet-aware: entries your NFTs satisfy are marked "ready" and sorted first; the rest say what you're missing, by template
+- search, group-by toggle, "only what I can do", collapsible groups
+- read-only. Every row deep-links back into the normal tab, which still does all the signing: no second transaction implementation
 
 ---
+
+<a id="shareable-links"></a>
 
 ## --- Shareable links ---
 
@@ -823,17 +736,14 @@ Anyone opening one of those URLs lands directly on the right platform
 yet: a banner inside the "Connect wallet" card tells the visitor what
 they're looking at and invites them to sign in.
 
-```
-[*] one-click "share link" button in every info card (zone 3)
-    copies the current URL to the clipboard
-[*] no history pollution: hash writes use replaceState so the
-    back button never gets clogged with intermediate states
-[*] hash changes work in reverse: pasting / typing one of the
-    URLs above into the address bar triggers the same auto-load
-[*] no wallet required to READ a recipe, only to sign it
-```
+- one-click "share link" button in every info card (zone 3) copies the current URL to the clipboard
+- no history pollution: hash writes use replaceState so the back button never gets clogged with intermediate states
+- hash changes work in reverse: pasting / typing one of the URLs above into the address bar triggers the same auto-load
+- no wallet required to READ a recipe, only to sign it
 
 ---
+
+<a id="verify-everything"></a>
 
 ## --- Verify everything ---
 
@@ -939,6 +849,8 @@ re-run it whenever you doubt me.
 
 ---
 
+<a id="how-this-was-built"></a>
+
 ## --- How this was built ---
 
 Short version, for forks or for anyone wanting to do the same for
@@ -973,6 +885,8 @@ that lets a community keep using their NFTs after the platform walked
 away.
 
 ---
+
+<a id="run-your-own-copy"></a>
 
 ## --- Run your own copy ---
 
@@ -1022,6 +936,8 @@ plus everything under `public/`.
 
 ---
 
+<a id="architecture"></a>
+
 ## --- Architecture ---
 
 ```
@@ -1032,10 +948,14 @@ src/
   main.ts              : entry point - hands off to ui/app::mount(),
                          renders a fail-safe error card if mount throws
   chain/
+    action.ts          : BuiltAction, the one shape every builder emits
     rpc.ts             : APIClient + failover across 4 public WAX RPCs,
                          per-request timeouts so a hung host can't stall
     session.ts         : WharfKit SessionKit (Anchor + WAX Cloud Wallet)
+    index.ts           : the facade for this folder
   nefty/
+    index.ts           : the facade, grouped by mechanic. Says what each
+                         one needs at minimum. See INTEGRATING.md
     abi.ts             : verifies blend.nefty ABI shape at startup
     blend.ts           : reads a blend's recipe, isDeterministic
     pools.ts           : reads blend.nefty pools + escrowed asset_ids
@@ -1070,14 +990,18 @@ src/
     blends.ts          : lists blenderizerx recipes per collection
                          (full-table scan + target template enrichment)
     blendExecute.ts    : blenderizerx blend tx (a single transfer)
+    index.ts           : the facade for this folder
   waxdao/
     blends.ts          : lists waxdaomarket blends per collection
     blendExecute.ts    : assertblend + slot-indexed transfers
+    index.ts           : the facade for this folder
   atomic/
     assets.ts          : lists a user's NFTs from AtomicAssets API
     matcher.ts         : matches blend ingredients to owned NFTs
     collections.ts     : collection auth (can this wallet manage it?) +
                          lists collections a wallet is authorized on
+    image.ts           : where a template keeps its artwork reference
+    index.ts           : the facade for this folder
   ui/
     app.ts             : shell, state, render loop, event wiring
     about.ts           : collapsible in-page guide
@@ -1122,55 +1046,40 @@ public/
 
 ---
 
+<a id="ux-guarantees"></a>
+
 ## --- UX guarantees ---
 
-```
-[*] every collection input starts empty -- no auto-load, no stale
-    state from a previous session
-[*] discovery is on-demand. The user clicks "Discover ..." when they
-    want results, never on tab switch or login. Deep links are the
-    deliberate exception, because opening one IS the request: #/status
-    scans the monitored contracts on arrival, and
-    #/catalog/<collection> starts the six-source scan straight from
-    the URL
-[*] re-renders preserve scroll position, focus, and caret offset so
-    state changes don't feel like a page refresh
-[*] picker dropdowns float ABOVE every card, even the loaded info /
-    action zones. The panel is portaled to <body> so it escapes
-    backdrop-filter stacking traps
-[*] picker rows are sorted by status first (active before everything
-    else), then alphabetically by name within each status bucket
-[*] every blocker is explained inline. "Greyed" rows say WHY, with a
-    "Color codes" legend showing every badge the picker can emit
-[*] NFT slots show the human-readable name, not just the template_id.
-    Names are resolved from the indexer (best-effort) and cached
-    across tab switches
-[*] every entity has a shareable hash URL. The address bar updates
-    as soon as you pick an entity, and the info card has a one-click
-    "share link" button. No wallet required to READ a recipe.
-[*] action outcomes pop a floating toast (success / error) that's
-    visible wherever you've scrolled, so a tx fired from a panel low
-    on the page still gives a clear confirmation
-```
+Rules the app holds itself to, that you will not find stated in the
+sections above.
+
+- re-renders preserve scroll position, focus, and caret offset, so a state change never feels like a page refresh
+- picker dropdowns float above every card. The panel is portaled to `<body>` so it escapes `backdrop-filter` stacking traps
+- every blocker is explained inline. A greyed row says WHY, and a "Color codes" legend shows every badge the picker can emit
+- action outcomes pop a floating toast that is visible wherever you have scrolled, so a transaction fired from a panel low on the page still confirms clearly
 
 ---
+
+<a id="themes"></a>
 
 ## --- Themes ---
 
 Three built-in skins, switched from the toggle in the top-right corner
 and remembered across visits (`localStorage`, still no cookies):
 
-- **Sombre** - the default. A calm, modern dark theme: graphite
+- **Sombre.** The default. A calm, modern dark theme: graphite
   surfaces, a soft violet accent, rounded cards, no chrome.
-- **Clair** - a clean light theme for bright environments.
-- **Neon** - the original cyberpunk skin (scanlines, neon cyan, mono).
+- **Clair.** A clean light theme for bright environments.
+- **Neon.** The original cyberpunk skin (scanlines, neon cyan, mono).
 
 It's all CSS, living in `src/ui/neutral.css` and `src/ui/modern.css`,
 scoped under `html[data-theme=…]`; the base stylesheets stay untouched
 and a first-time visitor lands on **Sombre**. To re-skin or add a fourth
-theme, copy the pattern in those files - no application code is involved.
+theme, copy the pattern in those files. No application code is involved.
 
 ---
+
+<a id="limitations"></a>
 
 ## --- Limitations ---
 
@@ -1180,15 +1089,15 @@ which are a few hours of UI work and which are impossible by design.
 ### Builder is ready, only the UI is missing
 
 For these, the transaction builder already emits the exact on-chain
-shape - proven against real traces (trx ids given). What's missing is
+shape, proven against real traces (trx ids given). What's missing is
 the front-end wiring, so they're the highest-value things to add next.
 
 - **Ownership-secured blends.** Random blends gated by `OWNERSHIP_CHECK`
   ask you to prove you *hold* a specific NFT (which is **not** burned).
-  Far from rare: 28 of the 40 most recent `blend.nefty::fuse` actions
-  are ownership-gated. `rngExecute.ts` already encodes `OWNERSHIP_CHECK`,
+  Not an edge case: every one of the 40 most recent `blend.nefty::fuse`
+  actions is ownership-gated. `rngExecute.ts` already encodes `OWNERSHIP_CHECK`,
   but the UI still sends only the no-op `WHITELIST_CHECK` and can't tell
-  an ownership gate from a whitelist gate - so an ownership blend today
+  an ownership gate from a whitelist gate, so an ownership blend today
   shows a misleading *"not on the whitelist"* message. To finish: read
   the `secure.nefty/proofown` rule, show a proof-NFT picker, pass the
   `asset_ids`. Traces: `e9720eaf…` (blend 36262), `432629ce…` (blend
@@ -1200,7 +1109,7 @@ the front-end wiring, so they're the highest-value things to add next.
   reuses the same proof-NFT picker as above. Traces: `64054c0b…`
   (whitelist, upgrade 37), `b5aa7b89…` (ownership, upgrade 994).
 - **RNG upgrades.** Upgrades whose result the oracle decides. Important
-  correction: `up.nefty` has **no `claim` action** - unlike RNG *blends*
+  correction: `up.nefty` has **no `claim` action**. Unlike RNG *blends*,
   there is no second signature. You sign the same `upgrade` /
   `upgradesec` action and the ORNG callback rewrites the NFT's
   `mutable_data` a few seconds later (a row in `up.nefty/orngjobs`
@@ -1232,7 +1141,7 @@ the front-end wiring, so they're the highest-value things to add next.
   WAX Cloud Wallet). External to this tool. If the wallet falls back to a
   resource provider (Greymass Fuel) that doesn't cosign, the chain
   rejects with *"declares authority greymassfuel@cosign … does not have
-  signatures for it"* - staking CPU avoids it. The in-app guide explains
+  signatures for it"*. Staking CPU avoids it. The in-app guide explains
   this.
 
 ### On the roadmap
@@ -1242,7 +1151,7 @@ the front-end wiring, so they're the highest-value things to add next.
   waxdaobacker, etc.) follows the same ABI-driven method.
 - **Creating templates / schemas.** Drops mint from templates that
   already exist. Making new templates/schemas (irreversible, riskier)
-  isn't in the app yet - create them on AtomicHub, then build the drop
+  isn't in the app yet. Create them on AtomicHub, then build the drop
   here.
 - **Other NeftyBlocks contracts** (redemptions, NFT swaps, marketplace
   listings) aren't covered yet, beyond the read-only health cards on

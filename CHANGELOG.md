@@ -15,6 +15,60 @@ organised around. There are twelve verify scripts in `scripts/` today.
 
 ---
 
+## 2026-08-11 - The mechanics come apart cleanly
+
+### Changed
+- **The three contract families are independently liftable.** Someone who
+  wants only the blend, claim or upgrade mechanics can now take a folder
+  and go. `pickImageRef` moved from `ui/media.ts` to `atomic/image.ts`,
+  so no module under `nefty/`, `waxdao/`, `blenderizer/`, `atomic/` or
+  `chain/` imports anything from `ui/`. `BuiltAction` moved from
+  `nefty/execute.ts` (which is blend-specific) to `chain/action.ts`, so
+  `waxdao/` and `blenderizer/` no longer depend on `nefty/` at all. Two
+  further copies of the same interface, in `dropExecute.ts` and
+  `packExecute.ts`, were folded into it: one definition instead of three.
+- Each family gained an `index.ts` re-exporting its surface grouped by
+  mechanic, with a header saying what a given mechanic needs at minimum.
+  Importing through it is optional.
+
+### Added
+- **INTEGRATING.md**: how to take these mechanics into another project.
+  The minimum you need (two files, 314 lines), a table per mechanic, the
+  three transaction shapes, and the ABI facts nobody guesses: variants
+  are `[tag, payload]` tuples, an attribute's declared type is not its
+  wire type, `UINT8_VEC` is a hex string, odds are weights the contract
+  does not normalise, and an upgrade can only really change what no
+  template freezes.
+
+### Fixed
+- README: the two internal links were dead. `## --- Heading ---` slugifies
+  to an anchor with four hyphens a side, and both links used two. Every
+  section now carries an explicit `<a id>` so the target never depends on
+  how a renderer treats a decorative heading.
+- README: a paragraph in the catalogue section had been garbled by an
+  earlier editing pass, with a duplicated half-sentence.
+- README: `claimunboxed` takes `origin_roll_ids`, not `roll_ids`.
+- README: the trust table lists nine contracts, and the sentence under it
+  said eight. The build has two HTML entry points, not one. The drop
+  panels still use a browser `confirm()`, so "every author flow" went
+  through a tick-to-confirm gate was false.
+- README: `cloudflare-ipfs.com` has DNS records, it just no longer
+  resolves to an address. Only two of the three named hosts are NXDOMAIN.
+- Ownership-gated blends are not "far from rare", they are now the norm:
+  all 40 of the 40 most recent `fuse` actions carry `OWNERSHIP_CHECK`.
+
+### Changed, documentation
+- Chain-derived counts that decay week to week are no longer pinned in
+  prose. The verify scripts remain the source of exact numbers.
+- 15 `[*]` code fences became real markdown lists, about 160 lines that
+  could not wrap on a phone.
+- Added a Contents block, dropped a `$ crucible --status` banner that
+  restated the next 60 lines, and cut the UX guarantees section from nine
+  bullets to the four that are not stated elsewhere. The file is 92 lines
+  shorter and has 16 fewer code blocks.
+
+---
+
 ## 2026-08-10 - One guided creator at `#/lab`
 
 ### Added
