@@ -309,6 +309,29 @@ Every ingredient kind the contract accepts is supported, attribute
 filters included (`where a = x | y ; b = z`), along with each
 ingredient's optional `display_data` JSON blob.
 
+#### Editing after creation
+
+The contract lets an author change nearly everything about a live
+blend, and the Manage panel wires most of it: `setblenddata` (name /
+image / description), `setblendcat`, `setblendtime`, `setblendmax`,
+`setblendlim`, `setblendhide`, `setblendsec` (whitelist) and
+`delblend`. Upgrades expose the same set under `setupgrd*`.
+
+Two are **not** wired yet, and they are the two the create form
+produces: `setblendmix` (the ingredients) and `setrolls` (the
+outcomes). Changing what a blend consumes or produces therefore means
+deleting it and creating a new one. Worth knowing before you publish a
+recipe. Note also that `setrolls` is the odd one out in the ABI — it
+takes no `authorized_account`, so its authorisation model differs from
+every other author action and wants checking against a real trace
+before being exposed.
+
+Every create and every edit goes through a **beta confirmation**: an
+in-app dialog stating that this flow is new, showing the exact summary
+of what is about to be signed, and requiring an explicit tick before
+the sign button enables. It is not a browser `confirm()` — it renders
+outside `#root` so an app re-render cannot dismiss it mid-decision.
+
 #### Manage panel · collection authors
 
 When the connected wallet is authorized on a blend's collection, the

@@ -3118,7 +3118,9 @@ async function runAdminAction(
 ) {
   const session = getCurrentSession();
   if (!session) return;
-  if (!confirm(confirmMsg)) return;
+  // Editing a live blend changes what players are about to run, so it
+  // goes through the same beta gate as creating one.
+  if (!(await confirmBetaAction(`${action.account}::${action.name}`, confirmMsg))) return;
   state.manage.busy = true;
   render();
   try {
@@ -5789,6 +5791,74 @@ function renderDropManage(): string {
 }
 
 
+
+// ─── beta gate for author write-actions ──────────────────────────────── //
+
+/**
+ * Blocking confirmation for creating or editing a blend / upgrade.
+ *
+ * These are the newest write paths in the app and the only ones whose
+ * output OTHER people then execute: a wrong recipe burns someone else's
+ * NFTs, and deleting the blend afterwards does not give them back. So
+ * the gate is deliberate rather than a browser confirm() - it states
+ * the beta status, shows exactly what is about to be signed, and needs
+ * an explicit tick before the button enables.
+ *
+ * Lives on document.body rather than inside #root, because the app
+ * re-renders by replacing #root's innerHTML and would otherwise wipe
+ * the dialog out from under the user mid-decision.
+ *
+ * Resolves true when accepted, false on cancel / Escape / backdrop.
+ */
+function confirmBetaAction(title: string, summary: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    document.getElementById('beta-gate')?.remove();
+
+    const wrap = document.createElement('div');
+    wrap.id = 'beta-gate';
+    wrap.className = 'modal-backdrop';
+    wrap.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="beta-gate-title">
+        <div class="modal-beta">⚠ BETA — please test before relying on this</div>
+        <h2 id="beta-gate-title">${escapeHtml(title)}</h2>
+        <p class="modal-lead">Creating and editing blends and upgrades is <strong>new</strong> in Crucible.
+          The transaction below has been verified against thousands of real on-chain creations, but this
+          particular flow has had little real-world use yet. Start with a cheap recipe, create it
+          <strong>hidden</strong>, and check the result on-chain before exposing it to players.</p>
+        <pre class="modal-summary">${escapeHtml(summary)}</pre>
+        <p class="modal-lead">This writes to the chain. Once players start using a blend, the NFTs it
+          consumes are gone — deleting it afterwards does not give them back.</p>
+        <label class="inline-toggle modal-ack">
+          <input type="checkbox" id="beta-gate-ack" />
+          <span>I understand this is beta and I have checked the summary</span>
+        </label>
+        <div class="modal-actions">
+          <button type="button" id="beta-gate-cancel">Cancel</button>
+          <button type="button" class="primary" id="beta-gate-ok" disabled>Sign it</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+
+    const ack = wrap.querySelector<HTMLInputElement>('#beta-gate-ack')!;
+    const ok = wrap.querySelector<HTMLButtonElement>('#beta-gate-ok')!;
+    const cancel = wrap.querySelector<HTMLButtonElement>('#beta-gate-cancel')!;
+
+    const close = (accepted: boolean) => {
+      document.removeEventListener('keydown', onKey);
+      wrap.remove();
+      resolve(accepted);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(false); };
+
+    ack.addEventListener('change', () => { ok.disabled = !ack.checked; });
+    ok.addEventListener('click', () => close(true));
+    cancel.addEventListener('click', () => close(false));
+    wrap.addEventListener('click', (e) => { if (e.target === wrap) close(false); });
+    document.addEventListener('keydown', onKey);
+    ack.focus();
+  });
+}
+
 // ─── create-blend panel (collection authors, BLEND tab) ───────────────── //
 
 function onToggleCreateBlendEnabled(checked: boolean) {
@@ -5901,15 +5971,16 @@ async function onCreateBlendSubmit() {
   const burned = consumed.filter((i) => !i.transfer_to).length;
   const moved = consumed.filter((i) => i.transfer_to).length;
   const odds = describeOdds(args.rolls[0]?.outcomes ?? []);
-  if (!confirm(
-    `Create this blend on ${args.collection_name}?\n\n` +
+  const accepted = await confirmBetaAction(
+    `Create a blend on ${args.collection_name}`,
     `${args.ingredients.length} ingredient(s): ${burned} burned` +
-    `${moved ? `, ${moved} transferred away` : ''}\n` +
+    `${moved ? `, ${moved} transferred away` : ''}\n\n` +
     `Outcomes:\n${odds.map((o) => '  ' + o).join('\n')}\n\n` +
     `${args.max_uses ? `Max ${args.max_uses} use(s).` : 'Unlimited uses.'}` +
-    `${args.security_id && String(args.security_id) !== '0' ? ` Whitelist ${args.security_id}.` : ''}\n\n` +
-    `Anyone can run it as soon as it exists, and the NFTs it consumes are gone.`,
-  )) return;
+    `${args.security_id && String(args.security_id) !== '0' ? ` Whitelist ${args.security_id}.` : ''}` +
+    `${args.is_hidden ? ' Created hidden.' : ' Visible immediately.'}`,
+  );
+  if (!accepted) return;
 
   c.busy = true;
   render();

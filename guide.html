@@ -263,6 +263,23 @@
           <strong>transferred away</strong>. Burning is permanent, and once the blend exists
           anyone can run it — so read that line before signing.
         </div>
+        <div class="note">
+          <strong>Beta.</strong> Creating and editing blends and upgrades is new. Every
+          create/edit shows a confirmation you have to tick through, listing exactly what will
+          be signed. Start with a cheap recipe, create it <strong>hidden</strong>, check the
+          result on-chain, then unhide it.
+        </div>
+
+        <h3>Editing a blend afterwards</h3>
+        <p>Everything except the recipe itself can be changed after creation, from the
+          <em>Manage</em> panel: name and image, category, time window, max uses, per-account
+          limit, whitelist, hidden flag — and deleting it outright.</p>
+        <div class="note">
+          The <strong>ingredients and outcomes cannot be edited from Crucible yet</strong>. The
+          contract does allow it (<code>setblendmix</code> / <code>setrolls</code>), but those
+          two are not wired into the Manage panel. To change what a blend consumes or produces
+          today, delete it and create a new one.
+        </div>
 
         <h3>Manage blends &amp; whitelists (BLEND tab)</h3>
         <p>Rename, hide, set the time window, change limits, delete, and manage reusable named

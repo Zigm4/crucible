@@ -1565,3 +1565,77 @@ pre::before {
   height: 34px;
   border-radius: 2px;
 }
+
+/* ─── beta gate modal (author write-actions) ──────────────────────────── */
+
+/* Lives on document.body, outside #root, so an app re-render cannot pull
+   it out from under the user mid-decision. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(2px);
+  overflow-y: auto;
+}
+.modal {
+  width: 100%;
+  max-width: 560px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  border-radius: 4px;
+  padding: 18px 20px 16px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+}
+.modal-beta {
+  display: inline-block;
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  padding: 3px 10px;
+  margin-bottom: 10px;
+}
+.modal h2 {
+  font-size: 15px;
+  margin: 0 0 10px;
+  letter-spacing: 0.6px;
+}
+.modal-lead {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--fg-dim);
+  margin: 0 0 10px;
+}
+/* The summary is the part to actually read: monospace, scrollable, and
+   visually separated from the prose around it. */
+.modal-summary {
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  color: var(--fg);
+}
+.modal-ack { margin-bottom: 14px; text-transform: none; letter-spacing: 0.3px; font-size: 12px; }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.modal-actions button { min-width: 110px; }
+
+@media (max-width: 560px) {
+  .modal { padding: 14px; }
+  .modal-actions { flex-direction: column-reverse; }
+  .modal-actions button { width: 100%; }
+}
