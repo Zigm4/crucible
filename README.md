@@ -228,11 +228,11 @@ called out before you deposit anything.
 #### Create a blend · collection authors
 
 `blend.nefty::createblend` is the author-side counterpart to running a
-recipe, and the BLEND tab exposes it behind the same opt-in switch the
-drop creator uses. Ingredients and outcomes are entered as one-per-line
-text, because a blend is a three-level tree (ingredients / weighted
-outcomes / results) and a recipe you can read, paste and diff beats a
-nest of widgets:
+recipe. It is **not on the BLEND tab**: creation lives on the guided
+creator below, so there is one path to it rather than two. What follows
+is the builder's own one-per-line syntax, which is what the verify suite
+replays every real creation through, and what the ingredient editor in
+the Manage panel still reads and writes:
 
 ```
 INGREDIENTS                          OUTCOMES
@@ -247,9 +247,11 @@ collection x2
 token 10.0000 TLM -> payout.wam
 ```
 
-The panel parses as you type and previews what the recipe will actually
-do - how many ingredients are burned versus transferred away, the token
-cost, and the draw normalised to percentages - before the wallet opens.
+A blend is a three-level tree (ingredients / weighted outcomes /
+results), and a recipe you can read, paste and diff beats a nest of
+widgets when what you want is to compare two of them. It is the wrong
+thing to hand someone creating their first one, which is why the guided
+creator exists.
 
 ### How it is verified
 
@@ -606,12 +608,12 @@ checked before you deposit anything:
   author pre-paid (`rambalance`). A collection with no balance fails
   every blend until they top it up; the amount left is shown inline.
 
-### UPGRADE tab · creating one
+### Creating an upgrade
 
-`up.nefty::createupgrde`, behind the same opt-in and the same beta gate
-as the blend creator. An upgrade mints nothing - it rewrites attributes
-on an NFT the player already owns - so the form has three boxes: the
-cost, which NFTs qualify, and what changes.
+`up.nefty::createupgrde`. Also **not on the UPGRADE tab**: like blends,
+creation happens on the guided creator below. An upgrade mints nothing,
+it rewrites attributes on an NFT the player already owns, so a recipe has
+three parts: the cost, which NFTs qualify, and what changes.
 
 ```
 COST                          APPLIES TO
@@ -624,16 +626,23 @@ name = Upgraded Sword         image img = Qm…
 uint64 level += 1             bool engine = true
 ```
 
-The leading word is the attribute's **declared type on the schema**,
-stated rather than guessed: it decides the wire encoding, and getting
-it wrong is the one mistake the chain will not catch. Verified against
-every createupgrde on chain - see the verify section.
+The leading word is the attribute's **declared type on the schema**. It
+decides the wire encoding, and getting it wrong is the one mistake the
+chain will not catch: exactly why the guided creator reads it from the
+schema instead of asking. Verified against every createupgrde on chain,
+see the verify section.
 
 ### GUIDED CREATOR · `#/lab`  (unlisted)
 
 Nothing links to it: you reach it by knowing the path. It is a **real**
-creator on the same three contracts as the classic panels, and it signs
-real transactions.
+creator and it signs real transactions.
+
+It is also the **only** way to create a blend or an upgrade. Those panels
+used to sit on the BLEND and UPGRADE tabs behind a safety toggle; they
+were removed rather than kept alongside, because two creation paths mean
+two sets of mistakes to guard against and only one of them reads the
+schema before writing to it. Editing an existing blend, whitelists, and
+drop creation stay on the main page.
 
 ```
 $ crucible #/lab
@@ -647,14 +656,15 @@ $ crucible #/lab
    Mycelium Helmet 50%   Pauldrons 30%  nothing 20%
 ```
 
-The classic panels are text boxes with a syntax to learn: template ids
-typed from memory, weights as abstract numbers, and for upgrades an
-attribute type the author has to DECLARE. This reads the collection
+The panels it replaced were text boxes with a syntax to learn: template
+ids typed from memory, weights as abstract numbers, and for upgrades an
+attribute type the author had to DECLARE. This reads the collection
 first, so none of that is asked:
 
 ```
 [*] blends (blend.nefty), upgrades (up.nefty) and drops (neftyblocksd),
-    one question per screen, five screens each
+    one question per screen, five screens each. Drops can also still be
+    created from the CLAIM tab
 [*] templates picked from a searchable grid with artwork, name, schema
     and supply, read live from the collection
 [*] weights drawn as a stacked bar, so "50 / 30 / 20" is a shape before

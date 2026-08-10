@@ -1642,49 +1642,6 @@ pre::before {
 
 /* ─── author form: field help + paired inputs ─────────────────────────── */
 
-/* Explanations sit under the control they explain, not beside it: the
-   author-form rows are narrow and a trailing hint used to collide with
-   the row above (the cooldown field did exactly that). */
-.field-help {
-  margin: 5px 0 0;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--muted);
-}
-.field-help code { font-size: 0.95em; }
-
-/* Two numeric inputs that belong together, each with its own label. */
-.field-pair {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.field-mini {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 10px;
-  letter-spacing: 1.2px;
-  text-transform: uppercase;
-  color: var(--muted);
-  flex: 1 1 150px;
-  min-width: 0;
-}
-.field-mini input { width: 100%; }
-
-/* Collapsible syntax reference under a textarea. */
-.syntax-help { margin-top: 8px; }
-.syntax-help > summary {
-  cursor: pointer;
-  font-size: 11px;
-  letter-spacing: 0.6px;
-  color: var(--accent);
-  list-style: none;
-}
-.syntax-help > summary::-webkit-details-marker { display: none; }
-.syntax-help > summary::before { content: '▸ '; }
-.syntax-help[open] > summary::before { content: '▾ '; }
-.syntax-help .mint-info { margin-top: 6px; }
 .manage-section select { width: 100%; }
 
 /* ─── #/lab guided creator ────────────────────────────────────────────── */

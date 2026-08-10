@@ -63,22 +63,12 @@ import {
 } from '../nefty/rngExecute';
 import {
   listUpgrades,
-  clearUpgradesCache,
   loadUpgradeById,
   type DiscoveredUpgrade,
   type UpgradeStatus,
   type UpgradeIngredient,
 } from '../nefty/upgrades';
 import { buildUpgradeActions, executeUpgrade } from '../nefty/upgradeExecute';
-import {
-  buildCreateUpgradeAction,
-  executeCreateUpgrade,
-  parseRequirementLines,
-  parseUpgradeResultLines,
-  describeSpec,
-  validateNewUpgrade,
-  type CreateUpgradeArgs,
-} from '../nefty/createUpgrade';
 import {
   listWaxdaoBlends,
   loadWaxdaoBlendById,
@@ -87,17 +77,14 @@ import {
   type WaxdaoIngredient,
 } from '../waxdao/blends';
 import { buildWaxdaoBlendActions, executeWaxdaoBlend } from '../waxdao/blendExecute';
+// Creating blends and upgrades lives on #/lab now, not here. What is left
+// of these modules on this page is the ingredient editor, which reads a
+// blend's current mix back into the text syntax and writes it again.
 import {
-  buildCreateBlendAction,
-  executeCreateBlend,
   encodeIngredient,
   formatIngredientLines,
   parseIngredientLines,
   type NewIngredient,
-  parseOutcomeLines,
-  describeOdds,
-  validateNewBlend,
-  type CreateBlendArgs,
 } from '../nefty/createBlend';
 import {
   listBlenderizerBlends,
@@ -166,7 +153,6 @@ import {
 } from '../nefty/tokens';
 import {
   listBlends,
-  clearDiscoverCache,
   SUPPORTED_COLLECTIONS,
   type DiscoveredBlend,
   type DiscoveredStatus,
@@ -459,8 +445,6 @@ interface AppState {
   manage: ManageState;
   /** Collection-author "create a drop" panel (CLAIM/drops tab). */
   createDrop: CreateDropState;
-  createBlend: CreateBlendState;
-  createUpgrade: CreateUpgradeState;
   /** Collection-author "manage a drop" panel (whitelist + settings). */
   manageDrop: DropManageState;
 }
@@ -503,42 +487,6 @@ interface DropManageState {
  * worse to use than a recipe you can read, paste and diff. Same choice
  * the drop creator makes for its templates field.
  */
-interface CreateBlendState {
-  /** Opt-in safety switch, like the drop creator. */
-  enabled: boolean;
-  collection: string;
-  /** Collections this wallet can actually manage, for the picker. */
-  myCollections: string[];
-  myCollectionsLoaded: boolean;
-  /** The chosen collection's named whitelists, for the gate picker. */
-  securities: { id: string; name: string }[];
-  securitiesFor?: string;
-  authChecked?: string;
-  authorized?: boolean;
-  authChecking: boolean;
-  busy: boolean;
-  /** display_data fields. */
-  name: string;
-  description: string;
-  image: string;
-  category: string;
-  /** One ingredient per line (see parseIngredientLines). */
-  ingredientsInput: string;
-  /** One outcome per line (see parseOutcomeLines). */
-  outcomesInput: string;
-  /** datetime-local strings; empty = now / never. */
-  startTime: string;
-  endTime: string;
-  /** '' or '0' = unlimited. */
-  maxUses: string;
-  accountLimit: string;
-  cooldown: string;
-  /** secure.nefty whitelist id; '' or '0' = open. */
-  securityId: string;
-  hidden: boolean;
-  lastDryRun?: unknown;
-  lastTrxId?: string;
-}
 
 /**
  * Inline "create an upgrade" form (UPGRADE tab, collection authors).
@@ -548,33 +496,6 @@ interface CreateBlendState {
  * describes which NFTs it applies to and which attributes it rewrites
  * on them, in place.
  */
-interface CreateUpgradeState {
-  enabled: boolean;
-  collection: string;
-  authChecked?: string;
-  authorized?: boolean;
-  authChecking: boolean;
-  busy: boolean;
-  name: string;
-  description: string;
-  image: string;
-  category: string;
-  /** Schema the upgrade applies to. */
-  schema: string;
-  /** Cost - same syntax as the blend form. */
-  ingredientsInput: string;
-  /** Which NFTs qualify. */
-  requirementsInput: string;
-  /** Which attributes get rewritten. */
-  resultsInput: string;
-  startTime: string;
-  endTime: string;
-  maxUses: string;
-  securityId: string;
-  hidden: boolean;
-  lastDryRun?: unknown;
-  lastTrxId?: string;
-}
 
 interface CreateDropState {
   /** Opt-in safety switch - the form is collapsed until the author flips it. */
@@ -874,38 +795,6 @@ const state: AppState = {
     newLimitInput: '',
     newCooldownInput: '',
     mixInput: '',
-  },
-  createUpgrade: {
-    enabled: false,
-    collection: '',
-    authChecking: false,
-    busy: false,
-    name: '', description: '', image: '', category: '', schema: '',
-    ingredientsInput: '', requirementsInput: '', resultsInput: '',
-    startTime: '', endTime: '', maxUses: '', securityId: '',
-    hidden: false,
-  },
-  createBlend: {
-    enabled: false,
-    collection: '',
-    myCollections: [],
-    myCollectionsLoaded: false,
-    securities: [],
-    authChecking: false,
-    busy: false,
-    name: '',
-    description: '',
-    image: '',
-    category: '',
-    ingredientsInput: '',
-    outcomesInput: '',
-    startTime: '',
-    endTime: '',
-    maxUses: '',
-    accountLimit: '',
-    cooldown: '',
-    securityId: '',
-    hidden: false,
   },
   createDrop: {
     enabled: false,
@@ -5740,7 +5629,7 @@ function renderPacksView(): string {
 function renderBlendsView(): string {
   // The author panel sits at the bottom, behind its own opt-in, so the
   // blending flow above is untouched for the 99% who are not authors.
-  return renderPickBlend() + renderBlendInfo() + renderSlots() + renderActions() + renderBlendCreate();
+  return renderPickBlend() + renderBlendInfo() + renderSlots() + renderActions();
 }
 
 function renderDropsView(): string {
@@ -6073,421 +5962,6 @@ function confirmBetaAction(title: string, summary: string): Promise<boolean> {
     document.addEventListener('keydown', onKey);
     ack.focus();
   });
-}
-
-// ─── create-blend panel (collection authors, BLEND tab) ───────────────── //
-
-function onToggleCreateBlendEnabled(checked: boolean) {
-  const c = state.createBlend;
-  c.enabled = checked;
-  if (checked && !c.collection) {
-    // Default to whatever collection the author is already looking at.
-    c.collection = state.blend?.collection_name || state.discoveryCollection || '';
-  }
-  render();
-  if (checked) {
-    void loadMyCollections();
-    if (c.collection) void refreshCreateBlendAuth();
-  }
-}
-
-/**
- * Lists the collections the connected wallet is an authorized account
- * of, so the author picks from a list instead of typing a name from
- * memory (and getting told afterwards that it is not theirs).
- */
-async function loadMyCollections() {
-  const c = state.createBlend;
-  const session = getCurrentSession();
-  if (!session || c.myCollectionsLoaded) return;
-  try {
-    const list = await listAuthorizedCollections(String(session.actor));
-    c.myCollections = list.map((x) => x.collection_name).sort();
-    // A single collection is not a choice - pick it.
-    if (!c.collection && c.myCollections.length === 1) {
-      c.collection = c.myCollections[0];
-      void refreshCreateBlendAuth();
-    }
-  } catch {
-    c.myCollections = [];
-  } finally {
-    c.myCollectionsLoaded = true;
-    render();
-  }
-}
-
-/**
- * The collection's named whitelists (`secure.nefty/security`). Shown as
- * a dropdown because a raw security_id means nothing to an author -
- * "0" versus what, exactly, was the reasonable question.
- */
-async function loadCreateBlendSecurities(collection: string) {
-  const c = state.createBlend;
-  if (!collection || c.securitiesFor === collection) return;
-  c.securitiesFor = collection;
-  try {
-    const rows = await readCollectionSecurities(collection);
-    c.securities = rows.map((r) => ({ id: String(r.id), name: r.name || `whitelist ${r.id}` }));
-  } catch {
-    c.securities = [];
-  }
-  render();
-}
-
-/** Same authorized_accounts check the Manage panel and drop creator use. */
-async function refreshCreateBlendAuth() {
-  const c = state.createBlend;
-  const collection = c.collection.trim();
-  const session = getCurrentSession();
-  const actor = session ? String(session.actor) : '';
-  if (!collection || !actor) {
-    c.authChecked = collection;
-    c.authorized = false;
-    render();
-    return;
-  }
-  if (c.authChecked === collection && c.authorized !== undefined && !c.authChecking) return;
-  c.authChecking = true;
-  render();
-  try {
-    c.authorized = await canManageCollection(actor, collection);
-    if (c.authorized) void loadCreateBlendSecurities(collection);
-  } catch {
-    c.authorized = false;
-  } finally {
-    c.authChecked = collection;
-    c.authChecking = false;
-    render();
-  }
-}
-
-/**
- * Folds the form into the builder's argument shape. Returns the parse
- * and validation problems alongside, so the caller can block on them
- * and the panel can show them live as the author types.
- */
-function readCreateBlendForm(): { args: CreateBlendArgs; problems: string[] } {
-  const c = state.createBlend;
-  const session = getCurrentSession();
-  const collection = c.collection.trim();
-
-  const ing = parseIngredientLines(c.ingredientsInput, collection);
-  const out = parseOutcomeLines(c.outcomesInput);
-
-  const display: Record<string, string> = {};
-  if (c.name.trim()) display.name = c.name.trim();
-  if (c.description.trim()) display.description = c.description.trim();
-  if (c.image.trim()) display.image = c.image.trim();
-
-  const args: CreateBlendArgs = {
-    authorized_account: session ? String(session.actor) : '',
-    collection_name: collection,
-    ingredients: ing.items,
-    rolls: [{ outcomes: out.items }],
-    start_time: datetimeLocalToUnix(c.startTime),
-    end_time: datetimeLocalToUnix(c.endTime),
-    max_uses: Number(c.maxUses) || 0,
-    display_data: Object.keys(display).length ? JSON.stringify(display) : '',
-    security_id: c.securityId.trim() || 0,
-    is_hidden: c.hidden,
-    category: c.category.trim(),
-    account_limit: Number(c.accountLimit) || 0,
-    account_limit_cooldown: Number(c.cooldown) || 0,
-  };
-
-  return {
-    args,
-    problems: [...ing.errors, ...out.errors, ...validateNewBlend(args)],
-  };
-}
-
-async function onCreateBlendDryRun() {
-  const { args, problems } = readCreateBlendForm();
-  if (problems.length) { setStatus(problems[0], 'err'); render(); return; }
-  try {
-    setStatus('Simulating createblend (local ABI serialisation)…', 'info');
-    const action = buildCreateBlendAction(args);
-    const out = await dryRunActions([action]);
-    state.createBlend.lastDryRun = { action, abi_serialization: out };
-    const ok = out.every((r) => !r.error);
-    setStatus(ok ? 'Simulation OK, the action serialises cleanly.' : 'Simulation failed.', ok ? 'ok' : 'err');
-  } catch (err) {
-    setStatus((err as Error).message, 'err');
-  }
-  render();
-}
-
-async function onCreateBlendSubmit() {
-  const c = state.createBlend;
-  const session = getCurrentSession();
-  if (!session) { setStatus('Connect a wallet first.', 'err'); return; }
-  const { args, problems } = readCreateBlendForm();
-  if (problems.length) { setStatus(problems[0], 'err'); render(); return; }
-  if (!(c.authChecked === args.collection_name && c.authorized)) {
-    setStatus('That account is not authorized for this collection (the contract would reject it).', 'err');
-    return;
-  }
-
-  // Consequential and effectively irreversible once people start using
-  // it, so spell out what is being registered before the wallet opens.
-  const consumed = args.ingredients.filter((i) => i.kind !== 'ft' && i.kind !== 'cooldown');
-  const burned = consumed.filter((i) => !i.transfer_to).length;
-  const moved = consumed.filter((i) => i.transfer_to).length;
-  const odds = describeOdds(args.rolls[0]?.outcomes ?? []);
-  const accepted = await confirmBetaAction(
-    `Create a blend on ${args.collection_name}`,
-    `${args.ingredients.length} ingredient(s): ${burned} burned` +
-    `${moved ? `, ${moved} transferred away` : ''}\n\n` +
-    `Outcomes:\n${odds.map((o) => '  ' + o).join('\n')}\n\n` +
-    `${args.max_uses ? `Max ${args.max_uses} use(s).` : 'Unlimited uses.'}` +
-    `${args.security_id && String(args.security_id) !== '0' ? ` Whitelist ${args.security_id}.` : ''}` +
-    `${args.is_hidden ? ' Created hidden.' : ' Visible immediately.'}`,
-  );
-  if (!accepted) return;
-
-  c.busy = true;
-  render();
-  try {
-    setStatus('Awaiting wallet signature for createblend…', 'info');
-    const result = await executeCreateBlend(session, args);
-    const trxId =
-      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
-      String(result.resolved?.transaction.id ?? '');
-    c.lastTrxId = trxId;
-    setStatus(`Blend created: ${trxId}`, 'ok', trxId);
-    // The new blend is not in any cached list yet.
-    clearDiscoverCache();
-  } catch (err) {
-    setStatus(`Create blend failed: ${(err as Error).message}`, 'err');
-  } finally {
-    c.busy = false;
-    render();
-  }
-}
-
-
-/**
- * Inline "create a blend" form. Renders nothing until the author opts in
- * AND the connected wallet is authorized on the collection. The chain is
- * the real guard - blend.nefty verifies authorized_account - this is
- * just so the button is not a trap.
- */
-function renderBlendCreate(): string {
-  const c = state.createBlend;
-  const session = getCurrentSession();
-  const actor = session ? String(session.actor) : '';
-
-  if (!c.enabled) {
-    return `
-      <div class="manage-section create-section" style="margin-top:18px">
-        <div class="manage-head">
-          <span class="manage-title create-title">✦ CREATE A BLEND · blend.nefty</span>
-          <label class="inline-toggle">
-            <input id="createBlendEnable" type="checkbox" data-action="toggleCreateBlendEnable" />
-            <span>enable blend creation</span>
-          </label>
-        </div>
-        <p class="term" style="margin-top:6px">Register a new recipe on a collection you manage: what gets consumed, and what it mints.</p>
-      </div>`;
-  }
-
-  const collection = c.collection.trim();
-  const authLine = !actor
-    ? '<p class="status-line warn">Connect a wallet to create a blend.</p>'
-    : c.authChecking
-      ? '<p class="status-line">Checking whether you can manage this collection…</p>'
-      : c.authChecked === collection && c.authorized
-        ? `<p class="status-line ok">${escapeHtml(actor)} is authorized on ${escapeHtml(collection)}.</p>`
-        : collection
-          ? `<p class="status-line err">${escapeHtml(actor)} is not an authorized account of ${escapeHtml(collection)} - the contract would reject this.</p>`
-          : '';
-
-  // Live feedback: parse as the author types so mistakes surface before
-  // the wallet opens, not after.
-  const { args, problems } = readCreateBlendForm();
-  const odds = describeOdds(args.rolls[0]?.outcomes ?? []);
-  const consumed = args.ingredients.filter((i) => i.kind !== 'ft' && i.kind !== 'cooldown');
-  const burned = consumed.filter((i) => !i.transfer_to);
-  const moved = consumed.filter((i) => i.transfer_to);
-  const tokens = args.ingredients.filter((i) => i.kind === 'ft');
-
-  const preview = args.ingredients.length || odds.length
-    ? `
-      <h3 style="margin-top:12px">Preview</h3>
-      <ul class="mint-info">
-        ${burned.length ? `<li><strong>Burned:</strong> ${burned.length} ingredient(s) - destroyed for good</li>` : ''}
-        ${moved.length ? `<li><strong>Transferred:</strong> ${moved.length} ingredient(s) sent to ${escapeHtml([...new Set(moved.map((i) => (i as { transfer_to?: string }).transfer_to ?? ''))].join(', '))}</li>` : ''}
-        ${tokens.length ? `<li><strong>Token cost:</strong> ${tokens.map((t) => escapeHtml((t as { quantity: string }).quantity)).join(' + ')}</li>` : ''}
-        ${odds.length ? `<li><strong>Draw:</strong><ul>${odds.map((o) => `<li>${escapeHtml(o)}</li>`).join('')}</ul></li>` : ''}
-      </ul>`
-    : '';
-
-  const problemList = problems.length
-    ? `<div class="risk-box"><div class="risk-why">⚠ Fix before signing</div><ul class="mint-info">${problems.map((p) => `<li>${escapeHtml(p)}</li>`).join('')}</ul></div>`
-    : '';
-
-  const ready = problems.length === 0 && !!actor && c.authChecked === collection && c.authorized && !c.busy;
-  const disabled = ready ? '' : 'disabled';
-
-  return `
-    <div class="manage-section create-section" style="margin-top:18px">
-      <div class="manage-head">
-        <span class="manage-title create-title">✦ CREATE A BLEND · blend.nefty</span>
-        <label class="inline-toggle">
-          <input id="createBlendEnable" type="checkbox" data-action="toggleCreateBlendEnable" checked />
-          <span>blend creation enabled</span>
-        </label>
-      </div>
-
-      <div class="manage-row">
-        <span class="manage-label">collection</span>
-        <div class="manage-ctl">
-          ${c.myCollections.length
-            ? `<select id="cbCollectionPick">
-                 <option value="">Pick one of your collections</option>
-                 ${c.myCollections.map((x) => `<option value="${escapeHtml(x)}"${x === collection ? ' selected' : ''}>${escapeHtml(x)}</option>`).join('')}
-               </select>`
-            : `<input id="cbCollection" type="text" value="${escapeHtml(c.collection)}" placeholder="e.g. underpunks55" autocomplete="off" />`}
-          <p class="field-help">${c.myCollectionsLoaded
-            ? (c.myCollections.length
-                ? 'Only collections this wallet is an authorized account of are listed.'
-                : 'This wallet manages no collection - type a name if you know you were just added.')
-            : 'Looking up the collections you manage…'}</p>
-        </div>
-      </div>
-      ${authLine}
-
-      <div class="manage-row">
-        <span class="manage-label">blend name</span>
-        <div class="manage-ctl">
-          <input id="cbName" type="text" value="${escapeHtml(c.name)}" placeholder="e.g. Forge a Mycelium Helmet" autocomplete="off" />
-          <p class="field-help">The name of the <strong>recipe</strong>, not of the NFT it mints - this is what players see in the blend list.</p>
-        </div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">blend image</span>
-        <div class="manage-ctl">
-          <input id="cbImage" type="text" value="${escapeHtml(c.image)}" placeholder="e.g. QmPpctuEbqFtkosPeLQ4Zfep4TbMQGa3pfDZhdWWd2Z2M7" autocomplete="off" />
-          <p class="field-help">An <strong>IPFS hash</strong>, not a URL - the bare <code>Qm…</code> or <code>baf…</code> string. On AtomicHub, open the NFT you want to use as the recipe's thumbnail, and copy the hash from its image link. Leave empty to fall back to the result NFT's own artwork.</p>
-        </div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">description</span>
-        <div class="manage-ctl">
-          <input id="cbDescription" type="text" value="${escapeHtml(c.description)}" autocomplete="off" />
-          <p class="field-help">Optional. Shown on the blend page under the recipe.</p>
-        </div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">category</span>
-        <div class="manage-ctl">
-          <input id="cbCategory" type="text" value="${escapeHtml(c.category)}" placeholder="e.g. armour" autocomplete="off" />
-          <p class="field-help">A free-text tag you choose, used to group your own recipes. Purely cosmetic - it changes nothing on chain. Most authors leave it empty; those who use it write things like <code>animals</code> or <code>WEAPON UPGRADE</code>.</p>
-        </div>
-      </div>
-
-      ${riskBox(
-        'Whatever you list here is taken from the player on EVERY blend. Without "-> account" the NFTs are burned - destroyed permanently, with no way to get them back.',
-        `<label>Ingredients - what the player gives up (one per line)</label>
-         <textarea id="cbIngredients" rows="5" spellcheck="false" placeholder="(examples - replace with your own)
-template 877088 x5
-schema up.tools x3
-token 10.0000 TLM -> payout.wam">${escapeHtml(c.ingredientsInput)}</textarea>
-         <details class="syntax-help"><summary>every ingredient you can write</summary>
-           <ul class="mint-info">
-             <li><code>template 877088 x5</code> - 5 NFTs of that exact template, <strong>burned</strong></li>
-             <li><code>template 877088 x5 -&gt; vault.wam</code> - the same, but <strong>sent to vault.wam</strong> instead of burned</li>
-             <li><code>template othercoll:741859 x1</code> - an NFT from <strong>another collection</strong></li>
-             <li><code>schema up.tools x3</code> - any 3 NFTs of that schema</li>
-             <li><code>collection x2</code> - any 2 NFTs of this collection · <code>collection other x2</code> for another one</li>
-             <li><code>attribute up.gear x2 where Rarity = Rare | Epic</code> - any NFT whose attribute matches · <code>|</code> separates values, <code>;</code> separates several conditions</li>
-             <li><code>token 10.0000 TLM -&gt; payout.wam</code> - a token cost and who receives it. The decimals must match the token exactly (<code>10.0000 TLM</code>, not <code>10 TLM</code>)</li>
-             <li><code>x5</code> is the quantity · <code>#</code> starts a comment · a trailing <code>{"description":"…"}</code> labels the slot</li>
-           </ul>
-         </details>`,
-      )}
-
-      ${riskBox(
-        'One line means the player always gets that. Several lines make it a LOTTERY, and the draw is final - the contract picks one line and the others do not happen. "@" sets the weight of each line.',
-        `<label>Outcomes - what the player gets (one per line)</label>
-         <textarea id="cbOutcomes" rows="4" spellcheck="false" placeholder="(examples - replace with your own)
-907173 @50
-907173+906880 @30
-nothing @20">${escapeHtml(c.outcomesInput)}</textarea>
-         <details class="syntax-help"><summary>every outcome you can write, and how "@" works</summary>
-           <p class="term" style="margin:6px 0">
-             <strong>@ is a weight, not a percentage.</strong> Crucible adds every weight up and divides:
-             <code>@50 / @30 / @20</code> gives 50% / 30% / 20% because they total 100, but
-             <code>@1 / @1</code> gives 50% / 50%, and <code>@3 / @1</code> gives 75% / 25%.
-             Write no <code>@</code> at all and the line weighs 1. A single line is always 100%.
-             The live preview below turns your weights into real percentages - check it.
-           </p>
-           <ul class="mint-info">
-             <li><code>907173</code> - mint that template</li>
-             <li><code>907173 @50</code> - the same, with weight 50</li>
-             <li><code>907173+906880 @30</code> - this branch hands over <strong>both</strong> NFTs at once</li>
-             <li><code>token 1.00000000 WAX @15</code> - pay tokens instead of minting · <code>token 5.0000 TLM from alien.worlds @5</code> for a non-WAX contract</li>
-             <li><code>pool volna @5</code> - hand over a pre-minted NFT from one of your pools</li>
-             <li><code>nothing @20</code> - a blank: the player gets <strong>nothing at all</strong> on this branch</li>
-           </ul>
-         </details>`,
-      )}
-
-      <div class="manage-row">
-        <span class="manage-label">starts</span>
-        <div class="manage-ctl"><input id="cbStart" type="datetime-local" value="${escapeHtml(c.startTime)}" /> <span class="term">empty = immediately</span></div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">ends</span>
-        <div class="manage-ctl"><input id="cbEnd" type="datetime-local" value="${escapeHtml(c.endTime)}" /> <span class="term">empty = never</span></div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">max uses</span>
-        <div class="manage-ctl"><input id="cbMaxUses" type="number" min="0" value="${escapeHtml(c.maxUses)}" placeholder="0" /> <span class="term">0 = unlimited</span></div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">per account</span>
-        <div class="manage-ctl">
-          <div class="field-pair">
-            <label class="field-mini">max per wallet
-              <input id="cbAccountLimit" type="number" min="0" value="${escapeHtml(c.accountLimit)}" placeholder="0" />
-            </label>
-            <label class="field-mini">cooldown (seconds)
-              <input id="cbCooldown" type="number" min="0" value="${escapeHtml(c.cooldown)}" placeholder="0" />
-            </label>
-          </div>
-          <p class="field-help">0 / 0 means no per-wallet limit. With a limit, the cooldown is how long a wallet waits before its counter resets (86400 = one day); 0 means the limit never resets.</p>
-        </div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">who can blend</span>
-        <div class="manage-ctl">
-          ${c.securities.length
-            ? `<select id="cbSecurityPick">
-                 <option value=""${!c.securityId || c.securityId === '0' ? ' selected' : ''}>Everyone (no whitelist)</option>
-                 ${c.securities.map((x) => `<option value="${escapeHtml(x.id)}"${x.id === c.securityId ? ' selected' : ''}>Only "${escapeHtml(x.name)}" (#${escapeHtml(x.id)})</option>`).join('')}
-               </select>`
-            : `<input id="cbSecurityId" type="text" value="${escapeHtml(c.securityId)}" placeholder="0" autocomplete="off" />`}
-          <p class="field-help">${c.securities.length
-            ? 'Your collection\'s whitelists, managed in the Manage panel of any blend. Leave it on "Everyone" unless you want to restrict this recipe.'
-            : 'A <code>secure.nefty</code> whitelist id. <strong>0 means everyone can blend</strong> - the normal case. To restrict a recipe you first create a whitelist in the Manage panel of an existing blend, then pick its id here.'}</p>
-        </div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">hidden</span>
-        <div class="manage-ctl"><label class="inline-toggle"><input id="cbHidden" type="checkbox" ${c.hidden ? 'checked' : ''} /> <span>create it hidden</span></label></div>
-      </div>
-
-      ${preview}
-      ${problemList}
-
-      <div class="row" style="margin-top:12px">
-        <button data-action="createBlendDryRun" ${problems.length ? 'disabled' : ''}>Simulate (no signature)</button>
-        <button class="create-btn" data-action="createBlendSubmit" ${disabled}>${c.busy ? 'Creating…' : 'Create blend'}</button>
-      </div>
-      ${c.lastDryRun ? `<h3>Dry-run output</h3><pre>${escapeHtml(JSON.stringify(c.lastDryRun, null, 2))}</pre>` : ''}
-      ${c.lastTrxId ? `<p class="status-line ok">Created: <a target="_blank" href="https://waxblock.io/transaction/${escapeHtml(c.lastTrxId)}">${escapeHtml(c.lastTrxId)}</a></p>` : ''}
-    </div>`;
 }
 
 // ─── create-drop panel (collection authors, CLAIM/drops tab) ──────────── //
@@ -7064,284 +6538,9 @@ function renderUpgradeActions(): string {
 }
 
 function renderUpgradesView(): string {
-  return renderPickUpgrade() + renderUpgradeInfo() + renderUpgradeSlots() + renderUpgradeActions() + renderUpgradeCreate();
+  return renderPickUpgrade() + renderUpgradeInfo() + renderUpgradeSlots() + renderUpgradeActions();
 }
 
-
-// ─── create-upgrade panel (collection authors, UPGRADE tab) ───────────── //
-
-function onToggleCreateUpgradeEnabled(checked: boolean) {
-  const c = state.createUpgrade;
-  c.enabled = checked;
-  if (checked && !c.collection) {
-    c.collection = state.upgrades.picked?.collection_name || state.discoveryCollection || '';
-  }
-  render();
-  if (checked && c.collection) void refreshCreateUpgradeAuth();
-}
-
-async function refreshCreateUpgradeAuth() {
-  const c = state.createUpgrade;
-  const collection = c.collection.trim();
-  const session = getCurrentSession();
-  const actor = session ? String(session.actor) : '';
-  if (!collection || !actor) {
-    c.authChecked = collection;
-    c.authorized = false;
-    render();
-    return;
-  }
-  if (c.authChecked === collection && c.authorized !== undefined && !c.authChecking) return;
-  c.authChecking = true;
-  render();
-  try {
-    c.authorized = await canManageCollection(actor, collection);
-  } catch {
-    c.authorized = false;
-  } finally {
-    c.authChecked = collection;
-    c.authChecking = false;
-    render();
-  }
-}
-
-/** Folds the form into the builder's argument shape, with problems. */
-function readCreateUpgradeForm(): { args: CreateUpgradeArgs; problems: string[] } {
-  const c = state.createUpgrade;
-  const session = getCurrentSession();
-  const collection = c.collection.trim();
-
-  const ing = parseIngredientLines(c.ingredientsInput, collection);
-  const req = parseRequirementLines(c.requirementsInput);
-  const res = parseUpgradeResultLines(c.resultsInput);
-
-  const display: Record<string, string> = {};
-  if (c.name.trim()) display.name = c.name.trim();
-  if (c.description.trim()) display.description = c.description.trim();
-  if (c.image.trim()) display.image = c.image.trim();
-
-  const args: CreateUpgradeArgs = {
-    authorized_account: session ? String(session.actor) : '',
-    collection_name: collection,
-    ingredients: ing.items,
-    specs: [{
-      schema_name: c.schema.trim(),
-      requirements: req.items,
-      results: res.items,
-      display_data: '',
-    }],
-    start_time: datetimeLocalToUnix(c.startTime),
-    end_time: datetimeLocalToUnix(c.endTime),
-    max_uses: Number(c.maxUses) || 0,
-    display_data: Object.keys(display).length ? JSON.stringify(display) : '',
-    security_id: c.securityId.trim() || 0,
-    is_hidden: c.hidden,
-    category: c.category.trim(),
-  };
-
-  return {
-    args,
-    problems: [...ing.errors, ...req.errors, ...res.errors, ...validateNewUpgrade(args)],
-  };
-}
-
-async function onCreateUpgradeDryRun() {
-  const { args, problems } = readCreateUpgradeForm();
-  if (problems.length) { setStatus(problems[0], 'err'); render(); return; }
-  try {
-    setStatus('Simulating createupgrde (local ABI serialisation)…', 'info');
-    const action = buildCreateUpgradeAction(args);
-    const out = await dryRunActions([action]);
-    state.createUpgrade.lastDryRun = { action, abi_serialization: out };
-    const ok = out.every((r) => !r.error);
-    setStatus(ok ? 'Simulation OK, the action serialises cleanly.' : 'Simulation failed.', ok ? 'ok' : 'err');
-  } catch (err) {
-    setStatus((err as Error).message, 'err');
-  }
-  render();
-}
-
-async function onCreateUpgradeSubmit() {
-  const c = state.createUpgrade;
-  const session = getCurrentSession();
-  if (!session) { setStatus('Connect a wallet first.', 'err'); return; }
-  const { args, problems } = readCreateUpgradeForm();
-  if (problems.length) { setStatus(problems[0], 'err'); render(); return; }
-  if (!(c.authChecked === args.collection_name && c.authorized)) {
-    setStatus('That account is not authorized for this collection (the contract would reject it).', 'err');
-    return;
-  }
-
-  const spec = args.specs[0];
-  const accepted = await confirmBetaAction(
-    `Create an upgrade on ${args.collection_name}`,
-    `${describeSpec(spec).join('\n')}\n\n` +
-    `Cost: ${args.ingredients.length ? args.ingredients.map((i) => describeIngredient(i)).join(', ') : 'free'}\n\n` +
-    `${args.max_uses ? `Max ${args.max_uses} use(s).` : 'Unlimited uses.'}` +
-    `${args.is_hidden ? ' Created hidden.' : ' Visible immediately.'}\n\n` +
-    `An upgrade rewrites attributes on NFTs players already own. The old values are not kept.`,
-  );
-  if (!accepted) return;
-
-  c.busy = true;
-  render();
-  try {
-    setStatus('Awaiting wallet signature for createupgrde…', 'info');
-    const result = await executeCreateUpgrade(session, args);
-    const trxId =
-      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
-      String(result.resolved?.transaction.id ?? '');
-    c.lastTrxId = trxId;
-    setStatus(`Upgrade created: ${trxId}`, 'ok', trxId);
-    clearUpgradesCache();
-  } catch (err) {
-    setStatus(`Create upgrade failed: ${(err as Error).message}`, 'err');
-  } finally {
-    c.busy = false;
-    render();
-  }
-}
-
-/** Inline "create an upgrade" form; mirrors the blend creator. */
-function renderUpgradeCreate(): string {
-  const c = state.createUpgrade;
-  const session = getCurrentSession();
-  const actor = session ? String(session.actor) : '';
-
-  if (!c.enabled) {
-    return `
-      <div class="manage-section create-section" style="margin-top:18px">
-        <div class="manage-head">
-          <span class="manage-title create-title">✦ CREATE AN UPGRADE · up.nefty</span>
-          <label class="inline-toggle">
-            <input id="createUpgradeEnable" type="checkbox" data-action="toggleCreateUpgradeEnable" />
-            <span>enable upgrade creation</span>
-          </label>
-        </div>
-        <p class="term" style="margin-top:6px">Rewrite attributes on NFTs players already own, in place - no minting.</p>
-      </div>`;
-  }
-
-  const collection = c.collection.trim();
-  const authLine = !actor
-    ? '<p class="status-line warn">Connect a wallet to create an upgrade.</p>'
-    : c.authChecking
-      ? '<p class="status-line">Checking whether you can manage this collection…</p>'
-      : c.authChecked === collection && c.authorized
-        ? `<p class="status-line ok">${escapeHtml(actor)} is authorized on ${escapeHtml(collection)}.</p>`
-        : collection
-          ? `<p class="status-line err">${escapeHtml(actor)} is not an authorized account of ${escapeHtml(collection)} - the contract would reject this.</p>`
-          : '';
-
-  const { args, problems } = readCreateUpgradeForm();
-  const spec = args.specs[0];
-  const summary = spec.results.length || spec.requirements.length
-    ? `<h3 style="margin-top:12px">Preview</h3><ul class="mint-info">${
-        describeSpec(spec).map((l) => `<li>${escapeHtml(l)}</li>`).join('')
-      }${args.ingredients.length ? `<li><strong>Cost:</strong> ${escapeHtml(args.ingredients.map((i) => describeIngredient(i)).join(', '))}</li>` : ''}</ul>`
-    : '';
-
-  const problemList = problems.length
-    ? `<div class="risk-box"><div class="risk-why">⚠ Fix before signing</div><ul class="mint-info">${problems.map((p) => `<li>${escapeHtml(p)}</li>`).join('')}</ul></div>`
-    : '';
-
-  const ready = problems.length === 0 && !!actor && c.authChecked === collection && c.authorized && !c.busy;
-
-  return `
-    <div class="manage-section create-section" style="margin-top:18px">
-      <div class="manage-head">
-        <span class="manage-title create-title">✦ CREATE AN UPGRADE · up.nefty</span>
-        <label class="inline-toggle">
-          <input id="createUpgradeEnable" type="checkbox" data-action="toggleCreateUpgradeEnable" checked />
-          <span>upgrade creation enabled</span>
-        </label>
-      </div>
-
-      <div class="manage-row">
-        <span class="manage-label">collection</span>
-        <div class="manage-ctl"><input id="cuCollection" type="text" value="${escapeHtml(c.collection)}" placeholder="e.g. underpunks55" autocomplete="off" /></div>
-      </div>
-      ${authLine}
-      <div class="manage-row">
-        <span class="manage-label">schema</span>
-        <div class="manage-ctl"><input id="cuSchema" type="text" value="${escapeHtml(c.schema)}" placeholder="the schema whose NFTs this applies to" autocomplete="off" /></div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">name</span>
-        <div class="manage-ctl"><input id="cuName" type="text" value="${escapeHtml(c.name)}" autocomplete="off" /></div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">image</span>
-        <div class="manage-ctl"><input id="cuImage" type="text" value="${escapeHtml(c.image)}" placeholder="IPFS hash" autocomplete="off" /></div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">description</span>
-        <div class="manage-ctl"><input id="cuDescription" type="text" value="${escapeHtml(c.description)}" autocomplete="off" /></div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">category</span>
-        <div class="manage-ctl"><input id="cuCategory" type="text" value="${escapeHtml(c.category)}" autocomplete="off" /></div>
-      </div>
-
-      ${riskBox(
-        'The cost is consumed on every use. "-> account" sends the NFTs there instead of burning them.',
-        `<label>Cost - one per line (optional)</label>
-         <textarea id="cuIngredients" rows="3" spellcheck="false" placeholder="token 10.00000000 WAX -> payout.wam
-template 877088 x1">${escapeHtml(c.ingredientsInput)}</textarea>`,
-      )}
-
-      <div class="manage-row">
-        <span class="manage-label">applies to</span>
-        <div class="manage-ctl">
-          <label>Which NFTs qualify - one condition per line (empty = any NFT of the schema)</label>
-          <textarea id="cuRequirements" rows="3" spellcheck="false" placeholder="template 906678
-templates 906678 + 906679
-attribute name = Farmer | Level 69
-attribute uint64 level = 3">${escapeHtml(c.requirementsInput)}</textarea>
-        </div>
-      </div>
-
-      ${riskBox(
-        'These attributes are OVERWRITTEN on the player\'s NFT. The previous values are not kept anywhere. The leading word is the attribute\'s type as declared on the schema - get it wrong and the chain will not catch it for you.',
-        `<label>What changes - one rewrite per line</label>
-         <textarea id="cuResults" rows="4" spellcheck="false" placeholder="name = Upgraded Sword
-image img = Qm…
-uint64 level += 1
-bool engine = true">${escapeHtml(c.resultsInput)}</textarea>`,
-      )}
-
-      <div class="manage-row">
-        <span class="manage-label">starts</span>
-        <div class="manage-ctl"><input id="cuStart" type="datetime-local" value="${escapeHtml(c.startTime)}" /> <span class="term">empty = immediately</span></div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">ends</span>
-        <div class="manage-ctl"><input id="cuEnd" type="datetime-local" value="${escapeHtml(c.endTime)}" /> <span class="term">empty = never</span></div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">max uses</span>
-        <div class="manage-ctl"><input id="cuMaxUses" type="number" min="0" value="${escapeHtml(c.maxUses)}" placeholder="0" /> <span class="term">0 = unlimited</span></div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">whitelist</span>
-        <div class="manage-ctl"><input id="cuSecurityId" type="text" value="${escapeHtml(c.securityId)}" placeholder="0" autocomplete="off" /> <span class="term">secure.nefty id · 0 = open</span></div>
-      </div>
-      <div class="manage-row">
-        <span class="manage-label">hidden</span>
-        <div class="manage-ctl"><label class="inline-toggle"><input id="cuHidden" type="checkbox" ${c.hidden ? 'checked' : ''} /> <span>create it hidden</span></label></div>
-      </div>
-
-      ${summary}
-      ${problemList}
-
-      <div class="row" style="margin-top:12px">
-        <button data-action="createUpgradeDryRun" ${problems.length ? 'disabled' : ''}>Simulate (no signature)</button>
-        <button class="create-btn" data-action="createUpgradeSubmit" ${ready ? '' : 'disabled'}>${c.busy ? 'Creating…' : 'Create upgrade'}</button>
-      </div>
-      ${c.lastDryRun ? `<h3>Dry-run output</h3><pre>${escapeHtml(JSON.stringify(c.lastDryRun, null, 2))}</pre>` : ''}
-      ${c.lastTrxId ? `<p class="status-line ok">Created: <a target="_blank" href="https://waxblock.io/transaction/${escapeHtml(c.lastTrxId)}">${escapeHtml(c.lastTrxId)}</a></p>` : ''}
-    </div>`;
-}
 
 // ─── WAXDAO BLEND view: handlers + rendering ─────────────────────── //
 
@@ -8843,89 +8042,6 @@ function attachHandlers() {
     });
   }
 
-  // CREATE A BLEND panel inputs.
-  const cbEnable = document.getElementById('createBlendEnable') as HTMLInputElement | null;
-  if (cbEnable) {
-    cbEnable.addEventListener('change', () => onToggleCreateBlendEnabled(cbEnable.checked));
-  }
-  const bindCb = (id: string, set: (v: string) => void, opts: { commit?: boolean } = {}) => {
-    const el = document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;
-    if (!el) return;
-    el.addEventListener('input', (e) => {
-      set((e.target as HTMLInputElement).value);
-      // The panel shows live parse feedback, so it has to re-render as
-      // the author types. Focus and caret survive via the render snapshot.
-      render();
-    });
-    if (opts.commit) {
-      // Collection changes trigger the authorization lookup on blur/Enter
-      // rather than per keystroke.
-      el.addEventListener('change', () => { void refreshCreateBlendAuth(); });
-      el.addEventListener('keydown', (e) => {
-        if ((e as KeyboardEvent).key === 'Enter') void refreshCreateBlendAuth();
-      });
-    }
-  };
-  bindCb('cbCollection', (v) => { state.createBlend.collection = v.trim().toLowerCase(); }, { commit: true });
-  const cbCollPick = document.getElementById('cbCollectionPick') as HTMLSelectElement | null;
-  if (cbCollPick) {
-    cbCollPick.addEventListener('change', () => {
-      state.createBlend.collection = cbCollPick.value;
-      state.createBlend.securitiesFor = undefined; // re-read the new collection's lists
-      render();
-      void refreshCreateBlendAuth();
-    });
-  }
-  const cbSecPick = document.getElementById('cbSecurityPick') as HTMLSelectElement | null;
-  if (cbSecPick) {
-    cbSecPick.addEventListener('change', () => {
-      state.createBlend.securityId = cbSecPick.value;
-      render();
-    });
-  }
-  bindCb('cbName', (v) => { state.createBlend.name = v; });
-  bindCb('cbImage', (v) => { state.createBlend.image = v; });
-  bindCb('cbDescription', (v) => { state.createBlend.description = v; });
-  bindCb('cbCategory', (v) => { state.createBlend.category = v; });
-  bindCb('cbIngredients', (v) => { state.createBlend.ingredientsInput = v; });
-  bindCb('cbOutcomes', (v) => { state.createBlend.outcomesInput = v; });
-  bindCb('cbStart', (v) => { state.createBlend.startTime = v; });
-  bindCb('cbEnd', (v) => { state.createBlend.endTime = v; });
-  bindCb('cbMaxUses', (v) => { state.createBlend.maxUses = v; });
-  bindCb('cbAccountLimit', (v) => { state.createBlend.accountLimit = v; });
-  bindCb('cbCooldown', (v) => { state.createBlend.cooldown = v; });
-  bindCb('cbSecurityId', (v) => { state.createBlend.securityId = v; });
-  const cbHidden = document.getElementById('cbHidden') as HTMLInputElement | null;
-  if (cbHidden) cbHidden.addEventListener('change', () => { state.createBlend.hidden = cbHidden.checked; render(); });
-
-  // CREATE AN UPGRADE panel inputs.
-  const cuEnable = document.getElementById('createUpgradeEnable') as HTMLInputElement | null;
-  if (cuEnable) cuEnable.addEventListener('change', () => onToggleCreateUpgradeEnabled(cuEnable.checked));
-  const bindCu = (id: string, set: (v: string) => void, commit = false) => {
-    const el = document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;
-    if (!el) return;
-    el.addEventListener('input', (e) => { set((e.target as HTMLInputElement).value); render(); });
-    if (commit) {
-      el.addEventListener('change', () => { void refreshCreateUpgradeAuth(); });
-      el.addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Enter') void refreshCreateUpgradeAuth(); });
-    }
-  };
-  bindCu('cuCollection', (v) => { state.createUpgrade.collection = v.trim().toLowerCase(); }, true);
-  bindCu('cuSchema', (v) => { state.createUpgrade.schema = v.trim(); });
-  bindCu('cuName', (v) => { state.createUpgrade.name = v; });
-  bindCu('cuImage', (v) => { state.createUpgrade.image = v; });
-  bindCu('cuDescription', (v) => { state.createUpgrade.description = v; });
-  bindCu('cuCategory', (v) => { state.createUpgrade.category = v; });
-  bindCu('cuIngredients', (v) => { state.createUpgrade.ingredientsInput = v; });
-  bindCu('cuRequirements', (v) => { state.createUpgrade.requirementsInput = v; });
-  bindCu('cuResults', (v) => { state.createUpgrade.resultsInput = v; });
-  bindCu('cuStart', (v) => { state.createUpgrade.startTime = v; });
-  bindCu('cuEnd', (v) => { state.createUpgrade.endTime = v; });
-  bindCu('cuMaxUses', (v) => { state.createUpgrade.maxUses = v; });
-  bindCu('cuSecurityId', (v) => { state.createUpgrade.securityId = v; });
-  const cuHidden = document.getElementById('cuHidden') as HTMLInputElement | null;
-  if (cuHidden) cuHidden.addEventListener('change', () => { state.createUpgrade.hidden = cuHidden.checked; render(); });
-
   // BLENDERIZER tab inputs.
   const blenderizerIdInput = document.getElementById('blenderizerBlendIdInput') as HTMLInputElement | null;
   if (blenderizerIdInput) {
@@ -9024,8 +8140,6 @@ function attachHandlers() {
       action === 'toggleBlenderizerInactive' ||
       action === 'toggleManageEnable' ||
       action === 'toggleCreateEnable' ||
-      action === 'toggleCreateBlendEnable' ||
-      action === 'toggleCreateUpgradeEnable' ||
       action === 'toggleCreateFree' ||
       action === 'toggleCreateUnlimited' ||
       action === 'toggleCreateAuthReq' ||
@@ -9257,18 +8371,6 @@ function attachHandlers() {
           break;
         case 'manageDelete':
           onManageDelete();
-          break;
-        case 'createUpgradeDryRun':
-          void onCreateUpgradeDryRun();
-          break;
-        case 'createUpgradeSubmit':
-          void onCreateUpgradeSubmit();
-          break;
-        case 'createBlendDryRun':
-          void onCreateBlendDryRun();
-          break;
-        case 'createBlendSubmit':
-          void onCreateBlendSubmit();
           break;
         case 'createDropSubmit':
           void onCreateDrop();

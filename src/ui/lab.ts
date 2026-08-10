@@ -33,6 +33,9 @@ import { getCurrentSession } from '../chain/session';
 import { atomicFetch } from '../chain/rpc';
 import { listAuthorizedCollections } from '../atomic/collections';
 import { readCollectionSecurities, executeAdminAction } from '../nefty/admin';
+import { clearDiscoverCache } from '../nefty/discover';
+import { clearUpgradesCache } from '../nefty/upgrades';
+import { clearDropsCache } from '../nefty/drops';
 import { dryRunActions } from './dryrun';
 import { pickImageRef, renderMediaThumb } from './media';
 import {
@@ -1676,6 +1679,12 @@ async function onSubmit() {
     state.lastTx =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
+    // The app caches each contract's list. Something was just added to one
+    // of them, so drop the cache rather than send the author back to a
+    // page that does not show what they just made.
+    if (state.kind === 'blend') clearDiscoverCache();
+    else if (state.kind === 'upgrade') clearUpgradesCache();
+    else clearDropsCache();
   } catch (err) {
     state.lastError = err instanceof Error ? err.message : String(err);
   }
