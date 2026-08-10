@@ -36,7 +36,8 @@
  */
 
 import { atomicFetch } from '../chain/rpc';
-import { renderMediaThumb, pickImageRef } from './media';
+import { renderMediaThumb } from './media';
+import { pickImageRef } from '../atomic/image';
 import { listAssetsForOwner, type AtomicAsset } from '../atomic/assets';
 import { buildSlots, nftSlots, ftSlots } from '../atomic/matcher';
 import { listBlends, type DiscoveredBlend } from '../nefty/discover';

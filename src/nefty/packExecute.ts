@@ -19,12 +19,10 @@
 
 import type { Session } from '@wharfkit/session';
 
-export interface BuiltAction {
-  account: string;
-  name: string;
-  authorization: { actor: string; permission: string }[];
-  data: Record<string, unknown>;
-}
+// One definition for the whole project, in chain/. Re-exported here so
+// existing importers of this module keep working.
+import type { BuiltAction } from '../chain/action';
+export type { BuiltAction };
 
 /**
  * Builds TX1: the transfer of the pack NFT to atomicpacksx with memo

@@ -37,7 +37,7 @@
 import type { Session } from '@wharfkit/session';
 
 import { getTableRows } from '../chain/rpc';
-import type { BuiltAction } from './execute';
+import type { BuiltAction } from '../chain/action';
 
 const BLEND = 'blend.nefty';
 const SECURE = 'secure.nefty';

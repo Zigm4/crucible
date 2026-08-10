@@ -30,7 +30,7 @@
 
 import type { Session } from '@wharfkit/session';
 
-import type { BuiltAction } from '../nefty/execute';
+import type { BuiltAction } from '../chain/action';
 import type { DiscoveredWaxdaoBlend } from './blends';
 
 export interface WaxdaoBlendPlanArgs {

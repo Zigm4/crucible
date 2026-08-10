@@ -32,7 +32,7 @@
 
 import type { Session } from '@wharfkit/session';
 
-import type { BuiltAction } from '../nefty/execute';
+import type { BuiltAction } from '../chain/action';
 import { BLENDERIZER_CONTRACT, type DiscoveredBlenderizerBlend } from './blends';
 
 export interface BlenderizerPlanArgs {

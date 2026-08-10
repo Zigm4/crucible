@@ -18,7 +18,7 @@
  */
 import type { Session } from '@wharfkit/session';
 
-import type { BuiltAction } from './execute';
+import type { BuiltAction } from '../chain/action';
 
 /** TX1: transfer the pack NFT to neftyblocksp with memo "unbox". */
 export function buildNeftyUnboxAnnounce(args: {

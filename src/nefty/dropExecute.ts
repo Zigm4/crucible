@@ -53,12 +53,10 @@ export interface ClaimArgs {
   defaults?: Partial<ClaimDefaults>;
 }
 
-export interface BuiltAction {
-  account: string;
-  name: string;
-  authorization: { actor: string; permission: string }[];
-  data: Record<string, unknown>;
-}
+// One definition for the whole project, in chain/. Re-exported here so
+// existing importers of this module keep working.
+import type { BuiltAction } from '../chain/action';
+export type { BuiltAction };
 
 /**
  * Builds the on-chain action sequence for a Nefty drop claim.

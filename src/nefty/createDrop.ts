@@ -20,7 +20,7 @@
  * a drop from templates that already exist on the collection; creating new
  * templates/schemas is a separate (riskier) flow not handled here.
  */
-import type { BuiltAction } from './execute';
+import type { BuiltAction } from '../chain/action';
 
 const DROPS = 'neftyblocksd';
 

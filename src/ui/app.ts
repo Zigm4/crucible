@@ -54,7 +54,8 @@ import {
   type FtSlot,
   type IngredientSlot,
 } from '../atomic/matcher';
-import { buildBlendActions, executeBlend, type BuiltAction } from '../nefty/execute';
+import { buildBlendActions, executeBlend } from '../nefty/execute';
+import type { BuiltAction } from '../chain/action';
 import {
   buildFuseActions,
   executeFuse,

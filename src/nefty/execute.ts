@@ -51,12 +51,10 @@ export interface PlanArgs {
   security_check: SecurityCheck;
 }
 
-export interface BuiltAction {
-  account: string;
-  name: string;
-  authorization: { actor: string; permission: string }[];
-  data: Record<string, unknown>;
-}
+// Moved to chain/ so the three contract families stop depending on this
+// file, which is blend-specific, just to name the shape they all emit.
+import type { BuiltAction } from '../chain/action';
+export type { BuiltAction };
 
 /**
  * Builds the full action list for a `nosecfuse` blend, including the optional

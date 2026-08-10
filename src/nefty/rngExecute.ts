@@ -41,7 +41,7 @@ import {
   resolveTokenContract,
   symbolFromQuantity,
 } from './tokens';
-import type { BuiltAction } from './execute';
+import type { BuiltAction } from '../chain/action';
 
 /**
  * The variant tag for the `SECURITY_CHECK` field. The contract supports

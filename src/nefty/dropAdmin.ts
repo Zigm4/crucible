@@ -15,7 +15,7 @@
  * Structs are verbatim from the live neftyblocksd ABI.
  */
 import { getTableRows } from '../chain/rpc';
-import type { BuiltAction } from './execute';
+import type { BuiltAction } from '../chain/action';
 
 const DROPS = 'neftyblocksd';
 

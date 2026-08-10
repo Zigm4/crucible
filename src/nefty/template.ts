@@ -13,7 +13,7 @@
  *     undefined in that branch.
  */
 import { atomicFetch, getTableRows } from '../chain/rpc';
-import { pickImageRef } from '../ui/media';
+import { pickImageRef } from '../atomic/image';
 
 export interface TemplateInfo {
   template_id: string;

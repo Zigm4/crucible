@@ -39,7 +39,7 @@ import {
   resolveTokenContract,
   symbolFromQuantity,
 } from './tokens';
-import type { BuiltAction } from './execute';
+import type { BuiltAction } from '../chain/action';
 import type { SecurityCheck } from './rngExecute';
 
 export interface UpgradePlanArgs {

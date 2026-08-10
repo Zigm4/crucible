@@ -37,7 +37,8 @@ import { clearDiscoverCache } from '../nefty/discover';
 import { clearUpgradesCache } from '../nefty/upgrades';
 import { clearDropsCache } from '../nefty/drops';
 import { dryRunActions } from './dryrun';
-import { pickImageRef, renderMediaThumb } from './media';
+import { renderMediaThumb } from './media';
+import { pickImageRef } from '../atomic/image';
 import {
   buildCreateBlendAction,
   executeCreateBlend,

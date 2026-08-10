@@ -41,7 +41,7 @@
 
 import type { Session } from '@wharfkit/session';
 
-import type { BuiltAction } from './execute';
+import type { BuiltAction } from '../chain/action';
 
 export const BLEND_CONTRACT = 'blend.nefty';
 

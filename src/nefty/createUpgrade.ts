@@ -36,7 +36,7 @@
 
 import type { Session } from '@wharfkit/session';
 
-import type { BuiltAction } from './execute';
+import type { BuiltAction } from '../chain/action';
 import {
   encodeIngredient,
   parseIngredientLines,
