@@ -604,7 +604,7 @@ export function parseOutcomeLines(text: string): ParseResult<NewOutcome> {
 }
 
 /**
- * Renders ingredients back into the form's text syntax — the exact
+ * Renders ingredients back into the form's text syntax - the exact
  * inverse of parseIngredientLines.
  *
  * Needed to PRE-FILL the edit box with a recipe's current ingredients:
@@ -659,7 +659,7 @@ export function describeOdds(outcomes: NewOutcome[]): string[] {
         : `pool ${r.pool_name}`;
   return outcomes.map(
     (o) =>
-      `${o.results.length ? o.results.map(label).join(' + ') : 'nothing'} — ${((o.odds / total) * 100).toFixed(2)}% (${o.odds}/${total})`,
+      `${o.results.length ? o.results.map(label).join(' + ') : 'nothing'} - ${((o.odds / total) * 100).toFixed(2)}% (${o.odds}/${total})`,
   );
 }
 

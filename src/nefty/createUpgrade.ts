@@ -47,8 +47,8 @@ import {
 /**
  * Strips a `# comment`, but ONLY from the part before the `=`.
  *
- * Attribute values routinely contain "#" — "Positive #1 level 2",
- * "Mint #3" — and cutting there silently truncated the value while
+ * Attribute values routinely contain "#" - "Positive #1 level 2",
+ * "Mint #3" - and cutting there silently truncated the value while
  * still producing a perfectly valid-looking transaction. A comment can
  * only sensibly precede the assignment anyway.
  */
@@ -119,7 +119,7 @@ export function vecTypeFor(attribute_type: string): string {
  *   UINT64_VEC  array of STRINGS (64-bit values do not survive as JS
  *               numbers, so the ABI carries them as decimal strings)
  *   DOUBLE_VEC  array of numbers
- *   UINT8_VEC   a HEX STRING, not an array — a uint8[] is a byte
+ *   UINT8_VEC   a HEX STRING, not an array - a uint8[] is a byte
  *               vector, so [25] is "19" and [0] is "00"
  *
  * Handing an array to UINT8_VEC, or numbers to UINT64_VEC, produces a
@@ -446,7 +446,7 @@ export function validateNewUpgrade(args: CreateUpgradeArgs): string[] {
   args.specs.forEach((s, i) => {
     const at = `Spec #${i + 1}`;
     if (!s.schema_name) errs.push(`${at}: schema name is required.`);
-    if (s.results.length === 0) errs.push(`${at}: nothing would change — add at least one attribute rewrite.`);
+    if (s.results.length === 0) errs.push(`${at}: nothing would change - add at least one attribute rewrite.`);
     s.results.forEach((r, ri) => {
       if (!r.attribute_name) errs.push(`${at}, change #${ri + 1}: attribute name is required.`);
       // "+=" is NOT restricted to numbers: 14 real upgrades use it on a

@@ -561,7 +561,7 @@ interface CreateUpgradeState {
   category: string;
   /** Schema the upgrade applies to. */
   schema: string;
-  /** Cost — same syntax as the blend form. */
+  /** Cost - same syntax as the blend form. */
   ingredientsInput: string;
   /** Which NFTs qualify. */
   requirementsInput: string;
@@ -654,7 +654,7 @@ interface ManageState {
   /**
    * Ingredient editor (`setblendmix`). Pre-filled from the loaded
    * blend's current ingredients the first time it is shown, because the
-   * action REPLACES the whole list — starting from a blank box would
+   * action REPLACES the whole list - starting from a blank box would
    * silently drop everything the author does not retype.
    */
   mixInput: string;
@@ -5884,7 +5884,7 @@ function renderDropManage(): string {
  * Ingredient editor for a live blend (`setblendmix`).
  *
  * The action REPLACES the whole ingredient list, so the box is primed
- * with what is currently on chain — an author who starts from a blank
+ * with what is currently on chain - an author who starts from a blank
  * textarea and types one line would silently delete the rest.
  *
  * Refuses to offer editing at all for a recipe the text syntax cannot
@@ -5908,7 +5908,7 @@ function renderManageMixEditor(b: BlendRow, disabled: string): string {
       <div class="manage-row">
         <span class="manage-label">ingredients</span>
         <div class="manage-ctl">
-          <p class="status-line warn" style="margin:0">This recipe uses an ingredient the text editor cannot represent exactly, so it is not offered here — editing it would risk dropping part of the recipe.</p>
+          <p class="status-line warn" style="margin:0">This recipe uses an ingredient the text editor cannot represent exactly, so it is not offered here - editing it would risk dropping part of the recipe.</p>
         </div>
       </div>`;
   }
@@ -5985,7 +5985,7 @@ function onManageSetMix() {
     buildSetBlendMix(String(session.actor), b.blend_id, parsed.items.map(encodeIngredient)),
     `Replace the ingredients of blend #${b.blend_id} with:\n\n` +
       parsed.items.map((i) => '  ' + describeIngredient(i)).join('\n') +
-      `\n\nThis is the complete new list — anything not shown here stops being required.`,
+      `\n\nThis is the complete new list - anything not shown here stops being required.`,
     { refresh: 'blend' },
   );
 }
@@ -6035,7 +6035,7 @@ function confirmBetaAction(title: string, summary: string): Promise<boolean> {
     wrap.className = 'modal-backdrop';
     wrap.innerHTML = `
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="beta-gate-title">
-        <div class="modal-beta">⚠ BETA — please test before relying on this</div>
+        <div class="modal-beta">⚠ BETA - please test before relying on this</div>
         <h2 id="beta-gate-title">${escapeHtml(title)}</h2>
         <p class="modal-lead">Creating and editing blends and upgrades is <strong>new</strong> in Crucible.
           The transaction below has been verified against thousands of real on-chain creations, but this
@@ -6043,7 +6043,7 @@ function confirmBetaAction(title: string, summary: string): Promise<boolean> {
           <strong>hidden</strong>, and check the result on-chain before exposing it to players.</p>
         <pre class="modal-summary">${escapeHtml(summary)}</pre>
         <p class="modal-lead">This writes to the chain. Once players start using a blend, the NFTs it
-          consumes are gone — deleting it afterwards does not give them back.</p>
+          consumes are gone - deleting it afterwards does not give them back.</p>
         <label class="inline-toggle modal-ack">
           <input type="checkbox" id="beta-gate-ack" />
           <span>I understand this is beta and I have checked the summary</span>
@@ -6103,7 +6103,7 @@ async function loadMyCollections() {
   try {
     const list = await listAuthorizedCollections(String(session.actor));
     c.myCollections = list.map((x) => x.collection_name).sort();
-    // A single collection is not a choice — pick it.
+    // A single collection is not a choice - pick it.
     if (!c.collection && c.myCollections.length === 1) {
       c.collection = c.myCollections[0];
       void refreshCreateBlendAuth();
@@ -6118,7 +6118,7 @@ async function loadMyCollections() {
 
 /**
  * The collection's named whitelists (`secure.nefty/security`). Shown as
- * a dropdown because a raw security_id means nothing to an author —
+ * a dropdown because a raw security_id means nothing to an author -
  * "0" versus what, exactly, was the reasonable question.
  */
 async function loadCreateBlendSecurities(collection: string) {
@@ -6299,7 +6299,7 @@ function renderBlendCreate(): string {
       : c.authChecked === collection && c.authorized
         ? `<p class="status-line ok">${escapeHtml(actor)} is authorized on ${escapeHtml(collection)}.</p>`
         : collection
-          ? `<p class="status-line err">${escapeHtml(actor)} is not an authorized account of ${escapeHtml(collection)} — the contract would reject this.</p>`
+          ? `<p class="status-line err">${escapeHtml(actor)} is not an authorized account of ${escapeHtml(collection)} - the contract would reject this.</p>`
           : '';
 
   // Live feedback: parse as the author types so mistakes surface before
@@ -6315,7 +6315,7 @@ function renderBlendCreate(): string {
     ? `
       <h3 style="margin-top:12px">Preview</h3>
       <ul class="mint-info">
-        ${burned.length ? `<li><strong>Burned:</strong> ${burned.length} ingredient(s) — destroyed for good</li>` : ''}
+        ${burned.length ? `<li><strong>Burned:</strong> ${burned.length} ingredient(s) - destroyed for good</li>` : ''}
         ${moved.length ? `<li><strong>Transferred:</strong> ${moved.length} ingredient(s) sent to ${escapeHtml([...new Set(moved.map((i) => (i as { transfer_to?: string }).transfer_to ?? ''))].join(', '))}</li>` : ''}
         ${tokens.length ? `<li><strong>Token cost:</strong> ${tokens.map((t) => escapeHtml((t as { quantity: string }).quantity)).join(' + ')}</li>` : ''}
         ${odds.length ? `<li><strong>Draw:</strong><ul>${odds.map((o) => `<li>${escapeHtml(o)}</li>`).join('')}</ul></li>` : ''}
@@ -6344,14 +6344,14 @@ function renderBlendCreate(): string {
         <div class="manage-ctl">
           ${c.myCollections.length
             ? `<select id="cbCollectionPick">
-                 <option value="">— pick one of your collections —</option>
+                 <option value="">Pick one of your collections</option>
                  ${c.myCollections.map((x) => `<option value="${escapeHtml(x)}"${x === collection ? ' selected' : ''}>${escapeHtml(x)}</option>`).join('')}
                </select>`
             : `<input id="cbCollection" type="text" value="${escapeHtml(c.collection)}" placeholder="e.g. underpunks55" autocomplete="off" />`}
           <p class="field-help">${c.myCollectionsLoaded
             ? (c.myCollections.length
                 ? 'Only collections this wallet is an authorized account of are listed.'
-                : 'This wallet manages no collection — type a name if you know you were just added.')
+                : 'This wallet manages no collection - type a name if you know you were just added.')
             : 'Looking up the collections you manage…'}</p>
         </div>
       </div>
@@ -6361,14 +6361,14 @@ function renderBlendCreate(): string {
         <span class="manage-label">blend name</span>
         <div class="manage-ctl">
           <input id="cbName" type="text" value="${escapeHtml(c.name)}" placeholder="e.g. Forge a Mycelium Helmet" autocomplete="off" />
-          <p class="field-help">The name of the <strong>recipe</strong>, not of the NFT it mints — this is what players see in the blend list.</p>
+          <p class="field-help">The name of the <strong>recipe</strong>, not of the NFT it mints - this is what players see in the blend list.</p>
         </div>
       </div>
       <div class="manage-row">
         <span class="manage-label">blend image</span>
         <div class="manage-ctl">
           <input id="cbImage" type="text" value="${escapeHtml(c.image)}" placeholder="e.g. QmPpctuEbqFtkosPeLQ4Zfep4TbMQGa3pfDZhdWWd2Z2M7" autocomplete="off" />
-          <p class="field-help">An <strong>IPFS hash</strong>, not a URL — the bare <code>Qm…</code> or <code>baf…</code> string. On AtomicHub, open the NFT you want to use as the recipe's thumbnail, and copy the hash from its image link. Leave empty to fall back to the result NFT's own artwork.</p>
+          <p class="field-help">An <strong>IPFS hash</strong>, not a URL - the bare <code>Qm…</code> or <code>baf…</code> string. On AtomicHub, open the NFT you want to use as the recipe's thumbnail, and copy the hash from its image link. Leave empty to fall back to the result NFT's own artwork.</p>
         </div>
       </div>
       <div class="manage-row">
@@ -6382,35 +6382,35 @@ function renderBlendCreate(): string {
         <span class="manage-label">category</span>
         <div class="manage-ctl">
           <input id="cbCategory" type="text" value="${escapeHtml(c.category)}" placeholder="e.g. armour" autocomplete="off" />
-          <p class="field-help">A free-text tag you choose, used to group your own recipes. Purely cosmetic — it changes nothing on chain. Most authors leave it empty; those who use it write things like <code>animals</code> or <code>WEAPON UPGRADE</code>.</p>
+          <p class="field-help">A free-text tag you choose, used to group your own recipes. Purely cosmetic - it changes nothing on chain. Most authors leave it empty; those who use it write things like <code>animals</code> or <code>WEAPON UPGRADE</code>.</p>
         </div>
       </div>
 
       ${riskBox(
-        'Whatever you list here is taken from the player on EVERY blend. Without "-> account" the NFTs are burned — destroyed permanently, with no way to get them back.',
-        `<label>Ingredients — what the player gives up (one per line)</label>
-         <textarea id="cbIngredients" rows="5" spellcheck="false" placeholder="(examples — replace with your own)
+        'Whatever you list here is taken from the player on EVERY blend. Without "-> account" the NFTs are burned - destroyed permanently, with no way to get them back.',
+        `<label>Ingredients - what the player gives up (one per line)</label>
+         <textarea id="cbIngredients" rows="5" spellcheck="false" placeholder="(examples - replace with your own)
 template 877088 x5
 schema up.tools x3
 token 10.0000 TLM -> payout.wam">${escapeHtml(c.ingredientsInput)}</textarea>
          <details class="syntax-help"><summary>every ingredient you can write</summary>
            <ul class="mint-info">
-             <li><code>template 877088 x5</code> — 5 NFTs of that exact template, <strong>burned</strong></li>
-             <li><code>template 877088 x5 -&gt; vault.wam</code> — the same, but <strong>sent to vault.wam</strong> instead of burned</li>
-             <li><code>template othercoll:741859 x1</code> — an NFT from <strong>another collection</strong></li>
-             <li><code>schema up.tools x3</code> — any 3 NFTs of that schema</li>
-             <li><code>collection x2</code> — any 2 NFTs of this collection · <code>collection other x2</code> for another one</li>
-             <li><code>attribute up.gear x2 where Rarity = Rare | Epic</code> — any NFT whose attribute matches · <code>|</code> separates values, <code>;</code> separates several conditions</li>
-             <li><code>token 10.0000 TLM -&gt; payout.wam</code> — a token cost and who receives it. The decimals must match the token exactly (<code>10.0000 TLM</code>, not <code>10 TLM</code>)</li>
+             <li><code>template 877088 x5</code> - 5 NFTs of that exact template, <strong>burned</strong></li>
+             <li><code>template 877088 x5 -&gt; vault.wam</code> - the same, but <strong>sent to vault.wam</strong> instead of burned</li>
+             <li><code>template othercoll:741859 x1</code> - an NFT from <strong>another collection</strong></li>
+             <li><code>schema up.tools x3</code> - any 3 NFTs of that schema</li>
+             <li><code>collection x2</code> - any 2 NFTs of this collection · <code>collection other x2</code> for another one</li>
+             <li><code>attribute up.gear x2 where Rarity = Rare | Epic</code> - any NFT whose attribute matches · <code>|</code> separates values, <code>;</code> separates several conditions</li>
+             <li><code>token 10.0000 TLM -&gt; payout.wam</code> - a token cost and who receives it. The decimals must match the token exactly (<code>10.0000 TLM</code>, not <code>10 TLM</code>)</li>
              <li><code>x5</code> is the quantity · <code>#</code> starts a comment · a trailing <code>{"description":"…"}</code> labels the slot</li>
            </ul>
          </details>`,
       )}
 
       ${riskBox(
-        'One line means the player always gets that. Several lines make it a LOTTERY, and the draw is final — the contract picks one line and the others do not happen. "@" sets the weight of each line.',
-        `<label>Outcomes — what the player gets (one per line)</label>
-         <textarea id="cbOutcomes" rows="4" spellcheck="false" placeholder="(examples — replace with your own)
+        'One line means the player always gets that. Several lines make it a LOTTERY, and the draw is final - the contract picks one line and the others do not happen. "@" sets the weight of each line.',
+        `<label>Outcomes - what the player gets (one per line)</label>
+         <textarea id="cbOutcomes" rows="4" spellcheck="false" placeholder="(examples - replace with your own)
 907173 @50
 907173+906880 @30
 nothing @20">${escapeHtml(c.outcomesInput)}</textarea>
@@ -6420,15 +6420,15 @@ nothing @20">${escapeHtml(c.outcomesInput)}</textarea>
              <code>@50 / @30 / @20</code> gives 50% / 30% / 20% because they total 100, but
              <code>@1 / @1</code> gives 50% / 50%, and <code>@3 / @1</code> gives 75% / 25%.
              Write no <code>@</code> at all and the line weighs 1. A single line is always 100%.
-             The live preview below turns your weights into real percentages — check it.
+             The live preview below turns your weights into real percentages - check it.
            </p>
            <ul class="mint-info">
-             <li><code>907173</code> — mint that template</li>
-             <li><code>907173 @50</code> — the same, with weight 50</li>
-             <li><code>907173+906880 @30</code> — this branch hands over <strong>both</strong> NFTs at once</li>
-             <li><code>token 1.00000000 WAX @15</code> — pay tokens instead of minting · <code>token 5.0000 TLM from alien.worlds @5</code> for a non-WAX contract</li>
-             <li><code>pool volna @5</code> — hand over a pre-minted NFT from one of your pools</li>
-             <li><code>nothing @20</code> — a blank: the player gets <strong>nothing at all</strong> on this branch</li>
+             <li><code>907173</code> - mint that template</li>
+             <li><code>907173 @50</code> - the same, with weight 50</li>
+             <li><code>907173+906880 @30</code> - this branch hands over <strong>both</strong> NFTs at once</li>
+             <li><code>token 1.00000000 WAX @15</code> - pay tokens instead of minting · <code>token 5.0000 TLM from alien.worlds @5</code> for a non-WAX contract</li>
+             <li><code>pool volna @5</code> - hand over a pre-minted NFT from one of your pools</li>
+             <li><code>nothing @20</code> - a blank: the player gets <strong>nothing at all</strong> on this branch</li>
            </ul>
          </details>`,
       )}
@@ -6470,7 +6470,7 @@ nothing @20">${escapeHtml(c.outcomesInput)}</textarea>
             : `<input id="cbSecurityId" type="text" value="${escapeHtml(c.securityId)}" placeholder="0" autocomplete="off" />`}
           <p class="field-help">${c.securities.length
             ? 'Your collection\'s whitelists, managed in the Manage panel of any blend. Leave it on "Everyone" unless you want to restrict this recipe.'
-            : 'A <code>secure.nefty</code> whitelist id. <strong>0 means everyone can blend</strong> — the normal case. To restrict a recipe you first create a whitelist in the Manage panel of an existing blend, then pick its id here.'}</p>
+            : 'A <code>secure.nefty</code> whitelist id. <strong>0 means everyone can blend</strong> - the normal case. To restrict a recipe you first create a whitelist in the Manage panel of an existing blend, then pick its id here.'}</p>
         </div>
       </div>
       <div class="manage-row">
@@ -7218,7 +7218,7 @@ function renderUpgradeCreate(): string {
             <span>enable upgrade creation</span>
           </label>
         </div>
-        <p class="term" style="margin-top:6px">Rewrite attributes on NFTs players already own, in place — no minting.</p>
+        <p class="term" style="margin-top:6px">Rewrite attributes on NFTs players already own, in place - no minting.</p>
       </div>`;
   }
 
@@ -7230,7 +7230,7 @@ function renderUpgradeCreate(): string {
       : c.authChecked === collection && c.authorized
         ? `<p class="status-line ok">${escapeHtml(actor)} is authorized on ${escapeHtml(collection)}.</p>`
         : collection
-          ? `<p class="status-line err">${escapeHtml(actor)} is not an authorized account of ${escapeHtml(collection)} — the contract would reject this.</p>`
+          ? `<p class="status-line err">${escapeHtml(actor)} is not an authorized account of ${escapeHtml(collection)} - the contract would reject this.</p>`
           : '';
 
   const { args, problems } = readCreateUpgradeForm();
@@ -7285,7 +7285,7 @@ function renderUpgradeCreate(): string {
 
       ${riskBox(
         'The cost is consumed on every use. "-> account" sends the NFTs there instead of burning them.',
-        `<label>Cost — one per line (optional)</label>
+        `<label>Cost - one per line (optional)</label>
          <textarea id="cuIngredients" rows="3" spellcheck="false" placeholder="token 10.00000000 WAX -> payout.wam
 template 877088 x1">${escapeHtml(c.ingredientsInput)}</textarea>`,
       )}
@@ -7293,7 +7293,7 @@ template 877088 x1">${escapeHtml(c.ingredientsInput)}</textarea>`,
       <div class="manage-row">
         <span class="manage-label">applies to</span>
         <div class="manage-ctl">
-          <label>Which NFTs qualify — one condition per line (empty = any NFT of the schema)</label>
+          <label>Which NFTs qualify - one condition per line (empty = any NFT of the schema)</label>
           <textarea id="cuRequirements" rows="3" spellcheck="false" placeholder="template 906678
 templates 906678 + 906679
 attribute name = Farmer | Level 69
@@ -7302,8 +7302,8 @@ attribute uint64 level = 3">${escapeHtml(c.requirementsInput)}</textarea>
       </div>
 
       ${riskBox(
-        'These attributes are OVERWRITTEN on the player\'s NFT. The previous values are not kept anywhere. The leading word is the attribute\'s type as declared on the schema — get it wrong and the chain will not catch it for you.',
-        `<label>What changes — one rewrite per line</label>
+        'These attributes are OVERWRITTEN on the player\'s NFT. The previous values are not kept anywhere. The leading word is the attribute\'s type as declared on the schema - get it wrong and the chain will not catch it for you.',
+        `<label>What changes - one rewrite per line</label>
          <textarea id="cuResults" rows="4" spellcheck="false" placeholder="name = Upgraded Sword
 image img = Qm…
 uint64 level += 1
@@ -8623,12 +8623,13 @@ function performRender() {
     return;
   }
 
-  // Unlisted design preview (#/lab). Nothing links to it — you reach it by
-  // knowing the path. It is a mock-up of the next creator, so it neither
-  // reads the chain nor needs a wallet, and it keeps its own state.
+  // Unlisted guided creator (#/lab). Nothing links to it: you reach it by
+  // knowing the path. It signs real transactions and keeps its own state,
+  // so it gets its own handler pass rather than the app's delegation block.
   if (state.page === 'lab') {
     rootEl().innerHTML = renderLabPage();
     attachLabHandlers(rootEl(), render);
+    attachMediaFallbacks(rootEl());
     restoreRenderSnapshot(snap);
     return;
   }

@@ -58,7 +58,7 @@ $ crucible --layout
                           #/waxdao/blend/1921
                           #/blenderizer/blend/336429
                           #/catalog/underpunks55   <- everything, one page
-                          #/lab                    <- design preview (unlisted)
+                          #/lab                    <- guided creator (unlisted)
 ```
 
 ---
@@ -135,7 +135,7 @@ that reason, with `ipfs.io` / `dweb.link` / `w3s.link` /
 WAX world.
 
 Gateways are also **raced, not queued**. A dead IPFS gateway usually
-does not fail, it hangs — so a strict try-then-timeout chain spends the
+does not fail, it hangs - so a strict try-then-timeout chain spends the
 whole budget on the first stalled host and the artwork looks missing
 even when it is perfectly available. Each gateway instead gets a 1.2s
 head start before the next joins in parallel, and the first response
@@ -202,7 +202,7 @@ the contract hands you one of the assets still escrowed there.
 
 That's how a capped reward stays craftable. Blend 42787
 (`underpunks55`, *Volna-57 Geiger Counter*) pays out template 893664,
-whose supply is 16/16 already minted — no on-demand mint could ever
+whose supply is 16/16 already minted - no on-demand mint could ever
 produce another one, so all 16 went into the `volna` pool instead.
 
 Because the contract picks *which* escrowed asset you get, the exact
@@ -248,8 +248,8 @@ token 10.0000 TLM -> payout.wam
 ```
 
 The panel parses as you type and previews what the recipe will actually
-do — how many ingredients are burned versus transferred away, the token
-cost, and the draw normalised to percentages — before the wallet opens.
+do - how many ingredients are burned versus transferred away, the token
+cost, and the draw normalised to percentages - before the wallet opens.
 
 ### How it is verified
 
@@ -275,7 +275,7 @@ Phase C reads LIVE `blends` rows, covering recipes whose creation
 predates the history window. Phase D is the mirror image of the others:
 every recipe in the corpus was accepted by the contract, so anything
 our own validation refuses is a blend an author could not create
-through Crucible — it caught a token-precision rule that rejected
+through Crucible - it caught a token-precision rule that rejected
 zero-decimal assets like `1000000 MSOURCE`, and a JSON check that
 refused the 202 real blends whose display_data is not JSON.
 
@@ -331,12 +331,12 @@ four years, every one signed by `blend.nefty` or `setup.nefty`
 themselves**, against 6,356 author-signed `setblendmix` calls. It is a
 NeftyBlocks maintenance action, so an author signature would simply be
 rejected. Changing what a blend PRODUCES therefore means deleting it
-and creating a new one — a contract limit, not a missing button.
+and creating a new one - a contract limit, not a missing button.
 
 Every create and every edit goes through a **beta confirmation**: an
 in-app dialog stating that this flow is new, showing the exact summary
 of what is about to be signed, and requiring an explicit tick before
-the sign button enables. It is not a browser `confirm()` — it renders
+the sign button enables. It is not a browser `confirm()` - it renders
 outside `#root` so an app re-render cannot dismiss it mid-decision.
 
 #### Manage panel · collection authors
@@ -505,7 +505,7 @@ Deterministic upgrades with **FT and/or NFT costs** are fully signable
 ingredients, verified against trx `64054c0b…`). Whitelist / ownership
 -gated upgrades use `upgradesec` (same shape + a `security_check`
 variant); RNG upgrades resolve through `up.nefty/orngjobs`. Both are
-decoded and tagged in the picker but not yet executable from the UI —
+decoded and tagged in the picker but not yet executable from the UI -
 see [Limitations](#--limitations--).
 
 ```
@@ -609,8 +609,8 @@ checked before you deposit anything:
 ### UPGRADE tab · creating one
 
 `up.nefty::createupgrde`, behind the same opt-in and the same beta gate
-as the blend creator. An upgrade mints nothing — it rewrites attributes
-on an NFT the player already owns — so the form has three boxes: the
+as the blend creator. An upgrade mints nothing - it rewrites attributes
+on an NFT the player already owns - so the form has three boxes: the
 cost, which NFTs qualify, and what changes.
 
 ```
@@ -627,45 +627,79 @@ uint64 level += 1             bool engine = true
 The leading word is the attribute's **declared type on the schema**,
 stated rather than guessed: it decides the wire encoding, and getting
 it wrong is the one mistake the chain will not catch. Verified against
-every createupgrde on chain — see the verify section.
+every createupgrde on chain - see the verify section.
 
-### DESIGN PREVIEW · `#/lab`  (unlisted)
+### GUIDED CREATOR · `#/lab`  (unlisted)
 
-Nothing links to it. It is a **mock-up**, not a second creator: no chain
-reads, no wallet, no signing, and the NFTs in it are stand-ins.
-
-The creation panels above work, but they ask you to learn a syntax and
-to type template ids from memory. `#/lab` is the argument for what
-should replace them, made concrete enough to click:
+Nothing links to it: you reach it by knowing the path. It is a **real**
+creator on the same three contracts as the classic panels, and it signs
+real transactions.
 
 ```
 $ crucible #/lab
 
   (1) Collection  (2) What players give  (3) What they get  (4) Rules  (5) Review
 
-  > A player gives 10x Leather Scraps (destroyed) and gets
-    50% Mycelium Helmet, 30% Mycelium Pauldrons, 20% nothing.
+  > A player gives 5 x Leather Scraps (destroyed) and 10.00000000 WAX paid to
+    payout.wam and gets 50% Mycelium Helmet, 30% Pauldrons, 20% nothing.
 
   [####################|############|########]
    Mycelium Helmet 50%   Pauldrons 30%  nothing 20%
 ```
 
+The classic panels are text boxes with a syntax to learn: template ids
+typed from memory, weights as abstract numbers, and for upgrades an
+attribute type the author has to DECLARE. This reads the collection
+first, so none of that is asked:
+
 ```
-[*] PICK, don't type - templates arrive with artwork, name, schema and
-    how many you hold, so an id is recognised rather than recalled
-[*] weights become a picture - a stacked bar, so "@50 / @30 / @20" is a
-    shape before it is arithmetic
-[*] one plain sentence, on every step - if the sentence is wrong, the
+[*] blends (blend.nefty), upgrades (up.nefty) and drops (neftyblocksd),
+    one question per screen, five screens each
+[*] templates picked from a searchable grid with artwork, name, schema
+    and supply, read live from the collection
+[*] weights drawn as a stacked bar, so "50 / 30 / 20" is a shape before
+    it is arithmetic
+[*] one plain sentence on every step. If the sentence is wrong, the
     recipe is wrong, with no payload to decode
-[*] one question per screen, so the irreversible ones (what burns, what
-    the odds are) are not competing for attention in a single long form
-[*] upgrades get their own step 3: no reward to pick, you choose which
-    attribute is rewritten and how ("level goes up by 1"), with the
-    qualifying condition written as a sentence
+[*] Simulate before signing, then a confirmation you have to tick
 ```
 
-Delete-in-one-file by design (`src/ui/lab.ts`), or promote into the real
-creator once the interaction is settled.
+**The attribute question.** An upgrade's `attribute_type` must match what
+the schema declares, and the README's own warning about the classic form
+was that getting it wrong is the one mistake the chain will not catch.
+Here the type is never typed: the schema `format` is the authority, and
+the picker enforces two rules on top of it.
+
+```
+[*] only the 7 types the encoder actually models are selectable
+    (string image ipfs uint64 double bool uint8). A uint16 attribute
+    would fall through wireTypeFor() to `string` and be written as
+    nonsense, so it is shown disabled with the reason
+[*] an attribute frozen in the immutable_data of EVERY template it would
+    apply to is BLOCKED. Upgrades write mutable_data, and every indexer
+    applies template immutable data last, so the change is stored and
+    nothing anyone sees ever changes: the ingredients burn for nothing
+[*] frozen on only SOME of them is a warning, not a block, saying how
+    many. That distinction is not academic: `kingsburynft/tv` pins `img`
+    on 70 of its 71 templates and its live upgrades rewrite `img`
+    anyway. All 124 upgraded assets belong to the one template that
+    leaves it free. A blanket block would have refused a recipe that
+    demonstrably works
+```
+
+The scope narrows as you restrict. On `underpunks55/up.armour` all 33
+templates pin `protection`, so it is blocked outright; `air+` is pinned on
+5 of 33 and is offered with the count; name a single template requirement
+and the calculation redoes itself against just that template.
+
+`npm run verify:lab` checks all of it: 18 payloads built from form state
+and serialised against the LIVE `blend.nefty` / `up.nefty` /
+`neftyblocksd` ABIs, 12 recipes that must be rejected and for the stated
+reason, and the attribute gate replayed against five real collections
+including every attribute their live upgrades actually rewrite.
+
+Self-contained in `src/ui/lab.ts`: its own state, its own render, its own
+confirmation gate. Delete the file to remove the page.
 
 ### CATALOGUE · `#/catalog/<collection>`
 
@@ -760,6 +794,20 @@ $ node scripts/verify-trace.mjs
    ✓ blend.nefty::announcedepo
    ✓ atomicassets::transfer
    ✓ blend.nefty::nosecfuse
+```
+
+```bash
+$ npm run verify:lab
+=== PHASE A/B - build, serialise against the live ABI, validate ===
+   ok  blend.nefty::createblend   four-way lottery with token, pool and blank branches
+   ok  up.nefty::createupgrde     a bool writes the NUMBER 1, not true
+   ok  neftyblocksd::createdrop   paid in TLM keeps four decimals
+   ok  REJECTED  an attribute frozen on EVERY template
+   18 payload(s) serialised, 14 shape check(s), 12 correct rejection(s)
+
+=== PHASE C - the schema gate, against real collections ===
+   ok  kingsburynft/tv: 8 attribute(s), 71 template(s), 7 rewritable
+       3 attribute(s) rewritten by real upgrades, all allowed
 ```
 
 ```bash
@@ -964,8 +1012,8 @@ src/
                          contracts, grouped by category
     media.ts           : IPFS resolution + non-distorting thumbnails
                          (gateway fallback, removes itself on failure)
-    lab.ts             : #/lab - unlisted design preview of the next
-                         creator (mock data, signs nothing)
+    lab.ts             : #/lab - unlisted guided creator for blends,
+                         upgrades and drops (reads schemas, signs)
     status.ts          : #/status - contract health monitor
     dryrun.ts          : local ABI serialisation, "simulate without signing"
     theme.css          : palette, fonts, scanlines, motion (fork to re-skin)
@@ -981,6 +1029,9 @@ scripts/
   verify-createblend.mjs       : byte-for-byte for createblend across
                                  every creation on chain + the parsers
   verify-createupgrade.mjs     : the same, for createupgrde
+  verify-lab.mjs               : the #/lab creator: form state -> args ->
+                                 live ABI, plus the attribute gate against
+                                 five real collections
   verify-pool-blend.mjs        : POOL_NFT blend path against chain state
   verify-discover-chain.mjs    : on-chain discovery sanity check
 public/
@@ -1024,15 +1075,15 @@ public/
 Three built-in skins, switched from the toggle in the top-right corner
 and remembered across visits (`localStorage`, still no cookies):
 
-- **Sombre** — the default. A calm, modern dark theme: graphite
+- **Sombre** - the default. A calm, modern dark theme: graphite
   surfaces, a soft violet accent, rounded cards, no chrome.
-- **Clair** — a clean light theme for bright environments.
-- **Neon** — the original cyberpunk skin (scanlines, neon cyan, mono).
+- **Clair** - a clean light theme for bright environments.
+- **Neon** - the original cyberpunk skin (scanlines, neon cyan, mono).
 
 It's all CSS, living in `src/ui/neutral.css` and `src/ui/modern.css`,
 scoped under `html[data-theme=…]`; the base stylesheets stay untouched
 and a first-time visitor lands on **Sombre**. To re-skin or add a fourth
-theme, copy the pattern in those files — no application code is involved.
+theme, copy the pattern in those files - no application code is involved.
 
 ---
 
@@ -1044,7 +1095,7 @@ which are a few hours of UI work and which are impossible by design.
 ### Builder is ready, only the UI is missing
 
 For these, the transaction builder already emits the exact on-chain
-shape — proven against real traces (trx ids given). What's missing is
+shape - proven against real traces (trx ids given). What's missing is
 the front-end wiring, so they're the highest-value things to add next.
 
 - **Ownership-secured blends.** Random blends gated by `OWNERSHIP_CHECK`
@@ -1052,7 +1103,7 @@ the front-end wiring, so they're the highest-value things to add next.
   Far from rare: 28 of the 40 most recent `blend.nefty::fuse` actions
   are ownership-gated. `rngExecute.ts` already encodes `OWNERSHIP_CHECK`,
   but the UI still sends only the no-op `WHITELIST_CHECK` and can't tell
-  an ownership gate from a whitelist gate — so an ownership blend today
+  an ownership gate from a whitelist gate - so an ownership blend today
   shows a misleading *"not on the whitelist"* message. To finish: read
   the `secure.nefty/proofown` rule, show a proof-NFT picker, pass the
   `asset_ids`. Traces: `e9720eaf…` (blend 36262), `432629ce…` (blend
@@ -1064,7 +1115,7 @@ the front-end wiring, so they're the highest-value things to add next.
   reuses the same proof-NFT picker as above. Traces: `64054c0b…`
   (whitelist, upgrade 37), `b5aa7b89…` (ownership, upgrade 994).
 - **RNG upgrades.** Upgrades whose result the oracle decides. Important
-  correction: `up.nefty` has **no `claim` action** — unlike RNG *blends*
+  correction: `up.nefty` has **no `claim` action** - unlike RNG *blends*
   there is no second signature. You sign the same `upgrade` /
   `upgradesec` action and the ORNG callback rewrites the NFT's
   `mutable_data` a few seconds later (a row in `up.nefty/orngjobs`
@@ -1096,7 +1147,7 @@ the front-end wiring, so they're the highest-value things to add next.
   WAX Cloud Wallet). External to this tool. If the wallet falls back to a
   resource provider (Greymass Fuel) that doesn't cosign, the chain
   rejects with *"declares authority greymassfuel@cosign … does not have
-  signatures for it"* — staking CPU avoids it. The in-app guide explains
+  signatures for it"* - staking CPU avoids it. The in-app guide explains
   this.
 
 ### On the roadmap
@@ -1106,7 +1157,7 @@ the front-end wiring, so they're the highest-value things to add next.
   waxdaobacker, etc.) follows the same ABI-driven method.
 - **Creating templates / schemas.** Drops mint from templates that
   already exist. Making new templates/schemas (irreversible, riskier)
-  isn't in the app yet — create them on AtomicHub, then build the drop
+  isn't in the app yet - create them on AtomicHub, then build the drop
   here.
 - **Other NeftyBlocks contracts** (redemptions, NFT swaps, marketplace
   listings) aren't covered yet. PRs welcome.

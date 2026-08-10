@@ -4,18 +4,18 @@
  * Same standard as verify-createblend.mjs: every createupgrde action
  * Hyperion will serve, held to four independent checks.
  *
- *   PHASE A — encoder. Fold each trace DOWN into the shape the UI works
+ *   PHASE A - encoder. Fold each trace DOWN into the shape the UI works
  *   in, rebuild it back UP, serialise against the live ABI, diff the
  *   bytes against what was actually signed.
  *
- *   PHASE B — the form. Render the same trace into the one-per-line
+ *   PHASE B - the form. Render the same trace into the one-per-line
  *   text the create panel collects, parse it back with the REAL
  *   parsers, rebuild, and demand the same bytes again.
  *
- *   PHASE C — recreatability. Read LIVE `upgrades` rows for a spread of
+ *   PHASE C - recreatability. Read LIVE `upgrades` rows for a spread of
  *   collections and check each could be rebuilt exactly as it exists.
  *
- *   PHASE D — validation. Every recipe here was accepted by the
+ *   PHASE D - validation. Every recipe here was accepted by the
  *   contract, so anything validateNewUpgrade() rejects is a false
  *   negative: a real upgrade an author could not create through
  *   Crucible.
@@ -34,7 +34,7 @@ import { existsSync } from 'node:fs';
 
 const BUILT = new URL('./.build/createUpgrade.mjs', import.meta.url);
 if (!existsSync(BUILT)) {
-  console.error('Missing scripts/.build/createUpgrade.mjs — run `npm run verify:createupgrade`.');
+  console.error('Missing scripts/.build/createUpgrade.mjs - run `npm run verify:createupgrade`.');
   process.exit(2);
 }
 const REAL = await import(BUILT.href);
@@ -323,7 +323,7 @@ for (const a of traces) {
     const px = REAL.parseUpgradeResultLines(resText);
     const errs = [...pi.errors, ...pr.errors, ...px.errors];
     if (errs.length) {
-      st.fails.push(`${a.trx_id.slice(0, 12)}: PHASE B parse errors — ${errs[0]}`);
+      st.fails.push(`${a.trx_id.slice(0, 12)}: PHASE B parse errors - ${errs[0]}`);
       failures += 1;
       continue;
     }
@@ -390,7 +390,7 @@ for (const coll of FOCUS) {
       else problems.push(`upgrade ${u.upgrade_id}: rebuilt shape differs`);
     } catch (e) {
       naN += 1;
-      problems.push(`upgrade ${u.upgrade_id}: not modelled — ${e.message}`);
+      problems.push(`upgrade ${u.upgrade_id}: not modelled - ${e.message}`);
     }
   }
   const bad = problems.filter((p) => !p.includes('not modelled')).length;

@@ -5,19 +5,19 @@
  * action Hyperion will serve (hundreds, across every collection that
  * has ever made one) and holds each to two independent standards.
  *
- *   PHASE A — encoder. Fold the trace's decoded payload DOWN into the
+ *   PHASE A - encoder. Fold the trace's decoded payload DOWN into the
  *   high-level shape the UI works in (CreateBlendArgs: "5 of template
  *   X", "these outcomes with these weights"), rebuild it back UP with
  *   the builder's encoding, serialise against the live ABI, and diff
  *   the bytes against what was actually signed. Anything the
  *   abstraction loses shows up as a mismatch.
  *
- *   PHASE B — the form. Render the same trace into the one-per-line
+ *   PHASE B - the form. Render the same trace into the one-per-line
  *   text the create panel collects, parse it back, rebuild, and demand
  *   the same bytes AGAIN. This holds the parsers to the encoder's
  *   standard instead of eyeballing them.
  *
- *   PHASE C — recreatability. For collections named on the command line
+ *   PHASE C - recreatability. For collections named on the command line
  *   (default: underpunks55 and cigalepixeld), read their LIVE `blends`
  *   rows and check each one could be rebuilt exactly as it exists
  *   today. This covers recipes whose creation predates the history
@@ -27,7 +27,7 @@
  * src/nefty/createBlend.ts, compiled to ESM first (npm run
  * build:verify) rather than re-implemented here. An earlier version of
  * this script mirrored them by hand and passed while the shipped parser
- * had a different bug — the copy was correct, the product was not.
+ * had a different bug - the copy was correct, the product was not.
  * The ENCODER is still mirrored on purpose, so the two must agree.
  *
  * Nothing is broadcast and no signature is requested.
@@ -41,7 +41,7 @@ import { existsSync } from 'node:fs';
 
 const BUILT = new URL('./.build/createBlend.mjs', import.meta.url);
 if (!existsSync(BUILT)) {
-  console.error('Missing scripts/.build/createBlend.mjs — run `npm run verify:createblend`,');
+  console.error('Missing scripts/.build/createBlend.mjs - run `npm run verify:createblend`,');
   console.error('or build it with: npx vite build --config vite.lib.config.mjs');
   process.exit(2);
 }
@@ -54,7 +54,7 @@ const HYPERION = 'https://wax.eosphere.io';
  * Phase C collections. Deliberately more than a token couple, and mixed
  * on purpose: the two the app suggests by default (underpunks55,
  * cigalepixeld), plus collections picked for shape rather than
- * convenience — pool payouts, token payouts, attribute filters,
+ * convenience - pool payouts, token payouts, attribute filters,
  * cross-collection ingredients, 50-outcome tables.
  */
 const FOCUS = process.argv.slice(2).length ? process.argv.slice(2) : [
@@ -292,7 +292,7 @@ for (const a of traces) {
     const pi = parseIngredientLines(lines.join('\n'), coll);
     const po = parseOutcomeLines(outText);
     if (pi.errors.length || po.errors.length) {
-      st.fails.push(`${a.trx_id.slice(0, 12)}: PHASE B parse errors — ${[...pi.errors, ...po.errors][0]}`);
+      st.fails.push(`${a.trx_id.slice(0, 12)}: PHASE B parse errors - ${[...pi.errors, ...po.errors][0]}`);
       failures += 1;
       continue;
     }
@@ -360,7 +360,7 @@ for (const coll of FOCUS) {
       // A shape the builder does not model (pool results, chest/cooldown
       // ingredients). Reported, never silently counted as a pass.
       naN += 1;
-      problems.push(`blend ${b.blend_id}: not modelled — ${e.message}`);
+      problems.push(`blend ${b.blend_id}: not modelled - ${e.message}`);
     }
   }
   const bad = problems.filter((p) => !p.includes('not modelled')).length;
