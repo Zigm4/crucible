@@ -1639,3 +1639,377 @@ pre::before {
   .modal-actions { flex-direction: column-reverse; }
   .modal-actions button { width: 100%; }
 }
+
+/* ─── author form: field help + paired inputs ─────────────────────────── */
+
+/* Explanations sit under the control they explain, not beside it: the
+   author-form rows are narrow and a trailing hint used to collide with
+   the row above (the cooldown field did exactly that). */
+.field-help {
+  margin: 5px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.field-help code { font-size: 0.95em; }
+
+/* Two numeric inputs that belong together, each with its own label. */
+.field-pair {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.field-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--muted);
+  flex: 1 1 150px;
+  min-width: 0;
+}
+.field-mini input { width: 100%; }
+
+/* Collapsible syntax reference under a textarea. */
+.syntax-help { margin-top: 8px; }
+.syntax-help > summary {
+  cursor: pointer;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--accent);
+  list-style: none;
+}
+.syntax-help > summary::-webkit-details-marker { display: none; }
+.syntax-help > summary::before { content: '▸ '; }
+.syntax-help[open] > summary::before { content: '▾ '; }
+.syntax-help .mint-info { margin-top: 6px; }
+.manage-section select { width: 100%; }
+
+/* ─── #/lab — unlisted design preview of the next creator ─────────────── */
+/* Deliberately a bit calmer than the app: it is a mock-up meant to be
+   read and judged, not operated at speed. */
+
+.lab { max-width: 860px; margin: 0 auto; }
+.lab-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.lab-head h2 { margin: 0; font-size: 17px; letter-spacing: 0.5px; }
+.lab-badge {
+  padding: 3px 9px;
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  color: var(--bg);
+  background: var(--warn);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.lab-intro {
+  margin: 10px 0 20px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--fg-dim);
+}
+.lab-intro strong { color: var(--fg); }
+
+/* Step rail — clickable so the preview can be explored out of order. */
+.lab-rail {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+  flex-wrap: wrap;
+}
+.lab-rail-step {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px 7px 8px;
+  cursor: pointer;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  background: rgba(10, 22, 38, 0.4);
+}
+.lab-rail-step:hover { border-color: var(--border); color: var(--fg-dim); }
+.lab-rail-step.current { border-color: var(--accent); color: var(--fg); background: rgba(56, 189, 248, 0.08); }
+.lab-rail-step.done { color: var(--ok); }
+.lab-rail-dot {
+  display: grid;
+  place-items: center;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 10px;
+  flex: none;
+}
+
+/* The sentence: the one thing that is true on every step. */
+.lab-sentence {
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-left: 3px solid var(--accent);
+  background: rgba(56, 189, 248, 0.06);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+.lab-sentence.big { font-size: 15px; margin-bottom: 18px; }
+
+.lab-panel {
+  padding: 20px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: var(--panel);
+}
+.lab-q { margin: 0 0 6px; font-size: 15px; color: var(--fg); }
+.lab-hint { margin: 0 0 18px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+.lab-note { font-size: 10.5px; color: var(--muted); letter-spacing: 0; text-transform: none; }
+
+.lab-field { margin-bottom: 18px; }
+.lab-field > label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.lab-field input[type='text'],
+.lab-field input[type='number'],
+.lab-field select { width: 100%; }
+
+/* Segmented choice — two options, both visible, no dropdown to open. */
+.lab-seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.lab-seg button {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  padding: 9px 14px;
+  cursor: pointer;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+}
+.lab-seg button small { font-size: 10px; color: var(--muted); }
+.lab-seg button:hover { border-color: var(--border); }
+.lab-seg button.on { border-color: var(--accent); color: var(--fg); background: rgba(56, 189, 248, 0.1); }
+.lab-seg button.on.danger { border-color: var(--danger); color: var(--danger); background: rgba(255, 85, 119, 0.1); }
+.lab-seg.small button { padding: 5px 10px; font-size: 10.5px; }
+
+/* Ingredient / outcome rows. */
+.lab-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.lab-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: rgba(4, 10, 18, 0.5);
+  flex-wrap: wrap;
+}
+.lab-row-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 160px; min-width: 0; }
+.lab-row-main strong { font-size: 13px; color: var(--fg); font-weight: 500; }
+.lab-row-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.lab-swatch { width: 4px; align-self: stretch; border-radius: 2px; flex: none; }
+
+.lab-tpl-art { font-size: 24px; line-height: 1; flex: none; }
+.lab-tpl-meta { font-size: 10.5px; color: var(--muted); }
+
+.lab-stepper { display: flex; align-items: center; gap: 8px; flex: none; }
+.lab-stepper button {
+  display: grid;
+  place-items: center;
+  width: 24px; height: 24px;
+  cursor: pointer;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  line-height: 1;
+}
+.lab-stepper button:hover { border-color: var(--accent); color: var(--accent); }
+.lab-stepper b { min-width: 22px; text-align: center; font-size: 13px; color: var(--fg); }
+
+.lab-weight { flex: 1 1 110px; min-width: 90px; accent-color: var(--accent); }
+.lab-pct { font-size: 12px; color: var(--fg); min-width: 48px; text-align: right; flex: none; }
+
+.lab-x {
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  padding: 4px;
+  flex: none;
+}
+.lab-x:hover { color: var(--danger); }
+
+.lab-add {
+  padding: 9px 14px;
+  cursor: pointer;
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+}
+.lab-add:hover { background: rgba(56, 189, 248, 0.08); }
+
+/* Odds as a shape before they are arithmetic. */
+.lab-bar {
+  display: flex;
+  height: 26px;
+  margin-bottom: 14px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(4, 10, 18, 0.6);
+}
+.lab-bar-seg { transition: width 0.15s ease; }
+
+.lab-callout {
+  padding: 11px 13px;
+  margin-top: 14px;
+  border-radius: 3px;
+  border-left: 3px solid var(--fg-dim);
+  background: rgba(10, 22, 38, 0.6);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--fg-dim);
+}
+.lab-callout.danger { border-left-color: var(--danger); background: rgba(255, 85, 119, 0.07); }
+.lab-callout.ok { border-left-color: var(--ok); background: rgba(46, 250, 166, 0.06); }
+.lab-callout strong { color: var(--fg); }
+
+/* It is a <label>, and the app uppercases those. This one is prose. */
+.lab-check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.lab-check input { margin-top: 3px; flex: none; }
+.lab-check strong { color: var(--fg); }
+
+/* Template picker. */
+.lab-picker { display: flex; flex-direction: column; gap: 12px; }
+.lab-tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.lab-tpl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  cursor: pointer;
+  text-align: left;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: rgba(4, 10, 18, 0.5);
+  color: var(--fg);
+  font: inherit;
+}
+.lab-tpl:hover { border-color: var(--accent); background: rgba(56, 189, 248, 0.07); }
+.lab-tpl-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lab-tpl-name { font-size: 12.5px; }
+
+/* Review table. */
+.lab-review {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 4px;
+  background: var(--border-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.lab-review > div {
+  display: flex;
+  gap: 14px;
+  padding: 9px 12px;
+  background: rgba(4, 10, 18, 0.75);
+  font-size: 12px;
+}
+.lab-review span {
+  flex: none;
+  width: 96px;
+  font-size: 10px;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-top: 2px;
+}
+.lab-review b { font-weight: 500; color: var(--fg); min-width: 0; }
+.lab-review b.warn { color: var(--warn); }
+
+.lab-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.lab-step-of { font-size: 11px; color: var(--muted); letter-spacing: 0.6px; }
+.lab-primary {
+  padding: 10px 18px;
+  cursor: pointer;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--accent-hot);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.6px;
+}
+.lab-primary:hover:not(:disabled) { background: rgba(56, 189, 248, 0.22); }
+.lab-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+.lab-ghost {
+  padding: 10px 16px;
+  cursor: pointer;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+}
+.lab-ghost:hover:not(:disabled) { border-color: var(--border); color: var(--fg); }
+.lab-ghost:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* Upgrade step: the qualifying condition reads as a sentence with two
+   controls embedded in it, rather than two labelled boxes. */
+.lab-gate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--fg-dim);
+}
+/* The global `input[type=…], select { width: 100% }` rule wins on
+   specificity, so these have to match it element-for-element. */
+.lab-gate select { width: auto; }
+.lab-gate input[type=number] { width: 110px; }
+input.lab-inline,
+select.lab-inline { width: auto; flex: 0 1 auto; min-width: 100px; }
+input.lab-inline { max-width: 130px; }

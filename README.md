@@ -58,6 +58,7 @@ $ crucible --layout
                           #/waxdao/blend/1921
                           #/blenderizer/blend/336429
                           #/catalog/underpunks55   <- everything, one page
+                          #/lab                    <- design preview (unlisted)
 ```
 
 ---
@@ -628,6 +629,44 @@ stated rather than guessed: it decides the wire encoding, and getting
 it wrong is the one mistake the chain will not catch. Verified against
 every createupgrde on chain — see the verify section.
 
+### DESIGN PREVIEW · `#/lab`  (unlisted)
+
+Nothing links to it. It is a **mock-up**, not a second creator: no chain
+reads, no wallet, no signing, and the NFTs in it are stand-ins.
+
+The creation panels above work, but they ask you to learn a syntax and
+to type template ids from memory. `#/lab` is the argument for what
+should replace them, made concrete enough to click:
+
+```
+$ crucible #/lab
+
+  (1) Collection  (2) What players give  (3) What they get  (4) Rules  (5) Review
+
+  > A player gives 10x Leather Scraps (destroyed) and gets
+    50% Mycelium Helmet, 30% Mycelium Pauldrons, 20% nothing.
+
+  [####################|############|########]
+   Mycelium Helmet 50%   Pauldrons 30%  nothing 20%
+```
+
+```
+[*] PICK, don't type - templates arrive with artwork, name, schema and
+    how many you hold, so an id is recognised rather than recalled
+[*] weights become a picture - a stacked bar, so "@50 / @30 / @20" is a
+    shape before it is arithmetic
+[*] one plain sentence, on every step - if the sentence is wrong, the
+    recipe is wrong, with no payload to decode
+[*] one question per screen, so the irreversible ones (what burns, what
+    the odds are) are not competing for attention in a single long form
+[*] upgrades get their own step 3: no reward to pick, you choose which
+    attribute is rewritten and how ("level goes up by 1"), with the
+    qualifying condition written as a sentence
+```
+
+Delete-in-one-file by design (`src/ui/lab.ts`), or promote into the real
+creator once the interaction is settled.
+
 ### CATALOGUE · `#/catalog/<collection>`
 
 Every tab above is organised the way the CHAIN is: one per contract,
@@ -925,6 +964,8 @@ src/
                          contracts, grouped by category
     media.ts           : IPFS resolution + non-distorting thumbnails
                          (gateway fallback, removes itself on failure)
+    lab.ts             : #/lab - unlisted design preview of the next
+                         creator (mock data, signs nothing)
     status.ts          : #/status - contract health monitor
     dryrun.ts          : local ABI serialisation, "simulate without signing"
     theme.css          : palette, fonts, scanlines, motion (fork to re-skin)

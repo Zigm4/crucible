@@ -211,6 +211,7 @@ import {
   toggleCatalogGroup,
   type CatalogGrouping,
 } from './catalog';
+import { renderLabPage, attachLabHandlers } from './lab';
 
 type AppView =
   | 'blends'   // Nefty: blend.nefty
@@ -333,7 +334,7 @@ interface AppState {
   onlyExecutable: boolean;
   pickerOpen: boolean;
   /** Top-level page: the normal app, or the standalone contract-status page. */
-  page: 'app' | 'status' | 'catalog';
+  page: 'app' | 'status' | 'catalog' | 'lab';
   // ── drops view ──
   view: AppView;
   drops: DiscoveredDrop[];
@@ -506,6 +507,12 @@ interface CreateBlendState {
   /** Opt-in safety switch, like the drop creator. */
   enabled: boolean;
   collection: string;
+  /** Collections this wallet can actually manage, for the picker. */
+  myCollections: string[];
+  myCollectionsLoaded: boolean;
+  /** The chosen collection's named whitelists, for the gate picker. */
+  securities: { id: string; name: string }[];
+  securitiesFor?: string;
   authChecked?: string;
   authorized?: boolean;
   authChecking: boolean;
@@ -881,6 +888,9 @@ const state: AppState = {
   createBlend: {
     enabled: false,
     collection: '',
+    myCollections: [],
+    myCollectionsLoaded: false,
+    securities: [],
     authChecking: false,
     busy: false,
     name: '',
@@ -946,6 +956,8 @@ const state: AppState = {
  * Standalone pages sit outside that grammar:
  *   #/status                  contract health monitor
  *   #/catalog/<collection>    everything one collection offers
+ *   #/lab                     unlisted design preview of the next
+ *                             blend/upgrade creator (no chain access)
  *
  * Entity IDs:
  *   blend    → blend_id  (uint64); on blenderizer this is the target
@@ -963,7 +975,7 @@ export interface ParsedRoute {
   view: AppView;
   id?: string;
   /** Standalone pages that sit outside the platform/tab grammar (e.g. #/status). */
-  page: 'app' | 'status' | 'catalog';
+  page: 'app' | 'status' | 'catalog' | 'lab';
 }
 
 function tabSlugToView(platform: Platform, slug: string | undefined): AppView {
@@ -1010,7 +1022,9 @@ function parseHashRoute(): ParsedRoute {
         ? 'status'
         : platformSlug === 'catalog'
           ? 'catalog'
-          : 'app';
+          : platformSlug === 'lab'
+            ? 'lab'
+            : 'app';
     const platform: Platform =
       platformSlug === 'waxdao'
         ? 'waxdao'
@@ -6071,7 +6085,53 @@ function onToggleCreateBlendEnabled(checked: boolean) {
     c.collection = state.blend?.collection_name || state.discoveryCollection || '';
   }
   render();
-  if (checked && c.collection) void refreshCreateBlendAuth();
+  if (checked) {
+    void loadMyCollections();
+    if (c.collection) void refreshCreateBlendAuth();
+  }
+}
+
+/**
+ * Lists the collections the connected wallet is an authorized account
+ * of, so the author picks from a list instead of typing a name from
+ * memory (and getting told afterwards that it is not theirs).
+ */
+async function loadMyCollections() {
+  const c = state.createBlend;
+  const session = getCurrentSession();
+  if (!session || c.myCollectionsLoaded) return;
+  try {
+    const list = await listAuthorizedCollections(String(session.actor));
+    c.myCollections = list.map((x) => x.collection_name).sort();
+    // A single collection is not a choice — pick it.
+    if (!c.collection && c.myCollections.length === 1) {
+      c.collection = c.myCollections[0];
+      void refreshCreateBlendAuth();
+    }
+  } catch {
+    c.myCollections = [];
+  } finally {
+    c.myCollectionsLoaded = true;
+    render();
+  }
+}
+
+/**
+ * The collection's named whitelists (`secure.nefty/security`). Shown as
+ * a dropdown because a raw security_id means nothing to an author —
+ * "0" versus what, exactly, was the reasonable question.
+ */
+async function loadCreateBlendSecurities(collection: string) {
+  const c = state.createBlend;
+  if (!collection || c.securitiesFor === collection) return;
+  c.securitiesFor = collection;
+  try {
+    const rows = await readCollectionSecurities(collection);
+    c.securities = rows.map((r) => ({ id: String(r.id), name: r.name || `whitelist ${r.id}` }));
+  } catch {
+    c.securities = [];
+  }
+  render();
 }
 
 /** Same authorized_accounts check the Manage panel and drop creator use. */
@@ -6091,6 +6151,7 @@ async function refreshCreateBlendAuth() {
   render();
   try {
     c.authorized = await canManageCollection(actor, collection);
+    if (c.authorized) void loadCreateBlendSecurities(collection);
   } catch {
     c.authorized = false;
   } finally {
@@ -6280,45 +6341,96 @@ function renderBlendCreate(): string {
 
       <div class="manage-row">
         <span class="manage-label">collection</span>
-        <div class="manage-ctl"><input id="cbCollection" type="text" value="${escapeHtml(c.collection)}" placeholder="e.g. underpunks55" autocomplete="off" /></div>
+        <div class="manage-ctl">
+          ${c.myCollections.length
+            ? `<select id="cbCollectionPick">
+                 <option value="">— pick one of your collections —</option>
+                 ${c.myCollections.map((x) => `<option value="${escapeHtml(x)}"${x === collection ? ' selected' : ''}>${escapeHtml(x)}</option>`).join('')}
+               </select>`
+            : `<input id="cbCollection" type="text" value="${escapeHtml(c.collection)}" placeholder="e.g. underpunks55" autocomplete="off" />`}
+          <p class="field-help">${c.myCollectionsLoaded
+            ? (c.myCollections.length
+                ? 'Only collections this wallet is an authorized account of are listed.'
+                : 'This wallet manages no collection — type a name if you know you were just added.')
+            : 'Looking up the collections you manage…'}</p>
+        </div>
       </div>
       ${authLine}
 
       <div class="manage-row">
-        <span class="manage-label">name</span>
-        <div class="manage-ctl"><input id="cbName" type="text" value="${escapeHtml(c.name)}" placeholder="shown in the picker" autocomplete="off" /></div>
+        <span class="manage-label">blend name</span>
+        <div class="manage-ctl">
+          <input id="cbName" type="text" value="${escapeHtml(c.name)}" placeholder="e.g. Forge a Mycelium Helmet" autocomplete="off" />
+          <p class="field-help">The name of the <strong>recipe</strong>, not of the NFT it mints — this is what players see in the blend list.</p>
+        </div>
       </div>
       <div class="manage-row">
-        <span class="manage-label">image</span>
-        <div class="manage-ctl"><input id="cbImage" type="text" value="${escapeHtml(c.image)}" placeholder="IPFS hash (Qm… / baf…)" autocomplete="off" /></div>
+        <span class="manage-label">blend image</span>
+        <div class="manage-ctl">
+          <input id="cbImage" type="text" value="${escapeHtml(c.image)}" placeholder="e.g. QmPpctuEbqFtkosPeLQ4Zfep4TbMQGa3pfDZhdWWd2Z2M7" autocomplete="off" />
+          <p class="field-help">An <strong>IPFS hash</strong>, not a URL — the bare <code>Qm…</code> or <code>baf…</code> string. On AtomicHub, open the NFT you want to use as the recipe's thumbnail, and copy the hash from its image link. Leave empty to fall back to the result NFT's own artwork.</p>
+        </div>
       </div>
       <div class="manage-row">
         <span class="manage-label">description</span>
-        <div class="manage-ctl"><input id="cbDescription" type="text" value="${escapeHtml(c.description)}" autocomplete="off" /></div>
+        <div class="manage-ctl">
+          <input id="cbDescription" type="text" value="${escapeHtml(c.description)}" autocomplete="off" />
+          <p class="field-help">Optional. Shown on the blend page under the recipe.</p>
+        </div>
       </div>
       <div class="manage-row">
         <span class="manage-label">category</span>
-        <div class="manage-ctl"><input id="cbCategory" type="text" value="${escapeHtml(c.category)}" placeholder="optional grouping label" autocomplete="off" /></div>
+        <div class="manage-ctl">
+          <input id="cbCategory" type="text" value="${escapeHtml(c.category)}" placeholder="e.g. armour" autocomplete="off" />
+          <p class="field-help">A free-text tag you choose, used to group your own recipes. Purely cosmetic — it changes nothing on chain. Most authors leave it empty; those who use it write things like <code>animals</code> or <code>WEAPON UPGRADE</code>.</p>
+        </div>
       </div>
 
       ${riskBox(
-        'These NFTs are consumed every time someone blends. "-> account" sends them there instead of burning them; without it they are destroyed permanently.',
-        `<label>Ingredients — one per line</label>
-         <textarea id="cbIngredients" rows="5" spellcheck="false" placeholder="template 877088 x5
-template 877088 x5 -> vault.wam
-template othercoll:741859 x1
+        'Whatever you list here is taken from the player on EVERY blend. Without "-> account" the NFTs are burned — destroyed permanently, with no way to get them back.',
+        `<label>Ingredients — what the player gives up (one per line)</label>
+         <textarea id="cbIngredients" rows="5" spellcheck="false" placeholder="(examples — replace with your own)
+template 877088 x5
 schema up.tools x3
-collection x2
-token 10.0000 TLM -> payout.wam">${escapeHtml(c.ingredientsInput)}</textarea>`,
+token 10.0000 TLM -> payout.wam">${escapeHtml(c.ingredientsInput)}</textarea>
+         <details class="syntax-help"><summary>every ingredient you can write</summary>
+           <ul class="mint-info">
+             <li><code>template 877088 x5</code> — 5 NFTs of that exact template, <strong>burned</strong></li>
+             <li><code>template 877088 x5 -&gt; vault.wam</code> — the same, but <strong>sent to vault.wam</strong> instead of burned</li>
+             <li><code>template othercoll:741859 x1</code> — an NFT from <strong>another collection</strong></li>
+             <li><code>schema up.tools x3</code> — any 3 NFTs of that schema</li>
+             <li><code>collection x2</code> — any 2 NFTs of this collection · <code>collection other x2</code> for another one</li>
+             <li><code>attribute up.gear x2 where Rarity = Rare | Epic</code> — any NFT whose attribute matches · <code>|</code> separates values, <code>;</code> separates several conditions</li>
+             <li><code>token 10.0000 TLM -&gt; payout.wam</code> — a token cost and who receives it. The decimals must match the token exactly (<code>10.0000 TLM</code>, not <code>10 TLM</code>)</li>
+             <li><code>x5</code> is the quantity · <code>#</code> starts a comment · a trailing <code>{"description":"…"}</code> labels the slot</li>
+           </ul>
+         </details>`,
       )}
 
       ${riskBox(
-        'Weights are relative and the draw is final. One line = a guaranteed result; several lines = a lottery. "nothing" is a blank branch that mints nothing at all.',
-        `<label>Outcomes — one per line</label>
-         <textarea id="cbOutcomes" rows="4" spellcheck="false" placeholder="907173
+        'One line means the player always gets that. Several lines make it a LOTTERY, and the draw is final — the contract picks one line and the others do not happen. "@" sets the weight of each line.',
+        `<label>Outcomes — what the player gets (one per line)</label>
+         <textarea id="cbOutcomes" rows="4" spellcheck="false" placeholder="(examples — replace with your own)
 907173 @50
-907173+906880 @3
-nothing @20">${escapeHtml(c.outcomesInput)}</textarea>`,
+907173+906880 @30
+nothing @20">${escapeHtml(c.outcomesInput)}</textarea>
+         <details class="syntax-help"><summary>every outcome you can write, and how "@" works</summary>
+           <p class="term" style="margin:6px 0">
+             <strong>@ is a weight, not a percentage.</strong> Crucible adds every weight up and divides:
+             <code>@50 / @30 / @20</code> gives 50% / 30% / 20% because they total 100, but
+             <code>@1 / @1</code> gives 50% / 50%, and <code>@3 / @1</code> gives 75% / 25%.
+             Write no <code>@</code> at all and the line weighs 1. A single line is always 100%.
+             The live preview below turns your weights into real percentages — check it.
+           </p>
+           <ul class="mint-info">
+             <li><code>907173</code> — mint that template</li>
+             <li><code>907173 @50</code> — the same, with weight 50</li>
+             <li><code>907173+906880 @30</code> — this branch hands over <strong>both</strong> NFTs at once</li>
+             <li><code>token 1.00000000 WAX @15</code> — pay tokens instead of minting · <code>token 5.0000 TLM from alien.worlds @5</code> for a non-WAX contract</li>
+             <li><code>pool volna @5</code> — hand over a pre-minted NFT from one of your pools</li>
+             <li><code>nothing @20</code> — a blank: the player gets <strong>nothing at all</strong> on this branch</li>
+           </ul>
+         </details>`,
       )}
 
       <div class="manage-row">
@@ -6335,11 +6447,31 @@ nothing @20">${escapeHtml(c.outcomesInput)}</textarea>`,
       </div>
       <div class="manage-row">
         <span class="manage-label">per account</span>
-        <div class="manage-ctl"><input id="cbAccountLimit" type="number" min="0" value="${escapeHtml(c.accountLimit)}" placeholder="0" /> <span class="term">0 = unlimited · cooldown</span> <input id="cbCooldown" type="number" min="0" value="${escapeHtml(c.cooldown)}" placeholder="0" style="max-width:120px" /> <span class="term">seconds</span></div>
+        <div class="manage-ctl">
+          <div class="field-pair">
+            <label class="field-mini">max per wallet
+              <input id="cbAccountLimit" type="number" min="0" value="${escapeHtml(c.accountLimit)}" placeholder="0" />
+            </label>
+            <label class="field-mini">cooldown (seconds)
+              <input id="cbCooldown" type="number" min="0" value="${escapeHtml(c.cooldown)}" placeholder="0" />
+            </label>
+          </div>
+          <p class="field-help">0 / 0 means no per-wallet limit. With a limit, the cooldown is how long a wallet waits before its counter resets (86400 = one day); 0 means the limit never resets.</p>
+        </div>
       </div>
       <div class="manage-row">
-        <span class="manage-label">whitelist</span>
-        <div class="manage-ctl"><input id="cbSecurityId" type="text" value="${escapeHtml(c.securityId)}" placeholder="0" autocomplete="off" /> <span class="term">secure.nefty id · 0 = open to everyone</span></div>
+        <span class="manage-label">who can blend</span>
+        <div class="manage-ctl">
+          ${c.securities.length
+            ? `<select id="cbSecurityPick">
+                 <option value=""${!c.securityId || c.securityId === '0' ? ' selected' : ''}>Everyone (no whitelist)</option>
+                 ${c.securities.map((x) => `<option value="${escapeHtml(x.id)}"${x.id === c.securityId ? ' selected' : ''}>Only "${escapeHtml(x.name)}" (#${escapeHtml(x.id)})</option>`).join('')}
+               </select>`
+            : `<input id="cbSecurityId" type="text" value="${escapeHtml(c.securityId)}" placeholder="0" autocomplete="off" />`}
+          <p class="field-help">${c.securities.length
+            ? 'Your collection\'s whitelists, managed in the Manage panel of any blend. Leave it on "Everyone" unless you want to restrict this recipe.'
+            : 'A <code>secure.nefty</code> whitelist id. <strong>0 means everyone can blend</strong> — the normal case. To restrict a recipe you first create a whitelist in the Manage panel of an existing blend, then pick its id here.'}</p>
+        </div>
       </div>
       <div class="manage-row">
         <span class="manage-label">hidden</span>
@@ -8491,6 +8623,16 @@ function performRender() {
     return;
   }
 
+  // Unlisted design preview (#/lab). Nothing links to it — you reach it by
+  // knowing the path. It is a mock-up of the next creator, so it neither
+  // reads the chain nor needs a wallet, and it keeps its own state.
+  if (state.page === 'lab') {
+    rootEl().innerHTML = renderLabPage();
+    attachLabHandlers(rootEl(), render);
+    restoreRenderSnapshot(snap);
+    return;
+  }
+
   const session = getCurrentSession();
   rootEl().innerHTML =
     renderAboutPanels() +
@@ -8724,6 +8866,22 @@ function attachHandlers() {
     }
   };
   bindCb('cbCollection', (v) => { state.createBlend.collection = v.trim().toLowerCase(); }, { commit: true });
+  const cbCollPick = document.getElementById('cbCollectionPick') as HTMLSelectElement | null;
+  if (cbCollPick) {
+    cbCollPick.addEventListener('change', () => {
+      state.createBlend.collection = cbCollPick.value;
+      state.createBlend.securitiesFor = undefined; // re-read the new collection's lists
+      render();
+      void refreshCreateBlendAuth();
+    });
+  }
+  const cbSecPick = document.getElementById('cbSecurityPick') as HTMLSelectElement | null;
+  if (cbSecPick) {
+    cbSecPick.addEventListener('change', () => {
+      state.createBlend.securityId = cbSecPick.value;
+      render();
+    });
+  }
   bindCb('cbName', (v) => { state.createBlend.name = v; });
   bindCb('cbImage', (v) => { state.createBlend.image = v; });
   bindCb('cbDescription', (v) => { state.createBlend.description = v; });
