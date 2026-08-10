@@ -1290,7 +1290,7 @@ pre::before {
 .glitch::after  { color: #38bdf8; transform: translate(-1px, 0); mix-blend-mode: screen; }
 
 
-/* ─── "open the app" link — used on the standalone guide + status pages,
+/* ─── "open the app" link - used on the standalone guide + status pages,
  *     placed top-left so it never sits under the theme switch (top-right) ── */
 .app-link {
   display: inline-block;
@@ -1565,3 +1565,514 @@ pre::before {
   height: 34px;
   border-radius: 2px;
 }
+
+/* ─── beta gate modal (author write-actions) ──────────────────────────── */
+
+/* Lives on document.body, outside #root, so an app re-render cannot pull
+   it out from under the user mid-decision. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(2px);
+  overflow-y: auto;
+}
+.modal {
+  width: 100%;
+  max-width: 560px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  border-radius: 4px;
+  padding: 18px 20px 16px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+}
+.modal-beta {
+  display: inline-block;
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  padding: 3px 10px;
+  margin-bottom: 10px;
+}
+.modal h2 {
+  font-size: 15px;
+  margin: 0 0 10px;
+  letter-spacing: 0.6px;
+}
+.modal-lead {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--fg-dim);
+  margin: 0 0 10px;
+}
+/* The summary is the part to actually read: monospace, scrollable, and
+   visually separated from the prose around it. */
+.modal-summary {
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  color: var(--fg);
+}
+.modal-ack { margin-bottom: 14px; text-transform: none; letter-spacing: 0.3px; font-size: 12px; }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.modal-actions button { min-width: 110px; }
+
+@media (max-width: 560px) {
+  .modal { padding: 14px; }
+  .modal-actions { flex-direction: column-reverse; }
+  .modal-actions button { width: 100%; }
+}
+
+/* ─── author form: field help + paired inputs ─────────────────────────── */
+
+.manage-section select { width: 100%; }
+
+/* ─── #/lab guided creator ────────────────────────────────────────────── */
+/* Calmer than the app on purpose: this page is read carefully once, not
+   operated at speed, and every screen ends in an irreversible action. */
+
+.lab { max-width: 900px; margin: 0 auto; }
+.lab-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.lab-head h2 { margin: 0; font-size: 17px; letter-spacing: 0.5px; }
+.lab-badge {
+  padding: 3px 9px;
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.lab-intro { margin: 10px 0 20px; font-size: 12.5px; line-height: 1.7; color: var(--fg-dim); }
+.lab-intro strong { color: var(--warn); }
+
+/* Step rail. Clickable, so the page can be explored out of order. */
+.lab-rail { display: flex; gap: 4px; margin: 0 0 14px; padding: 0; list-style: none; flex-wrap: wrap; }
+.lab-rail-step {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px 7px 8px;
+  cursor: pointer;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  background: rgba(10, 22, 38, 0.4);
+}
+.lab-rail-step:hover { border-color: var(--border); color: var(--fg-dim); }
+.lab-rail-step.current { border-color: var(--accent); color: var(--fg); background: rgba(56, 189, 248, 0.08); }
+.lab-rail-step.done { color: var(--ok); }
+.lab-rail-dot {
+  display: grid;
+  place-items: center;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 10px;
+  flex: none;
+}
+
+/* The sentence: the one thing that stays true on every step. */
+.lab-sentence {
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-left: 3px solid var(--accent);
+  background: rgba(56, 189, 248, 0.06);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+.lab-sentence.big { font-size: 15px; margin-bottom: 18px; }
+
+.lab-panel { padding: 20px; border: 1px solid var(--border-soft); border-radius: 4px; background: var(--panel); }
+.lab-q { margin: 0 0 6px; font-size: 15px; color: var(--fg); }
+.lab-sub { margin: 18px 0 6px; font-size: 12px; color: var(--fg-dim); }
+.lab-hint { margin: 0 0 18px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+.lab-note { font-size: 10.5px; color: var(--muted); letter-spacing: 0; text-transform: none; line-height: 1.6; }
+p.lab-note { margin: 6px 0 0; }
+.lab-empty { margin: 0 0 12px; font-size: 12px; color: var(--muted); font-style: italic; }
+.lab-warn { margin: 8px 0 0; font-size: 12px; color: var(--warn); line-height: 1.6; }
+.lab-ok { margin: 8px 0 0; font-size: 12px; color: var(--ok); line-height: 1.6; }
+.lab-link {
+  border: none; background: none; padding: 0;
+  color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline;
+}
+.lab-list { margin: 8px 0 0; padding-left: 18px; }
+.lab-list li { margin-bottom: 5px; }
+.lab-pre {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  max-height: 260px;
+  overflow: auto;
+  background: rgba(4, 10, 18, 0.8);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--fg-dim);
+}
+
+.lab-field { margin-bottom: 18px; }
+.lab-field > label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.lab-field input[type=text],
+.lab-field input[type=number],
+.lab-field input[type=datetime-local],
+.lab-field select { width: 100%; }
+
+/* Two fields that belong together, each with its own label, so a hint
+   under one can never collide with the row above. */
+.lab-pair { display: flex; gap: 12px; flex-wrap: wrap; }
+.lab-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--muted);
+  flex: 1 1 170px;
+  min-width: 0;
+}
+.lab-mini input { width: 100%; }
+
+/* Segmented choice: every option visible, no dropdown to open. */
+.lab-seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.lab-seg button {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  padding: 9px 14px;
+  cursor: pointer;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+}
+.lab-seg button small { font-size: 10px; color: var(--muted); }
+.lab-seg button:hover:not(:disabled) { border-color: var(--border); }
+.lab-seg button.on { border-color: var(--accent); color: var(--fg); background: rgba(56, 189, 248, 0.1); }
+.lab-seg button.on.danger { border-color: var(--danger); color: var(--danger); background: rgba(255, 85, 119, 0.1); }
+.lab-seg button:disabled { opacity: 0.35; cursor: not-allowed; }
+.lab-seg.small button { padding: 5px 10px; font-size: 10.5px; }
+
+/* Rows. */
+.lab-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.lab-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: rgba(4, 10, 18, 0.5);
+  flex-wrap: wrap;
+}
+.lab-row-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 150px; min-width: 0; }
+.lab-row-main strong { font-size: 13px; color: var(--fg); font-weight: 500; }
+.lab-row-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.lab-swatch { width: 4px; align-self: stretch; border-radius: 2px; flex: none; }
+
+.lab-tag {
+  flex: none;
+  padding: 3px 8px;
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+}
+.lab-tag.muted { color: var(--muted); }
+.lab-mini-label { flex: none; font-size: 11px; color: var(--muted); }
+.lab-type {
+  flex: none;
+  padding: 2px 7px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--fg-dim);
+  background: rgba(56, 189, 248, 0.08);
+  border-radius: 3px;
+}
+.lab-pin {
+  flex: none;
+  padding: 2px 7px;
+  font-size: 10px;
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: 3px;
+}
+.lab-tpl-meta { font-size: 10.5px; color: var(--muted); }
+
+/* Artwork. Fixed box, never distorted, with a placeholder of the same
+   size so a template without an image does not shift the row. */
+.lab-row .media-thumb,
+.lab-tpl .media-thumb { flex: none; width: 40px; height: 40px; margin: 0; }
+.lab-row .media-thumb img,
+.lab-tpl .media-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.lab-noart {
+  flex: none;
+  width: 40px; height: 40px;
+  border: 1px dashed var(--border-soft);
+  border-radius: 3px;
+}
+
+/* The plus and minus are DRAWN, not typed. A glyph never centres the same
+   way in two fonts, and inside a 26px box a stray pixel is the whole
+   control. Two bars, positioned from the exact centre. */
+.lab-stepper { display: flex; align-items: center; gap: 6px; flex: none; }
+.lab-stepper button {
+  position: relative;
+  width: 26px; height: 26px;
+  padding: 0;
+  cursor: pointer;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: rgba(10, 22, 38, 0.6);
+  color: var(--fg-dim);
+  font-size: 0;
+  line-height: 0;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.lab-stepper button::before,
+.lab-stepper button::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  background: currentColor;
+  border-radius: 1px;
+}
+.lab-stepper button::before { width: 11px; height: 2px; transform: translate(-50%, -50%); }
+.lab-stepper button.lab-plus::after { width: 2px; height: 11px; transform: translate(-50%, -50%); }
+.lab-stepper button:hover { border-color: var(--accent); color: var(--accent); background: rgba(56, 189, 248, 0.12); }
+.lab-stepper button:active { transform: scale(0.9); }
+.lab-stepper b { min-width: 24px; text-align: center; font-size: 13px; color: var(--fg); }
+
+/* Same treatment for the remove control: two bars crossed, so it lines up
+   with the steppers instead of riding whatever the font's glyph does. */
+.lab-x {
+  position: relative;
+  flex: none;
+  width: 26px; height: 26px;
+  padding: 0;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0;
+}
+.lab-x::before,
+.lab-x::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 12px; height: 2px;
+  background: currentColor;
+  border-radius: 1px;
+}
+.lab-x::before { transform: translate(-50%, -50%) rotate(45deg); }
+.lab-x::after  { transform: translate(-50%, -50%) rotate(-45deg); }
+.lab-x:hover { color: var(--danger); border-color: var(--danger); }
+
+.lab-weight { flex: 1 1 110px; min-width: 90px; accent-color: var(--accent); }
+.lab-pct { font-size: 12px; color: var(--fg); min-width: 48px; text-align: right; flex: none; }
+
+.lab-add {
+  padding: 9px 14px;
+  cursor: pointer;
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+}
+.lab-add:hover:not(:disabled) { background: rgba(56, 189, 248, 0.08); }
+.lab-add:disabled { opacity: 0.3; cursor: not-allowed; border-style: solid; }
+
+/* Odds as a shape before they are arithmetic. */
+.lab-bar {
+  display: flex;
+  height: 26px;
+  margin-bottom: 14px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(4, 10, 18, 0.6);
+}
+.lab-bar-seg { transition: width 0.15s ease; }
+
+.lab-callout {
+  padding: 11px 13px;
+  margin-top: 14px;
+  border-radius: 3px;
+  border-left: 3px solid var(--fg-dim);
+  background: rgba(10, 22, 38, 0.6);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--fg-dim);
+}
+.lab-callout.danger { border-left-color: var(--danger); background: rgba(255, 85, 119, 0.07); }
+.lab-callout.ok { border-left-color: var(--ok); background: rgba(46, 250, 166, 0.06); }
+.lab-callout strong { color: var(--fg); }
+
+/* It is a <label>, and the app uppercases those. This one is prose. */
+.lab-check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 8px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.lab-check input { margin-top: 3px; flex: none; width: auto; }
+.lab-check strong { color: var(--fg); }
+
+/* A condition that reads as a sentence, with its controls inline. The
+   global `input[type=...], select { width: 100% }` rule wins on
+   specificity, so these have to match it element for element. */
+.lab-gate { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--fg-dim); }
+.lab-gate select,
+.lab-gate input[type=text] { width: auto; min-width: 90px; }
+.lab-gate input[type=number] { width: 90px; }
+input.lab-inline,
+select.lab-inline { width: auto; flex: 0 1 auto; min-width: 100px; }
+input.lab-inline { max-width: 190px; }
+
+/* Template picker. */
+.lab-picker { display: flex; flex-direction: column; gap: 12px; }
+.lab-tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+  max-height: 380px;
+  overflow-y: auto;
+}
+.lab-tpl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  cursor: pointer;
+  text-align: left;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: rgba(4, 10, 18, 0.5);
+  color: var(--fg);
+  font: inherit;
+}
+.lab-tpl:hover { border-color: var(--accent); background: rgba(56, 189, 248, 0.07); }
+.lab-tpl-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lab-tpl-name { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Review table. */
+.lab-review {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 4px;
+  background: var(--border-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.lab-review > div { display: flex; gap: 14px; padding: 9px 12px; background: rgba(4, 10, 18, 0.75); font-size: 12px; }
+.lab-review span {
+  flex: none;
+  width: 96px;
+  font-size: 10px;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-top: 2px;
+}
+.lab-review b { font-weight: 500; color: var(--fg); min-width: 0; word-break: break-word; }
+
+.lab-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.lab-nav-actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+.lab-step-of { font-size: 11px; color: var(--muted); letter-spacing: 0.6px; }
+.lab-primary {
+  padding: 10px 18px;
+  cursor: pointer;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--accent-hot);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.6px;
+}
+.lab-primary:hover:not(:disabled) { background: rgba(56, 189, 248, 0.22); }
+.lab-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+.lab-ghost {
+  padding: 10px 16px;
+  cursor: pointer;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+}
+.lab-ghost:hover:not(:disabled) { border-color: var(--border); color: var(--fg); }
+.lab-ghost:disabled { opacity: 0.35; cursor: not-allowed; }
+
+@media (max-width: 640px) {
+  .lab-row { gap: 8px; }
+  .lab-review > div { flex-direction: column; gap: 3px; }
+  .lab-review span { width: auto; }
+}
+
+/* A row whose attribute cannot be used. Shown rather than hidden: an
+   author whose attribute is missing needs the reason, not a mystery. */
+.lab-row-bad { border-color: var(--danger); background: rgba(255, 85, 119, 0.06); }
+.lab-blocked {
+  flex: 1 1 100%;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--danger);
+}
+.lab-code-off { opacity: 0.45; text-decoration: line-through; }
+.lab-row-warn { border-color: var(--warn); background: rgba(255, 206, 92, 0.05); }
+.lab-caution { flex: 1 1 100%; font-size: 11px; line-height: 1.5; color: var(--warn); }

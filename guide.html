@@ -240,6 +240,33 @@
         <p>If your connected wallet is an <strong>authorized account</strong> of a collection,
           Crucible reveals inline management controls (each behind a safety toggle). The contracts
           always allowed this - only the website was missing.</p>
+        <h3>Creating blends and upgrades</h3>
+        <p>Creating a new blend or upgrade is <strong>not on this page</strong>. It runs on a
+          separate guided screen that reads your collection first, so templates are picked from a
+          list with their artwork instead of typed from memory, the odds are drawn as a bar, and an
+          upgrade's attribute types are read from the schema rather than declared by hand. Ask the
+          maintainer for the address if you author a collection.</p>
+        <div class="note">
+          <strong>Why it moved.</strong> Creation is permanent and costs RAM, and having two ways to
+          do it meant two sets of mistakes to guard against. The guided screen simulates the exact
+          transaction against the live contract before anything is signed, and refuses recipes the
+          chain would accept but no player could ever use.
+        </div>
+
+        <h3>Editing a blend afterwards</h3>
+        <p>Everything except the recipe itself can be changed after creation, from the
+          <em>Manage</em> panel: name and image, category, time window, max uses, per-account
+          limit, whitelist, hidden flag - and deleting it outright.</p>
+        <p>The <strong>ingredients</strong> can now be edited too, from the Manage panel. The box is
+          pre-filled with the recipe as it stands on chain, because the action replaces the whole
+          list - anything you delete from the box stops being required.</p>
+        <div class="note">
+          The <strong>outcomes cannot be changed by an author at all</strong>. That is a contract
+          limit, not a missing button: <code>setrolls</code> takes no <code>authorized_account</code>
+          and has only ever been called by NeftyBlocks' own accounts, so your signature would be
+          rejected. To change what a blend produces, delete it and create a new one.
+        </div>
+
         <h3>Manage blends &amp; whitelists (BLEND tab)</h3>
         <p>Rename, hide, set the time window, change limits, delete, and manage reusable named
           whitelists (<code>secure.nefty</code>): create one, fill it with wallets, and attach it to

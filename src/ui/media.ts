@@ -196,7 +196,7 @@ const hopeless = new Set<string>();
  * matters on the catalogue, where a collection can put 130 rows on one
  * page: only what you actually scroll to costs a request. It is done
  * with an IntersectionObserver rather than `loading="lazy"` because the
- * per-candidate deadline has to start when the request does — with
+ * per-candidate deadline has to start when the request does - with
  * native lazy-loading the timer would expire on off-screen images that
  * were never even attempted, and delete artwork that was fine.
  *

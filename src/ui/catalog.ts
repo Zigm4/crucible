@@ -810,7 +810,7 @@ function renderSummary(): string {
   const ready = state.entries.filter((e) => e.doable === true).length;
   const cards = state.sourceCounts.map((s) => `
     <div class="cat-stat${s.failed ? ' cat-stat-failed' : ''}">
-      <span class="cat-stat-n">${s.failed ? '—' : s.n}</span>
+      <span class="cat-stat-n">${s.failed ? '-' : s.n}</span>
       <span class="cat-stat-label">${esc(s.label)}</span>
       <span class="cat-stat-sub">${esc(s.contract)}</span>
     </div>`).join('');

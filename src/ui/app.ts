@@ -77,6 +77,15 @@ import {
   type WaxdaoIngredient,
 } from '../waxdao/blends';
 import { buildWaxdaoBlendActions, executeWaxdaoBlend } from '../waxdao/blendExecute';
+// Creating blends and upgrades lives on #/lab now, not here. What is left
+// of these modules on this page is the ingredient editor, which reads a
+// blend's current mix back into the text syntax and writes it again.
+import {
+  encodeIngredient,
+  formatIngredientLines,
+  parseIngredientLines,
+  type NewIngredient,
+} from '../nefty/createBlend';
 import {
   listBlenderizerBlends,
   loadBlenderizerBlendById,
@@ -97,6 +106,7 @@ import {
   buildSetBlendTime,
   buildDelBlend,
   buildSetBlendMax,
+  buildSetBlendMix,
   buildSetBlendLim,
   buildSetBlendData,
   buildSetBlendSec,
@@ -187,6 +197,7 @@ import {
   toggleCatalogGroup,
   type CatalogGrouping,
 } from './catalog';
+import { renderLabPage, attachLabHandlers } from './lab';
 
 type AppView =
   | 'blends'   // Nefty: blend.nefty
@@ -309,7 +320,7 @@ interface AppState {
   onlyExecutable: boolean;
   pickerOpen: boolean;
   /** Top-level page: the normal app, or the standalone contract-status page. */
-  page: 'app' | 'status' | 'catalog';
+  page: 'app' | 'status' | 'catalog' | 'lab';
   // ── drops view ──
   view: AppView;
   drops: DiscoveredDrop[];
@@ -467,6 +478,25 @@ interface DropManageState {
   addAccountsInput: string;
 }
 
+/**
+ * Inline "create a blend" form (BLEND tab, collection authors).
+ *
+ * Ingredients and outcomes are collected as one-per-line text rather
+ * than a widget tree: a blend is a three-level structure (ingredients /
+ * weighted outcomes / results) and a form that nests that deeply is
+ * worse to use than a recipe you can read, paste and diff. Same choice
+ * the drop creator makes for its templates field.
+ */
+
+/**
+ * Inline "create an upgrade" form (UPGRADE tab, collection authors).
+ *
+ * Same three-box shape as the blend creator, but the middle box is
+ * different in kind: a blend describes what it MINTS, an upgrade
+ * describes which NFTs it applies to and which attributes it rewrites
+ * on them, in place.
+ */
+
 interface CreateDropState {
   /** Opt-in safety switch - the form is collapsed until the author flips it. */
   enabled: boolean;
@@ -542,6 +572,15 @@ interface ManageState {
   newMaxInput: string;
   newLimitInput: string;
   newCooldownInput: string;
+  /**
+   * Ingredient editor (`setblendmix`). Pre-filled from the loaded
+   * blend's current ingredients the first time it is shown, because the
+   * action REPLACES the whole list - starting from a blank box would
+   * silently drop everything the author does not retype.
+   */
+  mixInput: string;
+  /** blend_id the mixInput was primed from, so switching blends re-primes. */
+  mixPrimedFor?: string;
 }
 
 type RngPhase =
@@ -755,6 +794,7 @@ const state: AppState = {
     newMaxInput: '',
     newLimitInput: '',
     newCooldownInput: '',
+    mixInput: '',
   },
   createDrop: {
     enabled: false,
@@ -805,6 +845,8 @@ const state: AppState = {
  * Standalone pages sit outside that grammar:
  *   #/status                  contract health monitor
  *   #/catalog/<collection>    everything one collection offers
+ *   #/lab                     unlisted design preview of the next
+ *                             blend/upgrade creator (no chain access)
  *
  * Entity IDs:
  *   blend    → blend_id  (uint64); on blenderizer this is the target
@@ -822,7 +864,7 @@ export interface ParsedRoute {
   view: AppView;
   id?: string;
   /** Standalone pages that sit outside the platform/tab grammar (e.g. #/status). */
-  page: 'app' | 'status' | 'catalog';
+  page: 'app' | 'status' | 'catalog' | 'lab';
 }
 
 function tabSlugToView(platform: Platform, slug: string | undefined): AppView {
@@ -869,7 +911,9 @@ function parseHashRoute(): ParsedRoute {
         ? 'status'
         : platformSlug === 'catalog'
           ? 'catalog'
-          : 'app';
+          : platformSlug === 'lab'
+            ? 'lab'
+            : 'app';
     const platform: Platform =
       platformSlug === 'waxdao'
         ? 'waxdao'
@@ -3048,7 +3092,9 @@ async function runAdminAction(
 ) {
   const session = getCurrentSession();
   if (!session) return;
-  if (!confirm(confirmMsg)) return;
+  // Editing a live blend changes what players are about to run, so it
+  // goes through the same beta gate as creating one.
+  if (!(await confirmBetaAction(`${action.account}::${action.name}`, confirmMsg))) return;
   state.manage.busy = true;
   render();
   try {
@@ -4213,6 +4259,8 @@ function renderBlendManage(b: BlendRow): string {
           <button data-action="manageSetName" ${disabled}>Apply</button>
         </div>
       </div>
+
+      ${renderManageMixEditor(b, disabled)}
 
       <div class="manage-row">
         <span class="manage-label">max uses</span>
@@ -5579,6 +5627,8 @@ function renderPacksView(): string {
 }
 
 function renderBlendsView(): string {
+  // The author panel sits at the bottom, behind its own opt-in, so the
+  // blending flow above is untouched for the 99% who are not authors.
   return renderPickBlend() + renderBlendInfo() + renderSlots() + renderActions();
 }
 
@@ -5714,6 +5764,204 @@ function renderDropManage(): string {
       ${loader}
       ${body}
     </div>`;
+}
+
+
+
+
+/**
+ * Ingredient editor for a live blend (`setblendmix`).
+ *
+ * The action REPLACES the whole ingredient list, so the box is primed
+ * with what is currently on chain - an author who starts from a blank
+ * textarea and types one line would silently delete the rest.
+ *
+ * Refuses to offer editing at all for a recipe the text syntax cannot
+ * round-trip (a cooldown gate, an attribute filter with significant
+ * whitespace), rather than presenting a box that would quietly drop it.
+ *
+ * The outcomes are NOT editable here on purpose: `setrolls` is a
+ * Nefty-internal action with no `authorized_account`, called 5 times
+ * ever and only by their own accounts, so an author signature would be
+ * rejected. That is a contract limit, not a missing button.
+ */
+function renderManageMixEditor(b: BlendRow, disabled: string): string {
+  const m = state.manage;
+  const current = formatIngredientLines(
+    foldRowIngredients(b.ingredients),
+    b.collection_name,
+  );
+
+  if (current === null) {
+    return `
+      <div class="manage-row">
+        <span class="manage-label">ingredients</span>
+        <div class="manage-ctl">
+          <p class="status-line warn" style="margin:0">This recipe uses an ingredient the text editor cannot represent exactly, so it is not offered here - editing it would risk dropping part of the recipe.</p>
+        </div>
+      </div>`;
+  }
+
+  // Prime once per blend so the author's edits survive re-renders.
+  if (m.mixPrimedFor !== String(b.blend_id)) {
+    m.mixInput = current;
+    m.mixPrimedFor = String(b.blend_id);
+  }
+  const changed = m.mixInput.trim() !== current.trim();
+
+  return `
+    <div class="manage-row">
+      <span class="manage-label">ingredients</span>
+      <div class="manage-ctl">
+        ${riskBox(
+          'This REPLACES the whole ingredient list of a live blend. Anything you remove from this box stops being required; anything you add is required from the next blend on. Players mid-recipe are affected immediately.',
+          `<textarea id="manageMix" rows="4" spellcheck="false">${escapeHtml(m.mixInput)}</textarea>
+           <div class="row" style="margin-top:8px; gap:8px">
+             <button data-action="manageSetMix" ${changed ? disabled : 'disabled'}>Replace ingredients</button>
+             <button data-action="manageResetMix" ${changed ? '' : 'disabled'}>Revert</button>
+             <span class="term">${changed ? 'modified' : 'unchanged'}</span>
+           </div>`,
+        )}
+        <p class="status-line term" style="margin-top:6px">Outcomes cannot be edited: <code>setrolls</code> is reserved to the contract owner, so an author signature would be rejected.</p>
+      </div>
+    </div>`;
+}
+
+/** On-chain ingredient variants -> the shape the text formatter takes. */
+function foldRowIngredients(ings: BlendRow['ingredients']): NewIngredient[] {
+  const eff = (e: unknown) =>
+    Array.isArray(e) && e[0] === 'TRANSFER_EFFECT'
+      ? (e[1] as { to?: string }).to
+      : undefined;
+  const out: NewIngredient[] = [];
+  for (const [tag, p] of ings as unknown as [string, Record<string, never>][]) {
+    const q = p as unknown as Record<string, string & number & never[]>;
+    switch (tag) {
+      case 'TEMPLATE_INGREDIENT':
+        out.push({ kind: 'template', template_id: Number(q.template_id), collection_name: String(q.collection_name), amount: Number(q.amount), transfer_to: eff(q.effect) });
+        break;
+      case 'SCHEMA_INGREDIENT':
+        out.push({ kind: 'schema', collection_name: String(q.collection_name), schema_name: String(q.schema_name), amount: Number(q.amount), display_data: q.display_data ? String(q.display_data) : undefined, transfer_to: eff(q.effect) });
+        break;
+      case 'ATTRIBUTE_INGREDIENT':
+        out.push({ kind: 'attribute', collection_name: String(q.collection_name), schema_name: String(q.schema_name), amount: Number(q.amount), attributes: q.attributes as unknown as { attribute_name: string; allowed_values: string[] }[], display_data: q.display_data ? String(q.display_data) : undefined, transfer_to: eff(q.effect) });
+        break;
+      case 'COLLECTION_INGREDIENT':
+        out.push({ kind: 'collection', collection_name: String(q.collection_name), amount: Number(q.amount), transfer_to: eff(q.effect) });
+        break;
+      case 'FT_INGREDIENT':
+        out.push({ kind: 'ft', quantity: String(q.quantity), to: eff(q.effect) });
+        break;
+      default:
+        // COOLDOWN / CHEST / anything new: not representable in text.
+        // Surfaced as "cooldown" so formatIngredientLines returns null
+        // and the editor refuses rather than silently dropping it.
+        out.push({ kind: 'cooldown', schema_name: '', template_id: 0, attribute_name: '', wait_time: 0, requirements: [] });
+    }
+  }
+  return out;
+}
+
+/** Applies the edited ingredient list to the loaded blend. */
+function onManageSetMix() {
+  const b = state.blend;
+  const session = getCurrentSession();
+  if (!b || !session) return;
+  const parsed = parseIngredientLines(state.manage.mixInput, b.collection_name);
+  if (parsed.errors.length) { setStatus(parsed.errors[0], 'err'); return; }
+  if (parsed.items.length === 0) { setStatus('A blend needs at least one ingredient.', 'err'); return; }
+  void runAdminAction(
+    buildSetBlendMix(String(session.actor), b.blend_id, parsed.items.map(encodeIngredient)),
+    `Replace the ingredients of blend #${b.blend_id} with:\n\n` +
+      parsed.items.map((i) => '  ' + describeIngredient(i)).join('\n') +
+      `\n\nThis is the complete new list - anything not shown here stops being required.`,
+    { refresh: 'blend' },
+  );
+}
+
+function onManageResetMix() {
+  state.manage.mixPrimedFor = undefined; // re-primes from chain on render
+  render();
+}
+
+/** One-line description of an ingredient, for the confirmation summary. */
+function describeIngredient(i: NewIngredient): string {
+  const to = 'transfer_to' in i && i.transfer_to ? ` → ${i.transfer_to}` : ' (burned)';
+  switch (i.kind) {
+    case 'template':   return `${i.amount}× template ${i.template_id}${to}`;
+    case 'schema':     return `${i.amount}× schema ${i.schema_name}${to}`;
+    case 'attribute':  return `${i.amount}× ${i.schema_name} matching an attribute filter${to}`;
+    case 'collection': return `${i.amount}× any NFT from ${i.collection_name}${to}`;
+    case 'ft':         return `pay ${i.quantity}${i.to ? ` → ${i.to}` : ''}`;
+    default:           return 'an ingredient the editor cannot describe';
+  }
+}
+
+// ─── beta gate for author write-actions ──────────────────────────────── //
+
+/**
+ * Blocking confirmation for creating or editing a blend / upgrade.
+ *
+ * These are the newest write paths in the app and the only ones whose
+ * output OTHER people then execute: a wrong recipe burns someone else's
+ * NFTs, and deleting the blend afterwards does not give them back. So
+ * the gate is deliberate rather than a browser confirm() - it states
+ * the beta status, shows exactly what is about to be signed, and needs
+ * an explicit tick before the button enables.
+ *
+ * Lives on document.body rather than inside #root, because the app
+ * re-renders by replacing #root's innerHTML and would otherwise wipe
+ * the dialog out from under the user mid-decision.
+ *
+ * Resolves true when accepted, false on cancel / Escape / backdrop.
+ */
+function confirmBetaAction(title: string, summary: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    document.getElementById('beta-gate')?.remove();
+
+    const wrap = document.createElement('div');
+    wrap.id = 'beta-gate';
+    wrap.className = 'modal-backdrop';
+    wrap.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="beta-gate-title">
+        <div class="modal-beta">⚠ BETA - please test before relying on this</div>
+        <h2 id="beta-gate-title">${escapeHtml(title)}</h2>
+        <p class="modal-lead">Creating and editing blends and upgrades is <strong>new</strong> in Crucible.
+          The transaction below has been verified against thousands of real on-chain creations, but this
+          particular flow has had little real-world use yet. Start with a cheap recipe, create it
+          <strong>hidden</strong>, and check the result on-chain before exposing it to players.</p>
+        <pre class="modal-summary">${escapeHtml(summary)}</pre>
+        <p class="modal-lead">This writes to the chain. Once players start using a blend, the NFTs it
+          consumes are gone - deleting it afterwards does not give them back.</p>
+        <label class="inline-toggle modal-ack">
+          <input type="checkbox" id="beta-gate-ack" />
+          <span>I understand this is beta and I have checked the summary</span>
+        </label>
+        <div class="modal-actions">
+          <button type="button" id="beta-gate-cancel">Cancel</button>
+          <button type="button" class="primary" id="beta-gate-ok" disabled>Sign it</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+
+    const ack = wrap.querySelector<HTMLInputElement>('#beta-gate-ack')!;
+    const ok = wrap.querySelector<HTMLButtonElement>('#beta-gate-ok')!;
+    const cancel = wrap.querySelector<HTMLButtonElement>('#beta-gate-cancel')!;
+
+    const close = (accepted: boolean) => {
+      document.removeEventListener('keydown', onKey);
+      wrap.remove();
+      resolve(accepted);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(false); };
+
+    ack.addEventListener('change', () => { ok.disabled = !ack.checked; });
+    ok.addEventListener('click', () => close(true));
+    cancel.addEventListener('click', () => close(false));
+    wrap.addEventListener('click', (e) => { if (e.target === wrap) close(false); });
+    document.addEventListener('keydown', onKey);
+    ack.focus();
+  });
 }
 
 // ─── create-drop panel (collection authors, CLAIM/drops tab) ──────────── //
@@ -6292,6 +6540,7 @@ function renderUpgradeActions(): string {
 function renderUpgradesView(): string {
   return renderPickUpgrade() + renderUpgradeInfo() + renderUpgradeSlots() + renderUpgradeActions();
 }
+
 
 // ─── WAXDAO BLEND view: handlers + rendering ─────────────────────── //
 
@@ -7573,6 +7822,17 @@ function performRender() {
     return;
   }
 
+  // Unlisted guided creator (#/lab). Nothing links to it: you reach it by
+  // knowing the path. It signs real transactions and keeps its own state,
+  // so it gets its own handler pass rather than the app's delegation block.
+  if (state.page === 'lab') {
+    rootEl().innerHTML = renderLabPage();
+    attachLabHandlers(rootEl(), render);
+    attachMediaFallbacks(rootEl());
+    restoreRenderSnapshot(snap);
+    return;
+  }
+
   const session = getCurrentSession();
   rootEl().innerHTML =
     renderAboutPanels() +
@@ -7773,6 +8033,15 @@ function attachHandlers() {
   if (toggleWaxdaoInactive) {
     toggleWaxdaoInactive.addEventListener('change', () => onToggleWaxdaoShowInactive(toggleWaxdaoInactive.checked));
   }
+  // Manage: ingredient editor textarea.
+  const manageMix = document.getElementById('manageMix') as HTMLTextAreaElement | null;
+  if (manageMix) {
+    manageMix.addEventListener('input', (e) => {
+      state.manage.mixInput = (e.target as HTMLTextAreaElement).value;
+      render();
+    });
+  }
+
   // BLENDERIZER tab inputs.
   const blenderizerIdInput = document.getElementById('blenderizerBlendIdInput') as HTMLInputElement | null;
   if (blenderizerIdInput) {
@@ -8069,6 +8338,12 @@ function attachHandlers() {
           break;
         case 'manageEndNow':
           onManageEndNow();
+          break;
+        case 'manageSetMix':
+          onManageSetMix();
+          break;
+        case 'manageResetMix':
+          onManageResetMix();
           break;
         case 'manageSetName':
           onManageSetName();
