@@ -85,7 +85,6 @@ const BLANK = {
   tokens: [],
   priceRecipient: '',
   authRequired: false,
-  allowCreditCard: false,
   maxClaimable: '100',
   unlimited: false,
   startTime: '',
@@ -425,7 +424,9 @@ const FIXTURES = [
     },
     valid: true,
     expect: (a) => a.data.listing_price === '0 NULL' && a.data.settlement_symbol === '0,NULL'
-      && a.data.assets_to_mint.length === 1,
+      && a.data.assets_to_mint.length === 1
+      // The card path runs through neftybrespay, which stopped signing.
+      && a.data.allow_credit_card_payments === false,
   },
   {
     label: 'drop / paid in WAX, several templates, quantities flattened',

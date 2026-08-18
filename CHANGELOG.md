@@ -49,6 +49,16 @@ organised around. There are twelve verify scripts in `scripts/` today.
   rather than a form field (`3 DUST` becomes `3.0000 DUST` with symbol
   `4,DUST`). 19 payloads, 15 shape checks, 12 correct rejections.
 
+### Removed
+- **The credit card option on drops.** It was never an on-chain payment:
+  NeftyBlocks took the card off chain, then had `neftybrespay` call
+  `triggerclaim` to mint for the buyer. That is the same account that used
+  to pay everyone's CPU and stopped signing, `triggerclaim` has no calls
+  left in the history window, and the `drops` table does not even store
+  the flag (it only adds the id to a `dropscc` list). Ticking it would
+  have advertised a way to pay that cannot complete. The flag is now
+  always false, and the price step says why.
+
 ### Known limits, stated in the editor itself
 - A blend's outcomes cannot be changed by anyone: `setrolls` takes no
   `authorized_account`.

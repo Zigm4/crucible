@@ -232,7 +232,6 @@ export interface LabForm {
   tokenSearch: string;
   tokenPickerOpen: boolean;
   authRequired: boolean;
-  allowCreditCard: boolean;
   maxClaimable: string;
   unlimited: boolean;
 
@@ -308,7 +307,6 @@ const state: LabState = {
   tokenSearch: '',
   tokenPickerOpen: false,
   authRequired: false,
-  allowCreditCard: false,
   maxClaimable: '100',
   unlimited: false,
   startTime: '',
@@ -956,7 +954,9 @@ function dropArgs(): CreateDropArgs {
     end_time: toUnix(state.endTime),
     display_data: buildDropDisplayData(state.name, state.description, state.image),
     distribution_id: 0,
-    allow_credit_card_payments: state.allowCreditCard,
+    // Off, always: see the note on the price step. The payment path it
+    // switches on has been dead since neftybrespay stopped signing.
+    allow_credit_card_payments: false,
     referral_fee: 0,
     referral_whitelist_id: 0,
   };
@@ -1691,10 +1691,14 @@ function stepPrice(): string {
         <p class="lab-note">Empty means your own account, ${esc(state.actor || 'the signing wallet')}.</p>
       </div>
 
-      <label class="lab-check">
-        <input type="checkbox" ${state.allowCreditCard ? 'checked' : ''} data-lab="drop-cc" />
-        <span><strong>Allow credit card payments</strong> through the NeftyBlocks payment processor.</span>
-      </label>`}
+      <div class="lab-callout danger">
+        <strong>Credit card payments are not offered here, and the flag is left off.</strong>
+        They never happened on chain: NeftyBlocks took the card off chain, then had
+        <code>neftybrespay</code> call <code>triggerclaim</code> to mint for the buyer. That is the
+        same account that used to pay everyone's CPU and stopped signing, and
+        <code>triggerclaim</code> has not been called since. Ticking it would only add the drop to a
+        list nobody reads, while advertising to players a way to pay that cannot complete.
+      </div>`}
 
     <div class="lab-field" style="margin-top:18px">
       <label>Total supply</label>
@@ -2043,21 +2047,36 @@ export function renderLabPage(): string {
           : stepReview();
 
   const title = state.kind === 'blend' ? 'a blend' : state.kind === 'upgrade' ? 'an upgrade' : 'a drop';
-  const modeSwitch = `
-    <div class="lab-seg lab-mode">
-      <button class="${state.mode === 'create' ? 'on' : ''}" data-lab="mode-create">Create<small>something new</small></button>
-      <button class="${state.mode === 'edit' ? 'on' : ''}" data-lab="mode-edit">Change<small>something that exists</small></button>
+  // The switch sits in the header rather than under it, with a line saying
+  // what the current side does. Two bare buttons alone on a row read as
+  // leftovers; the same two next to the title read as a choice.
+  const modeHeader = (title: string, sub: string) => `
+    <div class="lab-topbar">
+      <div class="lab-topbar-text">
+        <div class="lab-head">
+          <span class="lab-badge">GUIDED</span>
+          <h2>${esc(title)}</h2>
+        </div>
+        <p class="lab-topbar-sub">${sub}</p>
+      </div>
+      <div class="lab-seg lab-mode">
+        <button class="${state.mode === 'create' ? 'on' : ''}" data-lab="mode-create">Create<small>something new</small></button>
+        <button class="${state.mode === 'edit' ? 'on' : ''}" data-lab="mode-edit">Change<small>something that exists</small></button>
+      </div>
     </div>`;
 
   if (state.mode === 'edit') {
     return `
       <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
       <section class="lab">
-        <div class="lab-head">
-          <span class="lab-badge">GUIDED</span>
-          <h2>Change something you already made</h2>
-        </div>
-        ${modeSwitch}
+        ${modeHeader(
+          'Change something you already made',
+          state.editing
+            ? `Editing <strong>${esc(state.editing.name)}</strong> on ${esc(state.collection)}. Only what you touch gets signed.`
+            : state.collection
+              ? `${state.existing.length} ${esc(state.kind)}(s) found on <strong>${esc(state.collection)}</strong>, hidden and ended ones included.`
+              : 'Pick a collection and Crucible lists what it already has on chain.',
+        )}
         <div class="lab-panel">${state.editing ? editForm() : editPicker()}</div>
       </section>`;
   }
@@ -2066,18 +2085,10 @@ export function renderLabPage(): string {
   return `
     <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
     <section class="lab">
-      <div class="lab-head">
-        <span class="lab-badge">GUIDED</span>
-        <h2>Create ${title}</h2>
-      </div>
-      <p class="lab-intro">
-        The same contracts as the classic panels, asked one question at a time. Templates are picked
-        from your collection instead of typed, odds are drawn instead of counted, and for upgrades the
-        attribute types are read from the schema so they cannot disagree with the chain.
-        <strong>This signs real transactions.</strong>
-      </p>
-
-      ${modeSwitch}
+      ${modeHeader(
+        `Create ${title}`,
+        'One question per screen. Templates are picked from your collection instead of typed, odds are drawn instead of counted, and upgrade attribute types are read from the schema. <strong>This signs real transactions.</strong>',
+      )}
       ${stepRail()}
       ${state.step === STEP_COUNT - 1 ? '' : `<div class="lab-sentence">${esc(plainSentence())}</div>`}
       <div class="lab-panel">${body}</div>
@@ -2376,7 +2387,6 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
       hidden:            (v) => { state.hidden = v; },
       'edit-hidden':     (v) => { if (state.editing) state.editing.hidden = v; },
       'drop-auth':       (v) => { state.authRequired = v; },
-      'drop-cc':         (v) => { state.allowCreditCard = v; },
       'drop-unlimited':  (v) => { state.unlimited = v; },
     };
     if (checkbox[kind]) {

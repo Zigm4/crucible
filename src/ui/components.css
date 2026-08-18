@@ -2077,8 +2077,37 @@ input.lab-inline { max-width: 190px; }
 .lab-row-warn { border-color: var(--warn); background: rgba(255, 206, 92, 0.05); }
 .lab-caution { flex: 1 1 100%; font-size: 11px; line-height: 1.5; color: var(--warn); }
 
-/* #/lab: mode switch, token picker, edit affordances */
-.lab-mode { margin-bottom: 16px; }
+/* #/lab: header bar, token picker, edit affordances */
+
+/* Title on the left, the Create / Change choice on the right, on one row.
+   The two buttons alone on their own line read as leftovers; beside the
+   title, with a sentence under it saying what the current side does, they
+   read as the choice they are. Stacks on a narrow screen. */
+.lab-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-soft);
+  flex-wrap: wrap;
+}
+.lab-topbar-text { flex: 1 1 320px; min-width: 0; }
+.lab-topbar-sub {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--fg-dim);
+  max-width: 62ch;
+}
+.lab-topbar-sub strong { color: var(--warn); }
+.lab-mode { flex: none; }
+@media (max-width: 620px) {
+  .lab-topbar { gap: 14px; }
+  .lab-mode { width: 100%; }
+  .lab-mode button { flex: 1 1 0; }
+}
 .lab-token-btn {
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
   padding: 9px 14px; cursor: pointer;
