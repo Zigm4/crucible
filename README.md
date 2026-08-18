@@ -1156,11 +1156,14 @@ the front-end wiring, so they're the highest-value things to add next.
 **Next, in order.** Both came out of tester feedback on the guided
 creator.
 
-1. **Pick the token from the chain's own list.** A priced drop currently
-   offers three hardcoded tokens and asks the author to type the number
-   of decimals. `neftyblocksd/config.supported_tokens` already carries
-   162 entries as `{token_contract, token_symbol}`, and the symbol holds
-   the precision (`4,DUST`). Read that list, drop the decimals field.
+1. **Pick the token from the chain's own list, with type-ahead.** A
+   priced drop currently offers three hardcoded tokens and asks the
+   author to type the number of decimals.
+   `neftyblocksd/config.supported_tokens` already carries 162 entries as
+   `{token_contract, token_symbol}`, and the symbol holds the precision
+   (`4,DUST`). Read that list, filter it as the author types, and drop
+   the decimals field. 162 entries is past what a plain `<select>` is
+   good for, so reuse the search box the template picker already uses.
    Typing 8 decimals for a 4-decimal token is a silent factor of 10,000
    that the contract accepts without complaint.
 2. **Editing, at `#/lab`.** The guided creator can create a blend, an
