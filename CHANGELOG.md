@@ -15,6 +15,51 @@ organised around. There are twelve verify scripts in `scripts/` today.
 
 ---
 
+## 2026-08-11 - The guided creator picks tokens and edits what exists
+
+### Added
+- **The token list comes from the chain, with type-ahead.** A priced drop
+  offered three hardcoded tickers and asked the author to type the number
+  of decimals. `neftyblocksd/config.supported_tokens` carries 162 entries
+  as `{token_contract, token_symbol}`, and the symbol already holds the
+  precision (`4,DUST`), so neither is typed now: type two letters, pick,
+  done. Typing 8 decimals for a 4-decimal token was a silent factor of
+  10,000 that the contract accepts without complaint. The validator now
+  rejects a token the contract does not list, which is a real rejection
+  rather than a style rule.
+- **`#/lab` edits as well as creates.** A Create / Change switch. In
+  Change mode it lists what the collection already has, including hidden
+  and ended entries, and opens the fields each contract lets an author
+  change afterwards. Only what actually differs from what was loaded gets
+  built, one action per change, signed together in one transaction, and
+  the confirmation names each one. Deleting asks separately.
+- **`up.nefty` author actions, which had no builder at all.** An upgrade
+  could be created through Crucible and then never changed again, while
+  blends and drops both had their equivalent. `setupgrdhide`,
+  `setupgrdtime`, `setupgrdmax`, `setupgrddata`, `setupgrdcat`,
+  `setupgrdsec`, `setupgrdmix` and `delupgrade` now have builders.
+- `setdropdata` and `setdropprice`, the two drop admin actions that had
+  no builder either.
+
+### Verified
+- All ten new author actions serialised against the live `up.nefty` and
+  `neftyblocksd` ABIs before any UI was written.
+- `verify-lab.mjs` grew two fixtures: a token the contract does not
+  accept must be rejected, and precision must come from the token list
+  rather than a form field (`3 DUST` becomes `3.0000 DUST` with symbol
+  `4,DUST`). 19 payloads, 15 shape checks, 12 correct rejections.
+
+### Known limits, stated in the editor itself
+- A blend's outcomes cannot be changed by anyone: `setrolls` takes no
+  `authorized_account`.
+- An upgrade's attribute rewrites cannot be changed: the ABI has no
+  action for them.
+- Which templates a drop mints is fixed at creation.
+  In all three cases the editor says so rather than leaving a reader to
+  wonder why the field is missing.
+
+---
+
 ## 2026-08-11 - The mechanics come apart cleanly
 
 ### Changed

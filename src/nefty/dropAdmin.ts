@@ -116,6 +116,46 @@ export function buildSetDropLimit(
   };
 }
 
+/** The JSON blob shown to claimers: {"name":..., "description":..., "image":...}. */
+export function buildSetDropData(
+  authorized_account: string,
+  drop_id: string | number,
+  display_data: string,
+): BuiltAction {
+  return {
+    account: DROPS,
+    name: 'setdropdata',
+    authorization: auth(authorized_account),
+    data: { authorized_account, drop_id: String(drop_id), display_data },
+  };
+}
+
+/**
+ * Re-prices a live drop. `listing_price` and `settlement_symbol` move
+ * together: a free drop is exactly "0 NULL" with symbol "0,NULL", and a
+ * priced one needs the token's real precision in both.
+ */
+export function buildSetDropPrice(
+  authorized_account: string,
+  drop_id: string | number,
+  listing_price: string,
+  settlement_symbol: string,
+  alternative_prices: string[] = [],
+): BuiltAction {
+  return {
+    account: DROPS,
+    name: 'setdropprice',
+    authorization: auth(authorized_account),
+    data: {
+      authorized_account,
+      drop_id: String(drop_id),
+      listing_price,
+      settlement_symbol,
+      alternative_prices,
+    },
+  };
+}
+
 export function buildEraseDrop(authorized_account: string, drop_id: string | number): BuiltAction {
   return {
     account: DROPS,

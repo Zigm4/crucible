@@ -82,7 +82,7 @@ const BLANK = {
   free: true,
   priceAmount: '1',
   priceToken: 'WAX',
-  priceDecimals: '8',
+  tokens: [],
   priceRecipient: '',
   authRequired: false,
   allowCreditCard: false,
@@ -132,6 +132,13 @@ const PARTIAL_SCHEMA = {
     [333, new Set(['name', 'img'])],
   ]),
 };
+
+/** neftyblocksd's own token list, in the shape the form holds it. */
+const TOKENS = [
+  { ticker: 'WAX', precision: 8, contract: 'eosio.token', symbol: '8,WAX' },
+  { ticker: 'TLM', precision: 4, contract: 'alien.worlds', symbol: '4,TLM' },
+  { ticker: 'DUST', precision: 4, contract: 'niftywizards', symbol: '4,DUST' },
+];
 
 const ing = (o) => ({ sendTo: '', ...o });
 
@@ -425,7 +432,7 @@ const FIXTURES = [
     form: {
       kind: 'drop', templates: TEMPLATES_FIXTURE,
       mints: [{ template_id: 111, quantity: 3 }, { template_id: 222, quantity: 2 }],
-      free: false, priceAmount: '2.5', priceToken: 'WAX', priceDecimals: '8',
+      free: false, priceAmount: '2.5', priceToken: 'WAX', tokens: TOKENS,
       priceRecipient: 'seller.wam',
     },
     valid: true,
@@ -439,7 +446,7 @@ const FIXTURES = [
     form: {
       kind: 'drop', templates: TEMPLATES_FIXTURE,
       mints: [{ template_id: 111, quantity: 1 }],
-      free: false, priceAmount: '10', priceToken: 'TLM', priceDecimals: '4',
+      free: false, priceAmount: '10', priceToken: 'TLM', tokens: TOKENS,
     },
     valid: true,
     expect: (a) => a.data.listing_price === '10.0000 TLM' && a.data.settlement_symbol === '4,TLM',
@@ -467,13 +474,23 @@ const FIXTURES = [
     valid: false, because: /max supply/i,
   },
   {
-    label: 'drop / impossible token decimals are REJECTED',
+    label: 'drop / a token the contract does not accept is REJECTED',
     form: {
       kind: 'drop', templates: TEMPLATES_FIXTURE,
       mints: [{ template_id: 111, quantity: 1 }],
-      free: false, priceAmount: '1', priceToken: 'WAX', priceDecimals: '99',
+      free: false, priceAmount: '1', priceToken: 'NOPE', tokens: TOKENS,
     },
-    valid: false, because: /decimals/i,
+    valid: false, because: /neftyblocksd accepts/i,
+  },
+  {
+    label: 'drop / precision comes from the token list, never from a form field',
+    form: {
+      kind: 'drop', templates: TEMPLATES_FIXTURE,
+      mints: [{ template_id: 111, quantity: 1 }],
+      free: false, priceAmount: '3', priceToken: 'DUST', tokens: TOKENS,
+    },
+    valid: true,
+    expect: (a) => a.data.listing_price === '3.0000 DUST' && a.data.settlement_symbol === '4,DUST',
   },
 ];
 

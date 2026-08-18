@@ -36,6 +36,22 @@ import { readCollectionSecurities, executeAdminAction } from '../nefty/admin';
 import { clearDiscoverCache } from '../nefty/discover';
 import { clearUpgradesCache } from '../nefty/upgrades';
 import { clearDropsCache } from '../nefty/drops';
+import { listDropTokens, type DropToken } from '../nefty/dropTokens';
+import { listBlends, type DiscoveredBlend } from '../nefty/discover';
+import { listUpgrades, type DiscoveredUpgrade } from '../nefty/upgrades';
+import { listDrops, type DiscoveredDrop } from '../nefty/drops';
+import {
+  buildSetBlendHide, buildSetBlendTime, buildSetBlendMax, buildSetBlendLim,
+  buildSetBlendData, buildSetBlendCat, buildSetBlendSec, buildDelBlend,
+} from '../nefty/admin';
+import {
+  buildSetUpgradeHide, buildSetUpgradeTime, buildSetUpgradeMax,
+  buildSetUpgradeData, buildSetUpgradeCat, buildSetUpgradeSec, buildDelUpgrade,
+} from '../nefty/upgradeAdmin';
+import {
+  buildSetDropHidden, buildSetDropTimes, buildSetDropMax, buildSetDropLimit,
+  buildSetDropData, buildSetDropPrice, buildEraseDrop,
+} from '../nefty/dropAdmin';
 import { dryRunActions } from './dryrun';
 import { renderMediaThumb } from './media';
 import { pickImageRef } from '../atomic/image';
@@ -106,6 +122,32 @@ interface LabTemplate {
 // ─── form shapes ────────────────────────────────────────────────────────
 
 type LabKind = 'blend' | 'upgrade' | 'drop';
+
+/** Create something new, or change something that already exists. */
+type LabMode = 'create' | 'edit';
+
+/** One existing recipe, flattened to what the editor can change. */
+interface LabExisting {
+  id: string;
+  kind: LabKind;
+  name: string;
+  status: string;
+  /** Fields the contract lets an author change after creation. */
+  hidden: boolean;
+  startTime: string;
+  endTime: string;
+  maxUses: string;
+  accountLimit: string;
+  cooldown: string;
+  description: string;
+  image: string;
+  category: string;
+  securityId: string;
+  /** Drops only. */
+  free: boolean;
+  priceAmount: string;
+  priceToken: string;
+}
 
 /** What a player hands over. Mirrors the NewIngredient variants worth a UI. */
 type LabIngredient =
@@ -184,8 +226,11 @@ export interface LabForm {
   free: boolean;
   priceAmount: string;
   priceToken: string;
-  priceDecimals: string;
   priceRecipient: string;
+  /** Read from neftyblocksd's own config, not hardcoded. */
+  tokens: DropToken[];
+  tokenSearch: string;
+  tokenPickerOpen: boolean;
   authRequired: boolean;
   allowCreditCard: boolean;
   maxClaimable: string;
@@ -204,6 +249,13 @@ export interface LabForm {
 
 /** LabForm plus everything that only exists to drive the screen. */
 interface LabState extends LabForm {
+  mode: LabMode;
+  /** Edit mode: what exists in this collection, and what is being changed. */
+  existing: LabExisting[];
+  existingState: LoadState;
+  editing?: LabExisting;
+  /** A snapshot of `editing` as loaded, so only real changes are signed. */
+  editingOriginal?: LabExisting;
   step: number;
   collections: { collection_name: string; name: string }[];
   collectionsState: LoadState;
@@ -222,6 +274,9 @@ interface LabState extends LabForm {
 }
 
 const state: LabState = {
+  mode: 'create',
+  existing: [],
+  existingState: 'idle',
   kind: 'blend',
   step: 0,
   actor: '',
@@ -248,8 +303,10 @@ const state: LabState = {
   free: true,
   priceAmount: '1',
   priceToken: 'WAX',
-  priceDecimals: '8',
   priceRecipient: '',
+  tokens: [],
+  tokenSearch: '',
+  tokenPickerOpen: false,
   authRequired: false,
   allowCreditCard: false,
   maxClaimable: '100',
@@ -388,6 +445,22 @@ const intOr = (v: string, fallback = 0) => {
 /** Splits "Rare | Epic" into ["Rare", "Epic"]. */
 const splitValues = (v: string) => v.split('|').map((s) => s.trim()).filter(Boolean);
 
+/**
+ * The decimals of the selected token, read from the contract's own list
+ * rather than typed. A token the list does not know falls back to 8, which
+ * is only reachable before the list has loaded.
+ */
+function tokenPrecision(): number {
+  const t = state.tokens.find((x) => x.ticker === state.priceToken.trim().toUpperCase());
+  return t ? t.precision : 8;
+}
+
+/** The contract that issues the selected token, needed for nothing here
+ *  but worth showing: two tokens can share a ticker across contracts. */
+function tokenContract(): string {
+  return state.tokens.find((x) => x.ticker === state.priceToken.trim().toUpperCase())?.contract ?? '';
+}
+
 const totalWeight = () => state.outcomes.reduce((n, o) => n + o.weight, 0) || 1;
 
 const OUTCOME_COLOURS = ['#7c9cff', '#86c97f', '#f0a860', '#e8798f', '#c58cf5', '#5ec8d8', '#d8c85e', '#8fd8b0'];
@@ -395,6 +468,22 @@ const OUTCOME_COLOURS = ['#7c9cff', '#86c97f', '#f0a860', '#e8798f', '#c58cf5', 
 // ─── loading from the chain ─────────────────────────────────────────────
 
 let rerender: () => void = () => {};
+
+/**
+ * The tokens a drop may be priced in. Loaded lazily the first time the
+ * drop path is opened, because a blend author never needs it.
+ */
+async function loadDropTokens() {
+  if (state.tokens.length) return;
+  const tokens = await listDropTokens();
+  if (!tokens.length) return;
+  state.tokens = tokens;
+  // Keep whatever was chosen if the list knows it, otherwise start on WAX.
+  if (!tokens.some((t) => t.ticker === state.priceToken)) {
+    state.priceToken = tokens[0]?.ticker ?? 'WAX';
+  }
+  rerender();
+}
 
 /** Collections this wallet is allowed to manage. Nothing else is offered. */
 async function loadCollections() {
@@ -498,6 +587,174 @@ async function loadCollectionData() {
     state.dataError = err instanceof Error ? err.message : String(err);
   }
   rerender();
+}
+
+// ─── edit mode: read what exists, write what changed ───────────────────
+
+const unixToLocal = (t: number) =>
+  t ? new Date(t * 1000).toISOString().slice(0, 16) : '';
+
+/**
+ * Lists what this collection already has, for the kind being edited. Reads
+ * the same discovery each tab uses, including inactive entries, because an
+ * author editing something usually wants the hidden or ended one.
+ */
+async function loadExisting() {
+  const collection = state.collection.trim();
+  if (!collection) return;
+  state.existingState = 'loading';
+  state.existing = [];
+  rerender();
+  try {
+    let rows: LabExisting[] = [];
+    if (state.kind === 'blend') {
+      const { blends } = await listBlends({ collection, includeInactive: true });
+      rows = blends.map(fromBlend);
+    } else if (state.kind === 'upgrade') {
+      const { upgrades } = await listUpgrades({ collection, includeInactive: true });
+      rows = upgrades.map(fromUpgrade);
+    } else {
+      const { drops } = await listDrops({ collection, includeInactive: true });
+      rows = drops.map(fromDrop);
+    }
+    state.existing = rows;
+    state.existingState = 'done';
+  } catch (err) {
+    state.existingState = 'error';
+    state.dataError = err instanceof Error ? err.message : String(err);
+  }
+  rerender();
+}
+
+const BLANK_EXISTING = {
+  hidden: false, startTime: '', endTime: '', maxUses: '', accountLimit: '',
+  cooldown: '', description: '', image: '', category: '', securityId: '',
+  free: true, priceAmount: '', priceToken: '',
+};
+
+function fromBlend(b: DiscoveredBlend): LabExisting {
+  return {
+    ...BLANK_EXISTING,
+    id: String(b.blend_id), kind: 'blend', name: b.name || `blend ${b.blend_id}`,
+    status: String(b.status),
+  };
+}
+
+function fromUpgrade(u: DiscoveredUpgrade): LabExisting {
+  return {
+    ...BLANK_EXISTING,
+    id: String(u.upgrade_id), kind: 'upgrade', name: u.name || `upgrade ${u.upgrade_id}`,
+    status: String(u.status),
+    description: u.description ?? '', image: u.image ?? '',
+    startTime: unixToLocal(u.start_time), endTime: unixToLocal(u.end_time),
+    maxUses: u.max ? String(u.max) : '',
+  };
+}
+
+function fromDrop(d: DiscoveredDrop): LabExisting {
+  const [amount, ticker] = String(d.listing_price ?? '').split(' ');
+  return {
+    ...BLANK_EXISTING,
+    id: String(d.drop_id), kind: 'drop', name: d.name || `drop ${d.drop_id}`,
+    status: String(d.status),
+    description: d.description ?? '',
+    startTime: unixToLocal(d.start_time), endTime: unixToLocal(d.end_time),
+    maxUses: d.max_claimable ? String(d.max_claimable) : '',
+    accountLimit: d.account_limit ? String(d.account_limit) : '',
+    cooldown: d.account_limit_cooldown ? String(d.account_limit_cooldown) : '',
+    free: Boolean(d.is_free),
+    priceAmount: d.is_free ? '' : (amount ?? ''),
+    priceToken: d.is_free ? '' : (ticker ?? ''),
+  };
+}
+
+/**
+ * Only what actually changed, as one action each.
+ *
+ * Every one of these is a separate on-chain action: the contracts have no
+ * "update everything" call. Building only the diff keeps a save from
+ * re-signing six unchanged fields, and lets the confirmation list exactly
+ * what is about to happen.
+ */
+function editActions(): { label: string; action: ReturnType<typeof buildSetBlendHide> }[] {
+  const e = state.editing, o = state.editingOriginal;
+  if (!e || !o) return [];
+  const actor = state.actor;
+  const out: { label: string; action: ReturnType<typeof buildSetBlendHide> }[] = [];
+  const changed = (k: keyof LabExisting) => e[k] !== o[k];
+
+  const displayData = () => {
+    const dd: Record<string, string> = {};
+    if (e.name.trim()) dd.name = e.name.trim();
+    if (e.description.trim()) dd.description = e.description.trim();
+    if (e.image.trim()) dd.image = e.image.trim();
+    return JSON.stringify(dd);
+  };
+
+  if (e.kind === 'blend') {
+    if (changed('name') || changed('description') || changed('image')) {
+      out.push({ label: 'name, description and image', action: buildSetBlendData(actor, e.id, displayData()) });
+    }
+    if (changed('category')) out.push({ label: 'category', action: buildSetBlendCat(actor, e.id, e.category.trim()) });
+    if (changed('hidden')) out.push({ label: e.hidden ? 'hide it' : 'reveal it', action: buildSetBlendHide(actor, e.id, e.hidden) });
+    if (changed('startTime') || changed('endTime')) {
+      out.push({ label: 'time window', action: buildSetBlendTime(actor, e.id, toUnix(e.startTime), toUnix(e.endTime)) });
+    }
+    if (changed('maxUses')) out.push({ label: 'total uses', action: buildSetBlendMax(actor, e.id, intOr(e.maxUses)) });
+    if (changed('accountLimit') || changed('cooldown')) {
+      out.push({ label: 'per-wallet limit', action: buildSetBlendLim(actor, e.id, intOr(e.accountLimit), intOr(e.cooldown)) });
+    }
+    if (changed('securityId')) out.push({ label: 'whitelist', action: buildSetBlendSec(actor, e.id, e.securityId || 0) });
+  }
+
+  if (e.kind === 'upgrade') {
+    if (changed('name') || changed('description') || changed('image')) {
+      out.push({ label: 'name, description and image', action: buildSetUpgradeData(actor, e.id, displayData()) });
+    }
+    if (changed('category')) out.push({ label: 'category', action: buildSetUpgradeCat(actor, e.id, e.category.trim()) });
+    if (changed('hidden')) out.push({ label: e.hidden ? 'hide it' : 'reveal it', action: buildSetUpgradeHide(actor, e.id, e.hidden) });
+    if (changed('startTime') || changed('endTime')) {
+      out.push({ label: 'time window', action: buildSetUpgradeTime(actor, e.id, toUnix(e.startTime), toUnix(e.endTime)) });
+    }
+    if (changed('maxUses')) out.push({ label: 'total uses', action: buildSetUpgradeMax(actor, e.id, intOr(e.maxUses)) });
+    if (changed('securityId')) out.push({ label: 'whitelist', action: buildSetUpgradeSec(actor, e.id, e.securityId || 0) });
+  }
+
+  if (e.kind === 'drop') {
+    if (changed('name') || changed('description') || changed('image')) {
+      out.push({ label: 'name, description and image', action: buildSetDropData(actor, e.id, displayData()) });
+    }
+    if (changed('hidden')) out.push({ label: e.hidden ? 'hide it' : 'reveal it', action: buildSetDropHidden(actor, e.id, e.hidden) });
+    if (changed('startTime') || changed('endTime')) {
+      out.push({ label: 'time window', action: buildSetDropTimes(actor, e.id, toUnix(e.startTime), toUnix(e.endTime)) });
+    }
+    if (changed('maxUses')) out.push({ label: 'total supply', action: buildSetDropMax(actor, e.id, intOr(e.maxUses)) });
+    if (changed('accountLimit') || changed('cooldown')) {
+      out.push({ label: 'per-wallet limit', action: buildSetDropLimit(actor, e.id, intOr(e.accountLimit), intOr(e.cooldown)) });
+    }
+    if (changed('free') || changed('priceAmount') || changed('priceToken')) {
+      const p = e.free
+        ? { listing_price: FREE_LISTING_PRICE, settlement_symbol: FREE_SETTLEMENT_SYMBOL }
+        : formatListing(Number(e.priceAmount) || 0, e.priceToken, editTokenPrecision());
+      out.push({ label: 'price', action: buildSetDropPrice(actor, e.id, p.listing_price, p.settlement_symbol) });
+    }
+  }
+  return out;
+}
+
+/** Precision for the token chosen while editing a drop. */
+function editTokenPrecision(): number {
+  const t = state.tokens.find((x) => x.ticker === (state.editing?.priceToken ?? '').trim().toUpperCase());
+  return t ? t.precision : 8;
+}
+
+/** The one action that is not a field edit, and cannot be undone. */
+function deleteAction() {
+  const e = state.editing;
+  if (!e) return undefined;
+  if (e.kind === 'blend') return buildDelBlend(state.actor, e.id);
+  if (e.kind === 'upgrade') return buildDelUpgrade(state.actor, e.id);
+  return buildEraseDrop(state.actor, e.id);
 }
 
 // ─── the sentence ───────────────────────────────────────────────────────
@@ -681,7 +938,7 @@ function dropArgs(): CreateDropArgs {
   const entries = state.mints.map((m) => ({ template_id: m.template_id, quantity: m.quantity }));
   const pricing = state.free
     ? { listing_price: FREE_LISTING_PRICE, settlement_symbol: FREE_SETTLEMENT_SYMBOL }
-    : formatListing(Number(state.priceAmount) || 0, state.priceToken, intOr(state.priceDecimals, 8));
+    : formatListing(Number(state.priceAmount) || 0, state.priceToken, tokenPrecision());
   return {
     authorized_account: state.actor,
     collection_name: state.collection.trim(),
@@ -728,10 +985,12 @@ function problems(): string[] {
     if (!state.unlimited && intOr(state.maxClaimable) === 0) out.push('Set a max supply, or tick "unlimited".');
     if (!state.free) {
       if (!(Number(state.priceAmount) > 0)) out.push('Set a price above zero, or make the drop free.');
-      if (!/^[A-Z]{1,7}$/.test(state.priceToken.trim().toUpperCase())) out.push('Token symbol must be 1 to 7 letters, e.g. WAX.');
-      const d = Number(state.priceDecimals);
-      if (!Number.isInteger(d) || d < 0 || d > 18) {
-        out.push('Token decimals must be a whole number from 0 to 18. WAX is 8, TLM is 4.');
+      const picked = state.priceToken.trim().toUpperCase();
+      if (!picked) out.push('Pick the token players pay in.');
+      else if (state.tokens.length && !state.tokens.some((t) => t.ticker === picked)) {
+        // The list is the contract's own, so this is not a style rule: a
+        // drop priced in a token neftyblocksd does not know is rejected.
+        out.push(`"${picked}" is not in the ${state.tokens.length} tokens neftyblocksd accepts, so the drop would be rejected.`);
       }
     }
   } else {
@@ -1361,10 +1620,47 @@ function stepMints(): string {
     ${total > 0 ? `<div class="lab-callout ok">Each claim mints <strong>${total} NFT(s)</strong>.</div>` : ''}`;
 }
 
+/**
+ * The token control. 162 entries is well past what a plain dropdown is
+ * good for, so it is a button that opens a filtered list: type two letters
+ * and the list narrows. Closed, it just states the choice.
+ */
+function tokenPickerControl(): string {
+  if (!state.tokenPickerOpen) {
+    return `
+      <button class="lab-token-btn" data-lab="token-open">
+        <strong>${esc(state.priceToken || 'pick a token')}</strong>
+        ${state.tokens.length ? `<span>${tokenPrecision()} decimals</span>` : ''}
+      </button>`;
+  }
+  const q = state.tokenSearch.trim().toLowerCase();
+  const list = state.tokens.filter(
+    (t) => !q || t.ticker.toLowerCase().includes(q) || t.contract.toLowerCase().includes(q),
+  );
+  const shown = list.slice(0, 60);
+  return `
+    <div class="lab-token-picker">
+      <input id="lab-token-search" type="text" placeholder="Type a ticker, e.g. DUST"
+             value="${esc(state.tokenSearch)}" autocomplete="off" />
+      ${shown.length
+        ? `<div class="lab-token-grid">
+             ${shown.map((t) => `
+               <button class="lab-token${t.ticker === state.priceToken ? ' on' : ''}"
+                       data-lab="token-pick" data-ticker="${esc(t.ticker)}">
+                 <strong>${esc(t.ticker)}</strong>
+                 <span>${t.precision} dec &middot; ${esc(t.contract)}</span>
+               </button>`).join('')}
+           </div>
+           ${list.length > shown.length ? `<p class="lab-note">${list.length - shown.length} more. Keep typing to narrow it.</p>` : ''}`
+        : `<p class="lab-note">No accepted token matches "${esc(state.tokenSearch)}". The list comes from the contract, so anything missing is a token drops cannot be priced in.</p>`}
+      <button class="lab-ghost" data-lab="token-close">Cancel</button>
+    </div>`;
+}
+
 function stepPrice(): string {
   return `
     <h3 class="lab-q">What does a claim cost?</h3>
-    <p class="lab-hint">Free drops are the common case. A priced drop needs an exact token symbol and its decimals.</p>
+    <p class="lab-hint">Free drops are the common case. If you charge, pick the token by name: its decimals and its contract come from the chain.</p>
 
     <div class="lab-field">
       <label>Price</label>
@@ -1379,15 +1675,14 @@ function stepPrice(): string {
         <label>Amount and token</label>
         <div class="lab-gate">
           <input id="lab-price-amount" type="text" value="${esc(state.priceAmount)}" placeholder="1" autocomplete="off" />
-          <select id="lab-price-token">
-            ${['WAX', 'TLM', 'USDC'].map((t) => `<option${t === state.priceToken ? ' selected' : ''}>${t}</option>`).join('')}
-            ${['WAX', 'TLM', 'USDC'].includes(state.priceToken) ? '' : `<option selected>${esc(state.priceToken)}</option>`}
-          </select>
-          <span>with</span>
-          <input id="lab-price-decimals" type="number" min="0" max="18" value="${esc(state.priceDecimals)}" />
-          <span>decimals</span>
+          ${tokenPickerControl()}
         </div>
-        <p class="lab-note">WAX has 8 decimals, TLM has 4. Getting this wrong makes the listing unreadable to the marketplace.</p>
+        ${state.tokens.length
+          ? `<p class="lab-note">${state.tokens.length} tokens accepted by <code>neftyblocksd</code>.
+               <strong>${esc(state.priceToken)}</strong> has ${tokenPrecision()} decimals${
+                 tokenContract() ? ` and is issued by <code>${esc(tokenContract())}</code>` : ''
+               }, both read from the contract so you never type them.</p>`
+          : '<p class="lab-note">Loading the list of accepted tokens from the chain.</p>'}
       </div>
 
       <div class="lab-field">
@@ -1549,6 +1844,191 @@ function stepReview(): string {
     ${state.lastTx ? `<p class="lab-ok">Created. Transaction <a target="_blank" rel="noreferrer" href="https://waxblock.io/transaction/${esc(state.lastTx)}">${esc(state.lastTx)}</a></p>` : ''}`;
 }
 
+// ─── edit mode: the screen ──────────────────────────────────────────────
+
+function editPicker(): string {
+  const kinds: { k: LabKind; label: string }[] = [
+    { k: 'blend', label: 'Blends' }, { k: 'upgrade', label: 'Upgrades' }, { k: 'drop', label: 'Drops' },
+  ];
+  return `
+    <h3 class="lab-q">What do you want to change?</h3>
+    <p class="lab-hint">
+      Everything below already exists on chain. Pick one and you can change what its
+      contract allows an author to change after creation.
+    </p>
+
+    <div class="lab-field">
+      <label>Collection</label>
+      ${state.collections.length
+        ? `<select id="lab-collection">
+             <option value=""${state.collection ? '' : ' selected'}>Choose a collection</option>
+             ${state.collections.map((c) => `<option value="${esc(c.collection_name)}"${c.collection_name === state.collection ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}
+           </select>`
+        : `<input id="lab-collection-manual" type="text" value="${esc(state.collection)}"
+                  placeholder="collection name" autocomplete="off" />`}
+    </div>
+
+    <div class="lab-field">
+      <label>Kind</label>
+      <div class="lab-seg">
+        ${kinds.map((k) => `<button class="${state.kind === k.k ? 'on' : ''}" data-lab="edit-kind" data-kind="${k.k}">${k.label}</button>`).join('')}
+      </div>
+    </div>
+
+    ${!state.collection
+      ? '<p class="lab-empty">Pick a collection first.</p>'
+      : state.existingState === 'loading'
+        ? '<p class="lab-hint">Reading what this collection already has.</p>'
+        : state.existingState === 'error'
+          ? `<p class="lab-warn">Could not read them: ${esc(state.dataError)} <button class="lab-link" data-lab="reload-existing">Try again</button></p>`
+          : state.existing.length === 0
+            ? `<p class="lab-empty">No ${state.kind} found on ${esc(state.collection)}, including hidden and ended ones.</p>`
+            : `<div class="lab-rows">
+                 ${state.existing.map((e, i) => `
+                   <div class="lab-row">
+                     <span class="lab-tag">#${esc(e.id)}</span>
+                     <span class="lab-row-main">
+                       <strong>${esc(e.name)}</strong>
+                       <span class="lab-tpl-meta">${esc(e.status)}</span>
+                     </span>
+                     <button class="lab-add" data-lab="edit-pick" data-idx="${i}">Change this one</button>
+                   </div>`).join('')}
+               </div>`}`;
+}
+
+function editForm(): string {
+  const e = state.editing!;
+  const changes = editActions();
+  const isDrop = e.kind === 'drop';
+  return `
+    <h3 class="lab-q">${esc(e.name)} <span class="lab-tag">#${esc(e.id)}</span></h3>
+    <p class="lab-hint">
+      Each change below is a separate action the contract has to accept, so only what you
+      actually touch gets signed. What is missing from this list is missing because no
+      contract action exists for it.
+    </p>
+
+    <div class="lab-field">
+      <label>Name</label>
+      <input id="lab-edit-name" type="text" value="${esc(e.name)}" autocomplete="off" />
+    </div>
+    <div class="lab-field">
+      <label>Description <span class="lab-note">optional</span></label>
+      <input id="lab-edit-description" type="text" value="${esc(e.description)}" autocomplete="off" />
+    </div>
+    <div class="lab-field">
+      <label>Thumbnail <span class="lab-note">an IPFS hash, not a URL</span></label>
+      <input id="lab-edit-image" type="text" value="${esc(e.image)}" placeholder="Qm... or baf..." autocomplete="off" />
+    </div>
+    ${isDrop ? '' : `
+      <div class="lab-field">
+        <label>Category <span class="lab-note">optional, cosmetic</span></label>
+        <input id="lab-edit-category" type="text" value="${esc(e.category)}" autocomplete="off" />
+      </div>`}
+
+    ${isDrop ? `
+      <div class="lab-field">
+        <label>Price</label>
+        <div class="lab-seg">
+          <button class="${e.free ? 'on' : ''}" data-lab="edit-free">Free</button>
+          <button class="${e.free ? '' : 'on'}" data-lab="edit-paid">Paid</button>
+        </div>
+        ${e.free ? '' : `
+          <div class="lab-gate" style="margin-top:8px">
+            <input id="lab-edit-price" type="text" value="${esc(e.priceAmount)}" placeholder="1" autocomplete="off" />
+            ${editTokenControl()}
+          </div>`}
+      </div>` : ''}
+
+    <div class="lab-field">
+      <label>Runs from</label>
+      <div class="lab-pair">
+        <label class="lab-mini">Starts<input id="lab-edit-start" type="datetime-local" value="${esc(e.startTime)}" /></label>
+        <label class="lab-mini">Ends<input id="lab-edit-end" type="datetime-local" value="${esc(e.endTime)}" /></label>
+      </div>
+    </div>
+
+    <div class="lab-field">
+      <label>${isDrop ? 'Total supply' : 'Total uses'} <span class="lab-note">empty means unlimited</span></label>
+      <input id="lab-edit-max" type="number" min="0" value="${esc(e.maxUses)}" placeholder="unlimited" />
+    </div>
+
+    ${e.kind === 'upgrade' ? '' : `
+      <div class="lab-field">
+        <label>Per wallet</label>
+        <div class="lab-pair">
+          <label class="lab-mini">Max per wallet<input id="lab-edit-limit" type="number" min="0" value="${esc(e.accountLimit)}" placeholder="0" /></label>
+          <label class="lab-mini">Cooldown in seconds<input id="lab-edit-cooldown" type="number" min="0" value="${esc(e.cooldown)}" placeholder="0" /></label>
+        </div>
+      </div>`}
+
+    ${isDrop ? '' : `
+      <div class="lab-field">
+        <label>Who can use it</label>
+        ${state.securities.length
+          ? `<select id="lab-edit-security">
+               <option value=""${e.securityId ? '' : ' selected'}>Everyone, no whitelist</option>
+               ${state.securities.map((x) => `<option value="${esc(x.id)}"${x.id === e.securityId ? ' selected' : ''}>Only "${esc(x.name)}" (#${esc(x.id)})</option>`).join('')}
+             </select>`
+          : '<p class="lab-note">This collection has no whitelist.</p>'}
+      </div>`}
+
+    <label class="lab-check">
+      <input type="checkbox" ${e.hidden ? 'checked' : ''} data-lab="edit-hidden" />
+      <span><strong>Hidden</strong>. It exists on chain but appears in no list.</span>
+    </label>
+
+    <div class="lab-callout">
+      <strong>What cannot be changed here.</strong>
+      ${e.kind === 'blend'
+        ? 'A blend\'s outcomes: <code>setrolls</code> takes no authorized_account, so no author can sign it. Its ingredients are editable, from the Manage panel on the main page.'
+        : e.kind === 'upgrade'
+          ? 'An upgrade\'s attribute rewrites: the ABI has no action for them. Its ingredients are editable through <code>setupgrdmix</code>, not yet wired here.'
+          : 'Which templates a drop mints: <code>createdrop</code> fixes them and no action changes them afterwards.'}
+      Changing those means deleting this one and creating a new one.
+    </div>
+
+    ${changes.length
+      ? `<div class="lab-callout ok"><strong>${changes.length} change(s) to sign:</strong>
+           <ul class="lab-list">${changes.map((c) => `<li>${esc(c.label)} <code>${esc(c.action.account)}::${esc(c.action.name)}</code></li>`).join('')}</ul></div>`
+      : '<div class="lab-callout">Nothing changed yet.</div>'}
+
+    ${state.lastError ? `<p class="lab-warn">${esc(state.lastError)}</p>` : ''}
+    ${state.lastTx ? `<p class="lab-ok">Signed. Transaction <a target="_blank" rel="noreferrer" href="https://waxblock.io/transaction/${esc(state.lastTx)}">${esc(state.lastTx)}</a></p>` : ''}
+
+    <div class="lab-nav-actions">
+      <button class="lab-ghost" data-lab="edit-back">Back to the list</button>
+      <button class="lab-primary" data-lab="edit-save" ${changes.length === 0 || state.busy ? 'disabled' : ''}>
+        ${state.busy ? 'Waiting for your wallet' : `Sign ${changes.length || ''} change(s)`}
+      </button>
+      <button class="lab-ghost lab-danger" data-lab="edit-delete" ${state.busy ? 'disabled' : ''}>Delete it</button>
+    </div>`;
+}
+
+/** Same token picker as creation, pointed at the edited drop. */
+function editTokenControl(): string {
+  const e = state.editing!;
+  if (!state.tokenPickerOpen) {
+    return `<button class="lab-token-btn" data-lab="token-open">
+              <strong>${esc(e.priceToken || 'pick a token')}</strong>
+              ${state.tokens.length ? `<span>${editTokenPrecision()} decimals</span>` : ''}
+            </button>`;
+  }
+  const q = state.tokenSearch.trim().toLowerCase();
+  const list = state.tokens.filter((t) => !q || t.ticker.toLowerCase().includes(q) || t.contract.toLowerCase().includes(q));
+  return `
+    <div class="lab-token-picker">
+      <input id="lab-token-search" type="text" placeholder="Type a ticker" value="${esc(state.tokenSearch)}" autocomplete="off" />
+      <div class="lab-token-grid">
+        ${list.slice(0, 60).map((t) => `
+          <button class="lab-token${t.ticker === e.priceToken ? ' on' : ''}" data-lab="edit-token-pick" data-ticker="${esc(t.ticker)}">
+            <strong>${esc(t.ticker)}</strong><span>${t.precision} dec &middot; ${esc(t.contract)}</span>
+          </button>`).join('')}
+      </div>
+      <button class="lab-ghost" data-lab="token-close">Cancel</button>
+    </div>`;
+}
+
 // ─── page ───────────────────────────────────────────────────────────────
 
 export function renderLabPage(): string {
@@ -1563,6 +2043,25 @@ export function renderLabPage(): string {
           : stepReview();
 
   const title = state.kind === 'blend' ? 'a blend' : state.kind === 'upgrade' ? 'an upgrade' : 'a drop';
+  const modeSwitch = `
+    <div class="lab-seg lab-mode">
+      <button class="${state.mode === 'create' ? 'on' : ''}" data-lab="mode-create">Create<small>something new</small></button>
+      <button class="${state.mode === 'edit' ? 'on' : ''}" data-lab="mode-edit">Change<small>something that exists</small></button>
+    </div>`;
+
+  if (state.mode === 'edit') {
+    return `
+      <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
+      <section class="lab">
+        <div class="lab-head">
+          <span class="lab-badge">GUIDED</span>
+          <h2>Change something you already made</h2>
+        </div>
+        ${modeSwitch}
+        <div class="lab-panel">${state.editing ? editForm() : editPicker()}</div>
+      </section>`;
+  }
+
 
   return `
     <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
@@ -1578,6 +2077,7 @@ export function renderLabPage(): string {
         <strong>This signs real transactions.</strong>
       </p>
 
+      ${modeSwitch}
       ${stepRail()}
       ${state.step === STEP_COUNT - 1 ? '' : `<div class="lab-sentence">${esc(plainSentence())}</div>`}
       <div class="lab-panel">${body}</div>
@@ -1693,6 +2193,80 @@ async function onSubmit() {
   rerender();
 }
 
+/**
+ * Signs only what changed, one action per contract call, in one
+ * transaction. The contracts have no bulk update, so a save is genuinely
+ * several actions; grouping them means the author approves once and either
+ * all of it lands or none of it does.
+ */
+async function onSaveEdits() {
+  const session = getCurrentSession();
+  const changes = editActions();
+  if (!session || changes.length === 0) return;
+
+  const summary = [
+    `${state.editing!.kind.toUpperCase()} #${state.editing!.id} on ${state.collection}`,
+    '',
+    ...changes.map((c) => `${c.label}  (${c.action.account}::${c.action.name})`),
+    '',
+    'Each line is a separate contract action, signed together.',
+  ].join('\n');
+  if (!(await confirmCreate(summary))) return;
+
+  state.busy = true; state.lastError = ''; state.lastTx = '';
+  rerender();
+  try {
+    const result = await session.transact({ actions: changes.map((c) => c.action) });
+    state.lastTx =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    // What was just signed is now the baseline, so the diff empties out.
+    state.editingOriginal = { ...state.editing! };
+    if (state.kind === 'blend') clearDiscoverCache();
+    else if (state.kind === 'upgrade') clearUpgradesCache();
+    else clearDropsCache();
+  } catch (err) {
+    state.lastError = err instanceof Error ? err.message : String(err);
+  }
+  state.busy = false;
+  rerender();
+}
+
+/** Deleting is the one action with no undo, so it asks on its own. */
+async function onDeleteEntity() {
+  const session = getCurrentSession();
+  const action = deleteAction();
+  const e = state.editing;
+  if (!session || !action || !e) return;
+  const summary = [
+    `DELETE ${e.kind} #${e.id} (${e.name}) on ${state.collection}`,
+    '',
+    'This is permanent. The recipe stops existing and players can no longer run it.',
+    'Anything it already consumed stays consumed.',
+    '',
+    `Action: ${action.account}::${action.name}`,
+  ].join('\n');
+  if (!(await confirmCreate(summary))) return;
+
+  state.busy = true; state.lastError = ''; state.lastTx = '';
+  rerender();
+  try {
+    const result = await executeAdminAction(session, action);
+    state.lastTx =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    state.editing = undefined; state.editingOriginal = undefined;
+    if (state.kind === 'blend') clearDiscoverCache();
+    else if (state.kind === 'upgrade') clearUpgradesCache();
+    else clearDropsCache();
+    void loadExisting();
+  } catch (err) {
+    state.lastError = err instanceof Error ? err.message : String(err);
+  }
+  state.busy = false;
+  rerender();
+}
+
 // ─── handlers ───────────────────────────────────────────────────────────
 
 /** The first attribute of the active schema that can actually be used. */
@@ -1800,6 +2374,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     // Checkboxes.
     const checkbox: Record<string, (v: boolean) => void> = {
       hidden:            (v) => { state.hidden = v; },
+      'edit-hidden':     (v) => { if (state.editing) state.editing.hidden = v; },
       'drop-auth':       (v) => { state.authRequired = v; },
       'drop-cc':         (v) => { state.allowCreditCard = v; },
       'drop-unlimited':  (v) => { state.unlimited = v; },
@@ -1869,7 +2444,47 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'mint-del':   state.mints.splice(i, 1); break;
 
         case 'drop-free': state.free = true; break;
-        case 'drop-paid': state.free = false; break;
+        case 'drop-paid': state.free = false; void loadDropTokens(); break;
+        case 'token-open':  state.tokenPickerOpen = true; state.tokenSearch = ''; void loadDropTokens(); break;
+        case 'token-close': state.tokenPickerOpen = false; break;
+        case 'token-pick':
+          state.priceToken = el.dataset.ticker ?? state.priceToken;
+          state.tokenPickerOpen = false;
+          break;
+
+        case 'mode-create': state.mode = 'create'; state.editing = undefined; break;
+        case 'mode-edit':
+          state.mode = 'edit'; state.editing = undefined;
+          state.lastTx = ''; state.lastError = '';
+          if (state.collection) void loadExisting();
+          break;
+        case 'edit-kind':
+          state.kind = el.dataset.kind as LabKind;
+          state.editing = undefined;
+          if (state.kind === 'drop') void loadDropTokens();
+          void loadExisting();
+          break;
+        case 'reload-existing': void loadExisting(); return;
+        case 'edit-pick': {
+          const picked = state.existing[i];
+          if (picked) {
+            state.editing = { ...picked };
+            state.editingOriginal = { ...picked };
+            state.lastTx = ''; state.lastError = '';
+            if (picked.kind === 'drop') void loadDropTokens();
+          }
+          break;
+        }
+        case 'edit-back': state.editing = undefined; state.lastTx = ''; state.lastError = ''; break;
+        case 'edit-hidden': break; // handled as a checkbox below
+        case 'edit-free': if (state.editing) state.editing.free = true; break;
+        case 'edit-paid': if (state.editing) { state.editing.free = false; void loadDropTokens(); } break;
+        case 'edit-token-pick':
+          if (state.editing) state.editing.priceToken = el.dataset.ticker ?? state.editing.priceToken;
+          state.tokenPickerOpen = false;
+          break;
+        case 'edit-save':   void onSaveEdits(); return;
+        case 'edit-delete': void onDeleteEntity(); return;
 
         case 'simulate': void onSimulate(); return;
         case 'submit':   void onSubmit(); return;
@@ -1891,6 +2506,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   };
 
   bind('lab-search', (v) => { state.search = v; }, 'live');
+  bind('lab-token-search', (v) => { state.tokenSearch = v; }, 'live');
   bind('lab-name', (v) => { state.name = v; });
   bind('lab-description', (v) => { state.description = v; });
   bind('lab-image', (v) => { state.image = v; });
@@ -1900,6 +2516,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     state.schemas = []; state.templates = []; state.securities = [];
     state.schemaName = ''; state.dataState = 'idle';
     if (state.collection) void loadCollectionData();
+    if (state.mode === 'edit' && state.collection) void loadExisting();
   };
   bind('lab-collection', pickCollection);
   // The manual box loads on blur or Enter, never per keystroke: every
@@ -1926,7 +2543,22 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   bind('lab-security', (v) => { state.securityId = v; });
   bind('lab-price-amount', (v) => { state.priceAmount = v; });
   bind('lab-price-token', (v) => { state.priceToken = v; });
-  bind('lab-price-decimals', (v) => { state.priceDecimals = v; });
   bind('lab-price-recipient', (v) => { state.priceRecipient = v; });
+
+  // Edit mode. Every field writes into the working copy; the diff against
+  // `editingOriginal` is what decides which actions get built.
+  const ed = (id: string, apply: (e: LabExisting, v: string) => void) =>
+    bind(id, (v) => { if (state.editing) apply(state.editing, v); });
+  ed('lab-edit-name',        (e, v) => { e.name = v; });
+  ed('lab-edit-description', (e, v) => { e.description = v; });
+  ed('lab-edit-image',       (e, v) => { e.image = v; });
+  ed('lab-edit-category',    (e, v) => { e.category = v; });
+  ed('lab-edit-price',       (e, v) => { e.priceAmount = v; });
+  ed('lab-edit-start',       (e, v) => { e.startTime = v; });
+  ed('lab-edit-end',         (e, v) => { e.endTime = v; });
+  ed('lab-edit-max',         (e, v) => { e.maxUses = v; });
+  ed('lab-edit-limit',       (e, v) => { e.accountLimit = v; });
+  ed('lab-edit-cooldown',    (e, v) => { e.cooldown = v; });
+  ed('lab-edit-security',    (e, v) => { e.securityId = v; });
   bind('lab-max-claimable', (v) => { state.maxClaimable = v; });
 }
