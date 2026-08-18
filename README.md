@@ -1157,6 +1157,15 @@ Both items from tester feedback on the guided creator are done: the token
 list is read from the contract with type-ahead, and `#/lab` now edits as
 well as creates. What is left:
 
+- **Editing ingredients in the guided editor.** `setblendmix` and
+  `setupgrdmix` both exist and both have builders, but neither is in the
+  `#/lab` editor. Ingredient editing still lives in the text box on the
+  main page, and only for blends. Both actions REPLACE the whole list
+  rather than adding or removing, so the editor has to load the current
+  recipe first and show plainly that anything removed from the list stops
+  being required. That is the reason it was not done in the same pass as
+  the other fields: those are single values, this one is a list whose
+  every omission is a change.
 
 - **WaxDAO drops / packs / farms.** Only WaxDAO *blends* are wired today.
   The rest of the `waxdao*` family (drops, farms, pack openings on
