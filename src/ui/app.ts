@@ -4812,7 +4812,7 @@ function renderTabs(): string {
   const tabs = state.platform === 'nefty'
     ? `
         ${tab('blends',   'Blend',   'burn NFTs → mint result')}
-        ${tab('drops',    'Claim',   'pay (or not) → mint a drop')}
+        ${tab('drops',    'Claim',   'claim a drop: pay (or not) → mint')}
         ${tab('packs',    'Unpack',  'open packs you own')}
         ${tab('upgrades', 'Upgrade', 'mutate NFTs you own')}`
     : state.platform === 'waxdao'

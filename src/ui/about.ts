@@ -260,7 +260,7 @@ const PANELS: Panel[] = [
   },
   {
     id: 'claims',
-    summary: 'CLAIMS · A SECOND SMART CONTRACT, SAME IDEA',
+    summary: 'CLAIM · DROPS, A SECOND SMART CONTRACT',
     body: `
       <p>
         Blends aren't the only thing Nefty's UI was wrapping.
@@ -268,6 +268,14 @@ const PANELS: Panel[] = [
         delivered to your wallet" feature. They live in a separate
         contract called <code>neftyblocksd</code>. Same story: the
         contract is still alive on-chain, only the website is gone.
+      </p>
+      <p>
+        One word for the object, one for the action: a <strong>drop</strong>
+        is the thing an author publishes, and <strong>claiming</strong> is
+        what a player does to it. The contract spells it exactly that way,
+        with a <code>drops</code> table and a <code>claimdrop</code> action.
+        That is why the tab is called CLAIM while everything inside it
+        talks about drops.
       </p>
       <p>
         Switch to the <strong>CLAIM</strong> tab to browse drops for

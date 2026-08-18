@@ -383,7 +383,14 @@ what gates *this* blend behind the selected list. Naming a list and
 filling it with wallets are two separate steps: the name is a label
 (e.g. "OG holders"), never a wallet.
 
-### CLAIM tab · `neftyblocksd`
+### CLAIM tab · drops · `neftyblocksd`
+
+A **drop** is the object an author publishes; **claiming** is what a
+player does to it. There is no second concept: the contract has a
+`drops` table and a `claimdrop` action. The tab is named after the
+action, like Blend, Unpack and Upgrade, and everything inside it is
+named after the object.
+
 
 Drop claims. Same idea, different contract:
 
@@ -1145,6 +1152,27 @@ the front-end wiring, so they're the highest-value things to add next.
   this.
 
 ### On the roadmap
+
+**Next, in order.** Both came out of tester feedback on the guided
+creator.
+
+1. **Pick the token from the chain's own list.** A priced drop currently
+   offers three hardcoded tokens and asks the author to type the number
+   of decimals. `neftyblocksd/config.supported_tokens` already carries
+   162 entries as `{token_contract, token_symbol}`, and the symbol holds
+   the precision (`4,DUST`). Read that list, drop the decimals field.
+   Typing 8 decimals for a 4-decimal token is a silent factor of 10,000
+   that the contract accepts without complaint.
+2. **Editing, at `#/lab`.** The guided creator can create a blend, an
+   upgrade and a drop, but not change one afterwards. Editing lives on
+   the main page, in a text box, for blends only. Everything the three
+   contracts allow an author to change (`setblend*`, `setupgrd*`,
+   `setdrop*`) should be reachable from the same guided screen that
+   created it. Note the asymmetry to resolve on the way: `up.nefty` has
+   a full `setupgrd*` family that Crucible wires nowhere, so an upgrade
+   can be created and then never touched again.
+
+Then:
 
 - **WaxDAO drops / packs / farms.** Only WaxDAO *blends* are wired today.
   The rest of the `waxdao*` family (drops, farms, pack openings on
