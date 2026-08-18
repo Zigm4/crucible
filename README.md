@@ -509,9 +509,10 @@ Deterministic upgrades with **FT and/or NFT costs** are fully signable
 (the NFT cost picker burns `TEMPLATE` / `SCHEMA` / `COLLECTION`
 ingredients, verified against trx `64054c0b…`). Whitelist / ownership
 -gated upgrades use `upgradesec` (same shape + a `security_check`
-variant); RNG upgrades resolve through `up.nefty/orngjobs`. Both are
-decoded and tagged in the picker but not yet executable from the UI -
-see [Limitations](#limitations).
+variant). Those are decoded and tagged in the picker but not yet
+executable from the UI, see [Limitations](#limitations). The `RNG` tag
+you may see on an upgrade is a false positive: the contract has no
+oracle callback at all (same section).
 
 - per-collection discovery from up.nefty/upgrades
 - active ones first, alphabetical by name inside each status, with status badges (active / sold-out / ended / upcoming / hidden)
@@ -1115,14 +1116,19 @@ the front-end wiring, so they're the highest-value things to add next.
   Whitelist is the easy half (reuse the blend whitelist check); ownership
   reuses the same proof-NFT picker as above. Traces: `64054c0b…`
   (whitelist, upgrade 37), `b5aa7b89…` (ownership, upgrade 994).
-- **RNG upgrades.** Upgrades whose result the oracle decides. Important
-  correction: `up.nefty` has **no `claim` action**. Unlike RNG *blends*,
-  there is no second signature. You sign the same `upgrade` /
-  `upgradesec` action and the ORNG callback rewrites the NFT's
-  `mutable_data` a few seconds later (a row in `up.nefty/orngjobs`
-  tracks the pending job). The UI only needs to stop blocking
-  `is_random` and show a short "applying…" wait. Tagged `RNG` in the
-  picker today.
+- ~~**RNG upgrades.**~~ **Withdrawn: this path does not exist.** It was
+  listed here as a few hours of UI work. It is not work at all, because
+  there is nothing to wire up to. `up.nefty` declares an `orngjobs`
+  table, and that table is the only trace of the idea: the contract has
+  **no `receiverand` action** and no `retryrand`, so nothing can ever
+  write a row into it, and it is empty. Check it yourself with
+  `get_abi up.nefty`. The picker's `RNG` tag comes from our own reader
+  flagging any result value whose wrapper is not `IMMEDIATE_VALUE`, and
+  since `RESULT_VALUE` is a variant with exactly one member, that branch
+  cannot fire either. Random upgrades are a NeftyBlocks extension point
+  that was named and never built, like the value variant itself. Making
+  them work needs a contract change by NeftyBlocks, or a different
+  contract.
 
 ### Partial coverage (common cases work, exotic variants don't)
 

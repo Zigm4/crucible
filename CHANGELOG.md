@@ -15,6 +15,23 @@ organised around. There are twelve verify scripts in `scripts/` today.
 
 ---
 
+## 2026-08-18 - Withdraw a feature that never existed
+
+### Fixed
+- **"RNG upgrades" were listed as a few hours of UI work. There is
+  nothing to wire up to.** `up.nefty` declares an `orngjobs` table, and
+  that table is the whole trace of the idea: the contract has no
+  `receiverand` action and no `retryrand`, so nothing can ever write a
+  row into it, and it is empty. Our own `RNG` tag on an upgrade was a
+  false positive: it flags any result value whose wrapper is not
+  `IMMEDIATE_VALUE`, and `RESULT_VALUE` is a variant with exactly one
+  member, so that branch cannot fire. Corrected in the README twice and
+  in the `upgrades.ts` header. The flag itself is kept deliberately, so
+  that if NeftyBlocks ever adds a second member the reader notices
+  instead of silently mis-decoding it.
+
+---
+
 ## 2026-08-11 - The guided creator picks tokens and edits what exists
 
 ### Added

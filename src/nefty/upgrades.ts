@@ -26,12 +26,17 @@
  *   `up.nefty::upgradesec` with an extra `security_check` field. Same
  *   variant shape used by `blend.nefty::fuse` and `secure.nefty`.
  *
- * Random upgrades
- *   When upgrade_results contain non-IMMEDIATE values, the contract
- *   queues an ORNG job (visible in the `up.nefty/orngjobs` table). For
- *   the first cut this module flags them via `is_random` but the UI
- *   only executes deterministic ones (mirrors how RNG was added to
- *   blends later).
+ * Random upgrades do not exist
+ *   `is_random` below flags any result whose value wrapper is not
+ *   `IMMEDIATE_VALUE`. That branch can never fire: `RESULT_VALUE` is a
+ *   variant with exactly ONE member. The `up.nefty/orngjobs` table is
+ *   declared and empty, and the contract has no `receiverand` and no
+ *   `retryrand`, so nothing can write to it. NeftyBlocks named the
+ *   extension point and never built it.
+ *
+ *   The flag is kept anyway: it costs nothing, and if they ever do add
+ *   a second member to that variant, this reader notices instead of
+ *   silently mis-decoding it as a fixed value.
  */
 
 import { getTableRows } from '../chain/rpc';
