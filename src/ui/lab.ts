@@ -31,7 +31,7 @@
 
 import { getCurrentSession } from '../chain/session';
 import { atomicFetch } from '../chain/rpc';
-import { listAuthorizedCollections } from '../atomic/collections';
+import { listAuthorizedCollections, isContractAuthorized } from '../atomic/collections';
 import { readCollectionSecurities, executeAdminAction } from '../nefty/admin';
 import { clearDiscoverCache } from '../nefty/discover';
 import { clearUpgradesCache } from '../nefty/upgrades';
@@ -264,6 +264,12 @@ interface LabState extends LabForm {
   dataError: string;
   truncated: boolean;
   securities: { id: string; name: string }[];
+  /**
+   * Can the contract we are about to create on actually mint into this
+   * collection? undefined = unknown. false = whatever gets created here
+   * will be unrunnable by anyone.
+   */
+  contractAuthorized?: boolean;
   picking?: { target: 'ingredient' | 'outcome' | 'mint' | 'requirement' };
   search: string;
   busy: boolean;
@@ -577,6 +583,9 @@ async function loadCollectionData() {
     });
 
     state.securities = (securities ?? []).map((r) => ({ id: String(r.id), name: r.name }));
+    // Checked here rather than at review time: an author who learns this
+    // on the last screen has already done all the work.
+    void refreshCreateAuth(collection);
     if (!state.schemaName && state.schemas.length) state.schemaName = state.schemas[0].schema_name;
     state.loadedFor = collection;
     state.dataState = 'done';
@@ -753,6 +762,26 @@ function deleteAction() {
   if (e.kind === 'blend') return buildDelBlend(state.actor, e.id);
   if (e.kind === 'upgrade') return buildDelUpgrade(state.actor, e.id);
   return buildEraseDrop(state.actor, e.id);
+}
+
+/**
+ * Is the contract this page is about to create on allowed to mint into
+ * the chosen collection? Re-read whenever the kind changes, because the
+ * three kinds ask about three different contracts.
+ */
+const CONTRACT_FOR: Record<LabKind, string> = {
+  blend: 'blend.nefty',
+  upgrade: 'up.nefty',
+  drop: 'neftyblocksd',
+};
+
+async function refreshCreateAuth(collection: string) {
+  state.contractAuthorized = undefined;
+  const ok = await isContractAuthorized(collection, CONTRACT_FOR[state.kind]);
+  if (ok !== undefined) {
+    state.contractAuthorized = ok;
+    rerender();
+  }
 }
 
 // ─── the sentence ───────────────────────────────────────────────────────
@@ -979,6 +1008,12 @@ function problems(): string[] {
   const out: string[] = [];
   if (!state.actor) out.push('Connect a wallet to sign.');
   if (!state.collection.trim()) out.push('Pick the collection this belongs to.');
+  if (state.contractAuthorized === false) {
+    out.push(
+      `${state.collection} has not authorized ${CONTRACT_FOR[state.kind]}, so the contract could not ` +
+      'mint and nobody could ever run this. Add it to the collection on AtomicHub first.',
+    );
+  }
 
   if (state.kind === 'drop') {
     if (state.mints.length === 0) out.push('Add at least one template for the drop to mint.');
@@ -1250,6 +1285,15 @@ function stepCollection(): string {
       <label>Collection</label>
       ${collectionField}
       ${loadLine}
+      ${state.contractAuthorized === false ? `
+        <div class="lab-callout danger">
+          <strong>${esc(state.collection)} has not authorized <code>${esc(CONTRACT_FOR[state.kind])}</code>.</strong>
+          AtomicAssets only lets accounts on a collection's authorized list mint its NFTs, so
+          anything created here would exist on chain and be unrunnable by everyone. Add
+          <code>${esc(CONTRACT_FOR[state.kind])}</code> to the collection on AtomicHub, then come back.
+          This is not a warning you can sign past: 45 live recipes on one collection are in exactly
+          this state today because nobody checked.
+        </div>` : ''}
     </div>
 
     <div class="lab-field">
@@ -2400,7 +2444,12 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'step': state.step = Number(el.dataset.step); break;
         case 'next': state.step = Math.min(STEP_COUNT - 1, state.step + 1); break;
         case 'prev': state.step = Math.max(0, state.step - 1); break;
-        case 'kind': state.kind = el.dataset.kind as LabKind; state.step = 0; break;
+        case 'kind':
+          state.kind = el.dataset.kind as LabKind;
+          state.step = 0;
+          // Three kinds, three contracts: the answer does not carry over.
+          if (state.collection) void refreshCreateAuth(state.collection);
+          break;
 
         case 'reload-collections': void loadCollections(); return;
         case 'reload-data':        void loadCollectionData(); return;

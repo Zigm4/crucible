@@ -15,6 +15,47 @@ organised around. There are twelve verify scripts in `scripts/` today.
 
 ---
 
+## 2026-08-18 - Check that the contract may actually mint
+
+### Fixed
+- **Crucible never checked whether a contract was authorized on the
+  collection it was about to mint into.** AtomicAssets only lets accounts
+  on a collection's `authorized_accounts` mint or edit its assets, so a
+  blend whose collection never added `blend.nefty` is a recipe nobody can
+  run. It still reads as active, with a start date and a supply, and
+  Crucible showed it green and executable. The Simulate button did not
+  catch it either: it serialises against the ABI, which validates the
+  shape of a payload and never the state of the chain.
+- Measured over the 1000 most recent recipes of each kind: 2 of 52 blend
+  collections and 2 of 135 drop collections do not authorize the contract
+  their own recipes depend on. `timberlegend` alone has 13 blends and 32
+  drops in that state, none ever used. Upgrades were clean, 0 of 25.
+- The damage depends on the transaction count. One transaction is atomic,
+  so the mint failing reverts everything and the player keeps their NFTs.
+  Two transactions are not: the ingredients leave in the first and the
+  reward arrives in the second. `outlawtroops` removed `blend.nefty` from
+  its authorized accounts and has 2 players sitting in `orngjobs2` with
+  their ingredients gone, which is the first verified mechanism behind
+  any of those stranded rows.
+
+### Added
+- `isContractAuthorized(collection, contract)` in `atomic/collections.ts`,
+  reusing the existing five minute cache. It returns `undefined` when the
+  collection cannot be read, and every caller treats that as unknown
+  rather than as a refusal: a dead indexer must not condemn a working
+  recipe.
+- Player side: the three ready-to-sign gates refuse, and a red card says
+  what is wrong, that it affects everyone rather than just this wallet,
+  and that only the collection author can fix it.
+- Author side: `#/lab` checks the same thing when a collection is picked
+  and refuses to create, because that is where the mistake is actually
+  made.
+- `verify-contract-auth.mjs`, a thirteenth suite: six fixed cases
+  including that an unreadable collection answers `undefined`, plus a
+  live census of how many recent recipes cannot run.
+
+---
+
 ## 2026-08-18 - Withdraw a feature that never existed
 
 ### Fixed

@@ -96,6 +96,44 @@ export async function canManageCollection(actor: string, collection_name: string
   return a.author === actor || a.authorized_accounts.includes(actor);
 }
 
+/**
+ * Can `contract` mint into (or rewrite assets of) this collection?
+ *
+ * AtomicAssets only lets an account in a collection's `authorized_accounts`
+ * mint or edit its assets. So a blend whose collection never added
+ * `blend.nefty` is a recipe nobody can ever run: the contract cannot mint
+ * the reward. The recipe still exists, still reads as active, and still
+ * shows a start date and a supply.
+ *
+ * This is not hypothetical. Measured over the 1000 most recent recipes of
+ * each kind: 2 of 52 blend collections and 2 of 135 drop collections do not
+ * authorize the contract their own recipes depend on. One of them,
+ * `timberlegend`, has 13 blends and 32 drops in that state.
+ *
+ * How badly it hurts depends on the transaction count. A deterministic
+ * blend or a drop claim is one atomic transaction, so the mint failing
+ * reverts everything and the player keeps their NFTs, losing only CPU and
+ * getting a cryptic error. A random blend or a pack unbox is TWO: the
+ * ingredients leave in the first and the reward arrives in the second, so
+ * a permanent failure in the second leaves the player with neither.
+ *
+ * Returns `undefined` when the collection cannot be read, which callers
+ * must treat as "unknown", never as "not authorized": a dead indexer
+ * should not block a recipe that is actually fine.
+ */
+export async function isContractAuthorized(
+  collection_name: string,
+  contract: string,
+): Promise<boolean | undefined> {
+  try {
+    const auth = await getCollectionAuth(collection_name);
+    if (!auth) return undefined;
+    return auth.author === contract || auth.authorized_accounts.includes(contract);
+  } catch {
+    return undefined;
+  }
+}
+
 export function clearCollectionAuthCache() {
   cache.clear();
 }

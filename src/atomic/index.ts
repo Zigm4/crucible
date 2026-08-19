@@ -13,6 +13,7 @@ export {
   listAuthorizedCollections,
   getCollectionAuth,
   canManageCollection,
+  isContractAuthorized,
   clearCollectionAuthCache,
   type AuthorizedCollection,
   type CollectionAuth,

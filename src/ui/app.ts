@@ -101,7 +101,7 @@ import {
   buildBlenderizerBlendActions,
   executeBlenderizerBlend,
 } from '../blenderizer/blendExecute';
-import { canManageCollection, listAuthorizedCollections } from '../atomic/collections';
+import { canManageCollection, isContractAuthorized, listAuthorizedCollections } from '../atomic/collections';
 import {
   buildSetBlendHide,
   buildSetBlendTime,
@@ -320,6 +320,14 @@ interface AppState {
   /** When true, the picker hides blends the wallet cannot satisfy. */
   onlyExecutable: boolean;
   pickerOpen: boolean;
+  /**
+   * Can the contract behind the loaded entity actually mint into its
+   * collection? undefined while unknown or unchecked. false means the
+   * recipe cannot work for anybody, whatever its status says.
+   */
+  contractAuthorized?: boolean;
+  /** Which contract the flag above is about, for the message. */
+  contractAuthorizedFor?: string;
   /** Top-level page: the normal app, or the standalone contract-status page. */
   page: 'app' | 'status' | 'catalog' | 'lab';
   // ── drops view ──
@@ -1913,6 +1921,7 @@ async function onPickDrop(dropId: string) {
   if (drop.auth.kind === 'whitelist' && drop.auth.allowed === false) return;
   if (drop.auth.kind === 'authkey') return;
   state.drop = drop;
+  void refreshContractAuth(drop.collection_name, 'neftyblocksd');
   state.dropLoading = true;
   state.dropTemplate = undefined;
   state.dropTemplateLoading = !!drop.primary_template_id;
@@ -1993,6 +2002,11 @@ async function onLoadDropManual() {
 }
 
 function readyToClaim(): boolean {
+  // The contract cannot mint into a collection that never authorized it,
+  // so the recipe is unrunnable by anyone no matter what its status says.
+  // Only a definite false blocks: undefined means we could not read the
+  // collection, and that must not condemn a working recipe.
+  if (state.contractAuthorized === false) return false;
   const d = state.drop;
   if (!d) return false;
   if (d.status !== 'active') return false;
@@ -2084,6 +2098,24 @@ async function onDropExecute() {
   render();
 }
 
+/**
+ * Checks that the contract can mint into this collection, in the
+ * background. A recipe whose collection never authorized the contract
+ * reads as perfectly active and cannot be run by anyone, so the answer is
+ * a blocker rather than a detail.
+ */
+async function refreshContractAuth(collection: string, contract: string) {
+  state.contractAuthorized = undefined;
+  state.contractAuthorizedFor = contract;
+  const ok = await isContractAuthorized(collection, contract);
+  // Only accept a definite answer. undefined means the collection could
+  // not be read, and an unreadable indexer must not condemn a good recipe.
+  if (ok !== undefined) {
+    state.contractAuthorized = ok;
+    render();
+  }
+}
+
 async function onLoadBlend() {
   if (!state.blendId) {
     setStatus('Enter a blend_id first.', 'err');
@@ -2109,6 +2141,7 @@ async function onLoadBlend() {
     setStatus(`Reading blend ${state.blendId}…`, 'info');
     state.blend = await loadBlend({ blend_id: state.blendId });
     state.collection = state.blend.collection_name;
+    void refreshContractAuth(state.blend.collection_name, 'blend.nefty');
     // Reflect the picked blend in the URL so the user can share it.
     writeHashRoute('nefty', 'blends', String(state.blend.blend_id));
     // Fire off the admin-detection + whitelist/security reads in the
@@ -2254,6 +2287,11 @@ function toggleSelect(slotIndex: number, assetId: string) {
 }
 
 function readyToSubmit(): boolean {
+  // The contract cannot mint into a collection that never authorized it,
+  // so the recipe is unrunnable by anyone no matter what its status says.
+  // Only a definite false blocks: undefined means we could not read the
+  // collection, and that must not condemn a working recipe.
+  if (state.contractAuthorized === false) return false;
   if (!state.blend) return false;
   if (state.whitelist?.required && !state.whitelist.allowed) return false;
   // NFT slots must be filled
@@ -3330,6 +3368,7 @@ async function onPickUpgrade(upgrade_id: string) {
   const found = u.list.find((up) => up.upgrade_id === upgrade_id);
   if (!found) return;
   u.picked = found;
+  void refreshContractAuth(found.collection_name, 'up.nefty');
   u.upgradeIdInput = upgrade_id;
   u.selection.clear();
   u.costSelection.clear();
@@ -3361,6 +3400,7 @@ async function onLoadUpgradeManual() {
       return;
     }
     u.picked = up;
+    void refreshContractAuth(up.collection_name, 'up.nefty');
     u.selection.clear();
   u.costSelection.clear();
     u.lastDryRun = undefined;
@@ -3524,6 +3564,11 @@ function collectUpgradeCostAssets(): string[] {
 }
 
 function readyToUpgrade(): boolean {
+  // The contract cannot mint into a collection that never authorized it,
+  // so the recipe is unrunnable by anyone no matter what its status says.
+  // Only a definite false blocks: undefined means we could not read the
+  // collection, and that must not condemn a working recipe.
+  if (state.contractAuthorized === false) return false;
   const u = state.upgrades;
   if (!u.picked) return false;
   if (u.picked.status !== 'active') return false;
@@ -4610,16 +4655,47 @@ function renderSlots(): string {
     </div>`;
 }
 
+/**
+ * The one blocker a player can do nothing about, and that no status badge
+ * shows. Rendered above the action buttons wherever they appear.
+ */
+function renderContractAuthBanner(): string {
+  if (state.contractAuthorized !== false) return '';
+  const contract = state.contractAuthorizedFor ?? 'the contract';
+  const collection = state.collection || 'this collection';
+  return `
+    <div class="card danger-card">
+      <h2>This recipe cannot run</h2>
+      <p class="status-line err" style="margin-top:6px">
+        <strong>${escapeHtml(collection)} has not authorized <code>${escapeHtml(contract)}</code>.</strong>
+      </p>
+      <p class="term" style="margin-top:6px">
+        AtomicAssets only lets accounts on a collection's
+        <code>authorized_accounts</code> list mint or edit its NFTs. Without
+        that entry the contract cannot deliver the reward, so this recipe
+        fails for everyone, not just for you. It is not a problem with your
+        wallet, your NFTs or your CPU.
+      </p>
+      <p class="term" style="margin-top:6px">
+        Only the collection author can fix it, by adding
+        <code>${escapeHtml(contract)}</code> to the collection on AtomicHub.
+        Crucible blocks the button rather than let you pay CPU for a
+        transaction the chain will refuse.
+      </p>
+    </div>`;
+}
+
 function renderActions(): string {
   if (!state.blend) return '';
+  const authBanner = renderContractAuthBanner();
   const totalRequired = totalRequiredNfts(state.slots);
   const totalPicked = Array.from(state.selection.values()).reduce((n, ids) => n + ids.length, 0);
   const ready = readyToSubmit();
   const isRandom = !isDeterministic(state.blend).ok;
   // Random blends route through a 2-step state machine. The state of
   // that machine drives a different button surface below.
-  if (isRandom) return renderRngActions(ready, totalPicked, totalRequired);
-  return `
+  if (isRandom) return authBanner + renderRngActions(ready, totalPicked, totalRequired);
+  return authBanner + `
     <div class="card">
       <h2>5 · Verify &amp; execute</h2>
       <div class="row">
@@ -5276,7 +5352,7 @@ function renderDropActions(): string {
   const d = state.drop;
   if (!d) return '';
   const ready = readyToClaim();
-  const blockers = renderDropBlockerNotices(d);
+  const blockers = renderContractAuthBanner() + renderDropBlockerNotices(d);
   return `
     <div class="card">
       <h2>4 · Verify &amp; claim</h2>
@@ -6519,6 +6595,8 @@ function renderUpgradeActions(): string {
   if (!u.picked) return '';
   const ready = readyToUpgrade();
   const blockers: string[] = [];
+  const authBanner = renderContractAuthBanner();
+  if (authBanner) blockers.push(authBanner);
   if (u.picked.is_random) blockers.push('<p class="status-line warn">Random-result upgrades use the ORNG oracle and are not yet implemented in Crucible.</p>');
   if (u.picked.whitelist_required) blockers.push('<p class="status-line warn">Whitelist / ownership-gated upgrades are not yet implemented in Crucible.</p>');
   return `

@@ -94,6 +94,7 @@ const BLANK = {
   cooldown: '',
   securityId: '',
   hidden: true,
+  contractAuthorized: true,
 };
 
 const SCHEMA_FIXTURE = {
@@ -460,6 +461,24 @@ const FIXTURES = [
     },
     valid: true,
     expect: (a) => a.data.max_claimable === 0,
+  },
+  {
+    label: 'any / a collection that has not authorized the contract is REJECTED',
+    form: {
+      kind: 'blend', templates: TEMPLATES_FIXTURE, contractAuthorized: false,
+      ingredients: [ing({ kind: 'template', template_id: 111, amount: 1 })],
+      outcomes: [{ kind: 'nft', template_id: 222, weight: 1 }],
+    },
+    valid: false, because: /has not authorized/i,
+  },
+  {
+    label: 'any / an unreadable collection does NOT block (undefined is not false)',
+    form: {
+      kind: 'blend', templates: TEMPLATES_FIXTURE, contractAuthorized: undefined,
+      ingredients: [ing({ kind: 'template', template_id: 111, amount: 1 })],
+      outcomes: [{ kind: 'nft', template_id: 222, weight: 1 }],
+    },
+    valid: true,
   },
   {
     label: 'drop / no template to mint is REJECTED',

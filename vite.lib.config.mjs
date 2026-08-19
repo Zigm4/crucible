@@ -14,6 +14,7 @@ export default defineConfig({
         createBlend: 'src/nefty/createBlend.ts',
         createUpgrade: 'src/nefty/createUpgrade.ts',
         lab: 'src/ui/lab.ts',
+        collections: 'src/atomic/collections.ts',
       },
       formats: ['es'],
     },

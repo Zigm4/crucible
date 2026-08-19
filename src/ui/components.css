@@ -2132,3 +2132,11 @@ input.lab-inline { max-width: 190px; }
 .lab-token.on { border-color: var(--accent); background: rgba(56, 189, 248, 0.14); }
 .lab-ghost.lab-danger { border-color: var(--danger); color: var(--danger); }
 .lab-ghost.lab-danger:hover:not(:disabled) { background: rgba(255, 85, 119, 0.1); }
+
+/* The blocker a player can do nothing about: the contract is not on the
+   collection's authorized_accounts, so no one can run this recipe. */
+.danger-card {
+  border-color: var(--danger);
+  background: rgba(255, 85, 119, 0.06);
+}
+.danger-card h2 { color: var(--danger); }

@@ -1046,6 +1046,8 @@ scripts/
   verify-lab.mjs               : the #/lab creator: form state -> args ->
                                  live ABI, plus the attribute gate against
                                  five real collections
+  verify-contract-auth.mjs     : can the contract mint into the collection
+                                 its recipes target? plus a live census
   verify-pool-blend.mjs        : POOL_NFT blend path against chain state
   verify-discover-chain.mjs    : on-chain discovery sanity check
 public/
