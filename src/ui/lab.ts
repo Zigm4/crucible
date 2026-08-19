@@ -38,9 +38,9 @@ import { clearUpgradesCache } from '../nefty/upgrades';
 import { clearDropsCache } from '../nefty/drops';
 import { listDropTokens, type DropToken } from '../nefty/dropTokens';
 import {
-  readNameStatus, readMyBids, minimumNextBid, formatWax,
+  readNameStatus, readMyBids, readTopBids, minimumNextBid, formatWax, QUIET_PERIOD_MS,
   buildBidName, buildBidRefund, readRefunds,
-  type NameAvailability, type BidHistoryEntry,
+  type NameAvailability, type BidHistoryEntry, type NameBid,
 } from '../wax/names';
 import { listBlends, type DiscoveredBlend } from '../nefty/discover';
 import { listUpgrades, type DiscoveredUpgrade } from '../nefty/upgrades';
@@ -292,6 +292,8 @@ interface LabState extends LabForm {
   myBids: BidHistoryEntry[];
   myBidsState: LoadState;
   refunds: { newname: string; amount: string }[];
+  topBids: NameBid[];
+  topBidsState: LoadState;
 
   picking?: { target: 'ingredient' | 'outcome' | 'mint' | 'requirement' };
   search: string;
@@ -353,6 +355,8 @@ const state: LabState = {
   myBids: [],
   myBidsState: 'idle',
   refunds: [],
+  topBids: [],
+  topBidsState: 'idle',
   busy: false,
   dryRun: '',
   lastTx: '',
@@ -2198,6 +2202,15 @@ async function onCheckName() {
   rerender();
 }
 
+/** The running order: the chain settles the top one, once it goes quiet. */
+async function loadTopBids() {
+  state.topBidsState = 'loading';
+  rerender();
+  state.topBids = await readTopBids(10).catch(() => []);
+  state.topBidsState = 'done';
+  rerender();
+}
+
 async function loadMyBids() {
   if (!state.actor) return;
   state.myBidsState = 'loading';
@@ -2254,6 +2267,7 @@ async function onPlaceBid() {
       String(result.resolved?.transaction.id ?? '');
     await onCheckName();
     void loadMyBids();
+    void loadTopBids();
   } catch (err) {
     state.lastError = err instanceof Error ? err.message : String(err);
   }
@@ -2335,6 +2349,46 @@ function nameVerdict(): string {
     </div>`;
 }
 
+/**
+ * The ten highest open auctions on the chain, which is also the order in
+ * which they will settle: one name a day, the top one, once its bid has
+ * been quiet for 24 hours. A reader who sees their own name at rank 7
+ * learns more from that than from any single lookup.
+ */
+function topBidsBoard(): string {
+  if (state.topBidsState === 'loading') return '<p class="lab-hint">Reading the highest auctions.</p>';
+  if (state.topBids.length === 0) {
+    return '<p class="lab-empty">No open auction found. Either the chain is quiet or a node is unhappy.</p>';
+  }
+  const now = Date.now();
+  return `
+    <div class="lab-rows">
+      ${state.topBids.map((b, i) => {
+        const mine = b.high_bidder === state.actor;
+        const eligible = now > b.last_bid_time + QUIET_PERIOD_MS;
+        return `
+          <div class="lab-row${mine ? ' lab-row-mine' : ''}">
+            <span class="lab-rank">${i + 1}</span>
+            <span class="lab-row-main">
+              <strong>${esc(b.newname)}</strong>
+              <span class="lab-tpl-meta">
+                ${esc(b.high_bidder)}${mine ? ' (you)' : ''} &middot;
+                ${eligible ? 'quiet for over 24h, ready to settle' : `quiet ${relativeTime(b.last_bid_time + QUIET_PERIOD_MS)}`}
+              </span>
+            </span>
+            <b class="lab-pct">${waxOf(b.high_bid)} WAX</b>
+            <button class="lab-add" data-lab="name-recheck" data-name="${esc(b.newname)}">Open</button>
+          </div>`;
+      }).join('')}
+    </div>
+    <p class="lab-note">
+      One name is settled per day, chain-wide: the highest bid whose 24 hours of quiet have
+      elapsed. Rank 1 is next in line, and a bid placed anywhere on this board resets that
+      name's clock.
+    </p>
+    <button class="lab-ghost" data-lab="top-reload">Refresh</button>`;
+}
+
 function nameTool(): string {
   const st = state.nameStatus;
   const canBid = st && (st.kind === 'auction' || st.kind === 'free');
@@ -2378,6 +2432,9 @@ function nameTool(): string {
 
     ${state.lastError ? `<p class="lab-warn">${esc(state.lastError)}</p>` : ''}
     ${state.lastTx ? `<p class="lab-ok">Signed. Transaction <a target="_blank" rel="noreferrer" href="https://waxblock.io/transaction/${esc(state.lastTx)}">${esc(state.lastTx)}</a></p>` : ''}
+
+    <h4 class="lab-sub">The ten highest auctions on the chain</h4>
+    ${topBidsBoard()}
 
     <h4 class="lab-sub">Your bids</h4>
     ${!state.actor
@@ -2877,6 +2934,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           state.tool = 'names';
           state.lastTx = ''; state.lastError = '';
           if (state.actor && state.myBidsState === 'idle') void loadMyBids();
+          if (state.topBidsState === 'idle') void loadTopBids();
           break;
         case 'login':  void onLabLogin(); return;
         case 'logout': void onLabLogout(); return;
@@ -2884,6 +2942,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'name-check':  void onCheckName(); return;
         case 'name-bid':    void onPlaceBid(); return;
         case 'name-reload': void loadMyBids(); return;
+        case 'top-reload':  void loadTopBids(); return;
         case 'name-refund': void onClaimRefund(el.dataset.name ?? ''); return;
         case 'name-recheck':
           state.nameQuery = el.dataset.name ?? '';

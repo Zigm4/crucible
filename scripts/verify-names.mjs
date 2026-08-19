@@ -16,7 +16,7 @@
  */
 import { Action, APIClient } from '@wharfkit/session';
 import {
-  readNameStatus, readNameBid, minimumNextBid, biddableName, formatWax,
+  readNameStatus, readNameBid, readTopBids, minimumNextBid, biddableName, formatWax,
   buildBidName, buildBidRefund,
 } from './.build/names.mjs';
 
@@ -69,6 +69,22 @@ console.log(`   ${first > 0 ? 'ok  ' : 'FAIL'} no standing bid -> suggests ${fir
 const closed = await readNameBid('13');
 ok(closed?.closed === true, '13 must decode as a closed auction');
 console.log(`   ${closed?.closed ? 'ok  ' : 'FAIL'} 13 decodes as closed, winning bid ${closed ? closed.high_bid / 1e8 : '?'} WAX`);
+
+console.log('\n=== PHASE B2 - the leaderboard reads the signed index right ===');
+// The secondary index is -high_bid as an unsigned 64-bit integer, so
+// CLOSED auctions (negative bid) land at the bottom of the range and open
+// ones at the top, biggest bid first. Reading it naively returns settled
+// auctions nobody can bid on, which is the failure this guards.
+const top = await readTopBids(10);
+ok(top.length > 0, 'the leaderboard came back empty');
+ok(top.every((b) => !b.closed), 'a settled auction leaked into the leaderboard');
+ok(top.every((b) => b.high_bid > 0), 'a non-positive bid leaked into the leaderboard');
+const sorted = top.every((b, i) => i === 0 || top[i - 1].high_bid >= b.high_bid);
+ok(sorted, 'the leaderboard is not sorted highest first');
+console.log(`   ${top.length ? 'ok  ' : 'FAIL'} ${top.length} open auction(s), none settled, sorted highest first`);
+for (const b of top.slice(0, 3)) {
+  console.log(`        ${b.newname.padEnd(14)} ${(b.high_bid / 1e8).toFixed(2).padStart(10)} WAX  ${b.high_bidder}`);
+}
 
 console.log('\n=== PHASE C - both actions against the live eosio ABI ===');
 const client = new APIClient({ url: 'https://wax.greymass.com' });

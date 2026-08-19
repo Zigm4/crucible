@@ -137,6 +137,46 @@ export async function readNameStatus(raw: string): Promise<NameAvailability> {
 }
 
 /**
+ * The highest OPEN auctions on the whole chain, best first.
+ *
+ * The secondary index is not the bid, it is `-high_bid` reinterpreted as
+ * an unsigned 64-bit integer, and that one line decides everything:
+ *
+ *   closed row   high_bid is negative, so -high_bid is a small POSITIVE
+ *                number. Closed auctions cluster at the bottom.
+ *   open row     high_bid is positive, so -high_bid wraps to just under
+ *                2^64. Open auctions cluster at the very top, and a
+ *                BIGGER bid gives a SMALLER key.
+ *
+ * So reading the index upward from the middle of the range skips every
+ * settled auction and arrives at the open ones already sorted highest
+ * first. 2^63 is the boundary: far above any winning bid ever recorded
+ * (the largest is a few million WAX, about 1e14 units) and far below
+ * where the open rows live.
+ *
+ * This matters beyond curiosity. The chain settles ONE name per day, the
+ * single highest bid on the chain, so this list is the running order.
+ */
+const OPEN_BID_FLOOR = '9223372036854775808'; // 2^63
+
+export async function readTopBids(limit = 10): Promise<NameBid[]> {
+  const rows = await getTableRows<{
+    newname: string; high_bidder: string; high_bid: string | number; last_bid_time: string;
+  }>({
+    code: SYSTEM,
+    scope: SYSTEM,
+    table: 'namebids',
+    index_position: 'secondary',
+    key_type: 'i64',
+    lower_bound: OPEN_BID_FLOOR,
+    limit,
+  });
+  // Defensive: if the boundary ever drifts, a closed row must not be
+  // presented as something a reader could still outbid.
+  return rows.map(decode).filter((b) => !b.closed);
+}
+
+/**
  * The smallest bid the contract will accept next, in WAX.
  *
  * The system requires a new bid to beat the standing one by at least ten
