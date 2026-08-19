@@ -15,6 +15,7 @@ export default defineConfig({
         createUpgrade: 'src/nefty/createUpgrade.ts',
         lab: 'src/ui/lab.ts',
         collections: 'src/atomic/collections.ts',
+        names: 'src/wax/names.ts',
       },
       formats: ['es'],
     },

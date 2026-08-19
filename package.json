@@ -12,7 +12,8 @@
     "verify:createblend": "npm run build:verify && node scripts/verify-createblend.mjs",
     "verify:createupgrade": "npm run build:verify && node scripts/verify-createupgrade.mjs",
     "verify:lab": "npm run build:verify && node scripts/verify-lab.mjs",
-    "verify:contractauth": "npm run build:verify && node scripts/verify-contract-auth.mjs"
+    "verify:contractauth": "npm run build:verify && node scripts/verify-contract-auth.mjs",
+    "verify:names": "npm run build:verify && node scripts/verify-names.mjs"
   },
   "dependencies": {
     "@wharfkit/session": "^1.4.0",

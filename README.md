@@ -999,6 +999,8 @@ src/
                          (full-table scan + target template enrichment)
     blendExecute.ts    : blenderizerx blend tx (a single transfer)
     index.ts           : the facade for this folder
+  wax/
+    names.ts           : eosio premium-name auctions (read + bid + refund)
   waxdao/
     blends.ts          : lists waxdaomarket blends per collection
     blendExecute.ts    : assertblend + slot-indexed transfers
@@ -1018,8 +1020,9 @@ src/
                          contracts share one), grouped by category
     media.ts           : IPFS resolution + non-distorting thumbnails
                          (gateway fallback, removes itself on failure)
-    lab.ts             : #/lab - unlisted guided creator for blends,
-                         upgrades and drops (reads schemas, signs)
+    lab.ts             : #/lab - unlisted workbench. Two tools: the
+                         guided creator for blends, upgrades and drops,
+                         and the WAX premium-name auctions
     status.ts          : #/status - contract health monitor
     dryrun.ts          : local ABI serialisation, "simulate without signing"
     style.css          : entry point - @imports the five files below in order
@@ -1048,6 +1051,8 @@ scripts/
                                  five real collections
   verify-contract-auth.mjs     : can the contract mint into the collection
                                  its recipes target? plus a live census
+  verify-names.mjs             : the WAX name auction reader, the ten
+                                 percent rule, and both eosio actions
   verify-pool-blend.mjs        : POOL_NFT blend path against chain state
   verify-discover-chain.mjs    : on-chain discovery sanity check
 public/
