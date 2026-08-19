@@ -29,7 +29,7 @@
  * classic panels once the interaction has been through real testers.
  */
 
-import { getCurrentSession } from '../chain/session';
+import { getCurrentSession, login, logout } from '../chain/session';
 import { atomicFetch } from '../chain/rpc';
 import { listAuthorizedCollections, isContractAuthorized } from '../atomic/collections';
 import { readCollectionSecurities, executeAdminAction } from '../nefty/admin';
@@ -37,6 +37,11 @@ import { clearDiscoverCache } from '../nefty/discover';
 import { clearUpgradesCache } from '../nefty/upgrades';
 import { clearDropsCache } from '../nefty/drops';
 import { listDropTokens, type DropToken } from '../nefty/dropTokens';
+import {
+  readNameStatus, readMyBids, minimumNextBid, formatWax,
+  buildBidName, buildBidRefund, readRefunds,
+  type NameAvailability, type BidHistoryEntry,
+} from '../wax/names';
 import { listBlends, type DiscoveredBlend } from '../nefty/discover';
 import { listUpgrades, type DiscoveredUpgrade } from '../nefty/upgrades';
 import { listDrops, type DiscoveredDrop } from '../nefty/drops';
@@ -125,6 +130,14 @@ type LabKind = 'blend' | 'upgrade' | 'drop';
 
 /** Create something new, or change something that already exists. */
 type LabMode = 'create' | 'edit';
+
+/**
+ * Which tool the page is showing. The lab is a workbench, not one screen:
+ * `recipes` is the blend / upgrade / drop creator and editor, `names` is
+ * the WAX premium-name auction reader and bidder. They share nothing but
+ * the wallet, so each keeps its own state.
+ */
+type LabTool = 'recipes' | 'names';
 
 /** One existing recipe, flattened to what the editor can change. */
 interface LabExisting {
@@ -248,6 +261,7 @@ export interface LabForm {
 
 /** LabForm plus everything that only exists to drive the screen. */
 interface LabState extends LabForm {
+  tool: LabTool;
   mode: LabMode;
   /** Edit mode: what exists in this collection, and what is being changed. */
   existing: LabExisting[];
@@ -270,6 +284,15 @@ interface LabState extends LabForm {
    * will be unrunnable by anyone.
    */
   contractAuthorized?: boolean;
+  // ── the name-auction tool ──
+  nameQuery: string;
+  nameStatus?: NameAvailability;
+  nameChecking: boolean;
+  nameBidAmount: string;
+  myBids: BidHistoryEntry[];
+  myBidsState: LoadState;
+  refunds: { newname: string; amount: string }[];
+
   picking?: { target: 'ingredient' | 'outcome' | 'mint' | 'requirement' };
   search: string;
   busy: boolean;
@@ -279,6 +302,7 @@ interface LabState extends LabForm {
 }
 
 const state: LabState = {
+  tool: 'recipes',
   mode: 'create',
   existing: [],
   existingState: 'idle',
@@ -323,6 +347,12 @@ const state: LabState = {
   securityId: '',
   hidden: true,
   search: '',
+  nameQuery: '',
+  nameChecking: false,
+  nameBidAmount: '',
+  myBids: [],
+  myBidsState: 'idle',
+  refunds: [],
   busy: false,
   dryRun: '',
   lastTx: '',
@@ -1153,6 +1183,59 @@ export {
   plainSentence as __plainSentence,
   attributeBlock as __attributeBlock,
 };
+
+/**
+ * The page signs real transactions, so it needs its own way to connect.
+ *
+ * `#/lab` renders standalone: the app's render loop returns before it ever
+ * reaches the main Connect card, so a visitor who lands here from a shared
+ * link had no way to attach a wallet without going back to the app first.
+ */
+function walletBar(): string {
+  if (state.actor) {
+    return `
+      <div class="lab-wallet">
+        <span class="lab-wallet-dot" aria-hidden="true"></span>
+        <span>Signed in as <strong>${esc(state.actor)}</strong></span>
+        <button class="lab-ghost lab-wallet-btn" data-lab="logout">Disconnect</button>
+      </div>`;
+  }
+  return `
+    <div class="lab-wallet lab-wallet-off">
+      <span class="lab-wallet-dot" aria-hidden="true"></span>
+      <span>Not connected. Nothing on this page can be signed until a wallet is attached.</span>
+      <button class="lab-primary lab-wallet-btn" data-lab="login" ${state.busy ? 'disabled' : ''}>
+        ${state.busy ? 'Opening your wallet' : 'Connect wallet'}
+      </button>
+    </div>`;
+}
+
+/** Attaching a wallet changes what every tool on the page can do. */
+async function onLabLogin() {
+  state.busy = true; state.lastError = '';
+  rerender();
+  try {
+    await login();
+    state.actor = String(getCurrentSession()?.actor ?? '');
+    // The collection list is per-wallet, so it has to be re-read.
+    state.collectionsState = 'idle';
+    await loadCollections();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Closing the wallet popup is a choice, not a failure worth shouting.
+    if (!/cancel|abort|closed|declin/i.test(msg)) state.lastError = msg;
+  }
+  state.busy = false;
+  rerender();
+}
+
+async function onLabLogout() {
+  await logout().catch(() => {});
+  state.actor = '';
+  state.collections = [];
+  state.collectionsState = 'idle';
+  rerender();
+}
 
 // ─── shared UI pieces ───────────────────────────────────────────────────
 
@@ -2077,6 +2160,258 @@ function editTokenControl(): string {
     </div>`;
 }
 
+// ─── tool: WAX premium name auctions ────────────────────────────────────
+
+const waxOf = (units: number) => (units / 1e8).toLocaleString('en-US', { maximumFractionDigits: 8 });
+
+function relativeTime(ms: number): string {
+  const d = ms - Date.now();
+  const abs = Math.abs(d);
+  const h = Math.round(abs / 3_600_000);
+  if (h < 1) return d > 0 ? 'in under an hour' : 'less than an hour ago';
+  if (h < 48) return d > 0 ? `in about ${h} hour(s)` : `about ${h} hour(s) ago`;
+  const days = Math.round(h / 24);
+  return d > 0 ? `in about ${days} day(s)` : `about ${days} day(s) ago`;
+}
+
+/** Reads the chain for one name. Two calls, because both answers matter. */
+async function onCheckName() {
+  const q = state.nameQuery.trim().toLowerCase();
+  if (!q) { state.nameStatus = undefined; rerender(); return; }
+  state.nameChecking = true;
+  state.lastError = '';
+  rerender();
+  try {
+    state.nameStatus = await readNameStatus(q);
+    // Prefill the bid with the smallest amount the contract will take, so
+    // the common case is one click and the number is never guessed.
+    if (state.nameStatus.kind === 'auction') {
+      state.nameBidAmount = String(minimumNextBid(state.nameStatus.bid));
+    } else if (state.nameStatus.kind === 'free') {
+      state.nameBidAmount = state.nameBidAmount || '1';
+    }
+  } catch (err) {
+    state.lastError = err instanceof Error ? err.message : String(err);
+    state.nameStatus = undefined;
+  }
+  state.nameChecking = false;
+  rerender();
+}
+
+async function loadMyBids() {
+  if (!state.actor) return;
+  state.myBidsState = 'loading';
+  rerender();
+  const [bids, refunds] = await Promise.all([
+    readMyBids(state.actor).catch(() => []),
+    readRefunds(state.actor).catch(() => []),
+  ]);
+  state.myBids = bids;
+  state.refunds = refunds;
+  state.myBidsState = 'done';
+  rerender();
+}
+
+async function onPlaceBid() {
+  const session = getCurrentSession();
+  const st = state.nameStatus;
+  if (!session || !st) return;
+  const name = state.nameQuery.trim().toLowerCase();
+  const amount = Number(state.nameBidAmount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    state.lastError = 'Enter a bid above zero.';
+    rerender();
+    return;
+  }
+
+  const current = st.kind === 'auction' ? st.bid : undefined;
+  const summary = [
+    `BID ON THE NAME "${name}"`,
+    '',
+    `You pay: ${formatWax(amount)}`,
+    current
+      ? `Current holder: ${current.high_bidder} at ${waxOf(current.high_bid)} WAX`
+      : 'Nobody has bid on this name yet.',
+    '',
+    'The WAX leaves your account NOW, not when the auction ends.',
+    'If someone outbids you it is refunded, but not automatically: you',
+    'have to claim it back from this same screen.',
+    '',
+    'The name is created for the highest bidder only after that bid has',
+    'stood untouched for 24 hours, and only one name on the whole chain',
+    'is settled per day.',
+  ].join('\n');
+  if (!(await confirmCreate(summary))) return;
+
+  state.busy = true;
+  state.lastError = '';
+  state.lastTx = '';
+  rerender();
+  try {
+    const result = await session.transact({ actions: [buildBidName(state.actor, name, amount)] });
+    state.lastTx =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    await onCheckName();
+    void loadMyBids();
+  } catch (err) {
+    state.lastError = err instanceof Error ? err.message : String(err);
+  }
+  state.busy = false;
+  rerender();
+}
+
+async function onClaimRefund(newname: string) {
+  const session = getCurrentSession();
+  if (!session) return;
+  state.busy = true;
+  state.lastError = '';
+  rerender();
+  try {
+    const result = await session.transact({ actions: [buildBidRefund(state.actor, newname)] });
+    state.lastTx =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    void loadMyBids();
+  } catch (err) {
+    state.lastError = err instanceof Error ? err.message : String(err);
+  }
+  state.busy = false;
+  rerender();
+}
+
+/** The verdict card. Each shape says something different to a bidder. */
+function nameVerdict(): string {
+  const st = state.nameStatus;
+  if (!st) return '';
+  const name = esc(state.nameQuery.trim().toLowerCase());
+
+  if (st.kind === 'not_biddable') {
+    return `<div class="lab-callout"><strong>${name} is not an auctioned name.</strong> ${esc(st.why)}</div>`;
+  }
+  if (st.kind === 'taken') {
+    return `<div class="lab-callout danger">
+      <strong>${name} already exists as an account${st.created ? `, created ${esc(String(st.created).slice(0, 10))}` : ''}.</strong>
+      There is nothing to bid on. A name is only ever auctioned once.
+    </div>`;
+  }
+  if (st.kind === 'won') {
+    return `<div class="lab-callout danger">
+      <strong>${name} was won at auction by <code>${esc(st.bid.high_bidder)}</code> for ${waxOf(st.bid.high_bid)} WAX.</strong>
+      The auction is closed and the account has been created. The row is kept on chain as a record,
+      which is why a bid still appears against this name.
+    </div>`;
+  }
+  if (st.kind === 'free') {
+    return `<div class="lab-callout ok">
+      <strong>${name} is free.</strong> No account, and nobody has ever bid on it. The first bid can be
+      any amount above zero, though a name nobody wants and a name everybody wants both start there.
+    </div>`;
+  }
+
+  const b = st.bid;
+  const mine = b.high_bidder === state.actor;
+  const settled = st.settlesAt <= Date.now();
+  return `
+    <div class="lab-callout ${mine ? 'ok' : ''}">
+      <strong>${name} is under auction.</strong>
+      ${mine ? 'You are the highest bidder.' : `Highest bidder: <code>${esc(b.high_bidder)}</code>.`}
+    </div>
+    <div class="lab-review">
+      <div><span>Highest bid</span><b>${waxOf(b.high_bid)} WAX</b></div>
+      <div><span>Bidder</span><b>${esc(b.high_bidder)}${mine ? ' (you)' : ''}</b></div>
+      <div><span>Last bid</span><b>${new Date(b.last_bid_time).toLocaleString()}, ${relativeTime(b.last_bid_time)}</b></div>
+      <div><span>Quiet since</span><b class="${settled ? '' : 'warn'}">${
+        settled
+          ? 'over 24 hours, so this one is eligible to settle'
+          : `not yet, eligible ${relativeTime(st.settlesAt)}`
+      }</b></div>
+      <div><span>To outbid</span><b>${minimumNextBid(b)} WAX minimum</b></div>
+    </div>
+    <div class="lab-callout">
+      Being eligible is not the same as winning. The chain settles <strong>one name a day</strong>,
+      the single highest bid on the whole chain, so a quiet auction can wait a long time behind
+      bigger ones.
+    </div>`;
+}
+
+function nameTool(): string {
+  const st = state.nameStatus;
+  const canBid = st && (st.kind === 'auction' || st.kind === 'free');
+  return `
+    <h3 class="lab-q">WAX premium names</h3>
+    <p class="lab-hint">
+      A WAX name shorter than 12 characters, with no dot, cannot be created. It is sold by an open
+      auction inside the system contract itself. This reads that auction, and bids on it.
+    </p>
+
+    <div class="lab-field">
+      <label>Name to look up</label>
+      <div class="lab-gate">
+        <input id="lab-name-query" type="text" value="${esc(state.nameQuery)}"
+               placeholder="e.g. rekt" autocomplete="off" spellcheck="false" />
+        <button class="lab-primary" data-lab="name-check" ${state.nameChecking ? 'disabled' : ''}>
+          ${state.nameChecking ? 'Reading the chain' : 'Look it up'}
+        </button>
+      </div>
+      <p class="lab-note">a to z and 1 to 5 only, 1 to 11 characters. Press Enter to search.</p>
+    </div>
+
+    ${nameVerdict()}
+
+    ${canBid ? `
+      <div class="lab-field" style="margin-top:18px">
+        <label>Your bid, in WAX</label>
+        <div class="lab-gate">
+          <input id="lab-name-bid" type="text" value="${esc(state.nameBidAmount)}" autocomplete="off" />
+          <button class="lab-primary" data-lab="name-bid" ${state.busy || !state.actor ? 'disabled' : ''}>
+            ${state.busy ? 'Waiting for your wallet' : 'Place this bid'}
+          </button>
+        </div>
+        ${state.actor ? '' : '<p class="lab-warn">Connect a wallet above to bid.</p>'}
+      </div>
+      <div class="lab-callout danger">
+        <strong>The WAX leaves your account immediately</strong>, not when the auction ends. If someone
+        outbids you it is refunded, but the chain does not send it back on its own: it waits in a
+        refund row until you claim it, from this screen.
+      </div>` : ''}
+
+    ${state.lastError ? `<p class="lab-warn">${esc(state.lastError)}</p>` : ''}
+    ${state.lastTx ? `<p class="lab-ok">Signed. Transaction <a target="_blank" rel="noreferrer" href="https://waxblock.io/transaction/${esc(state.lastTx)}">${esc(state.lastTx)}</a></p>` : ''}
+
+    <h4 class="lab-sub">Your bids</h4>
+    ${!state.actor
+      ? '<p class="lab-empty">Connect a wallet to see the names you have bid on.</p>'
+      : state.myBidsState === 'loading'
+        ? '<p class="lab-hint">Reading your history.</p>'
+        : `
+          ${state.refunds.length ? `
+            <div class="lab-callout ok">
+              <strong>${state.refunds.length} refund(s) waiting for you.</strong> These are bids you were
+              outbid on. The WAX is yours and sits on the contract until you ask for it.
+              <ul class="lab-list">
+                ${state.refunds.map((r) => `<li>
+                  <code>${esc(r.newname)}</code> ${esc(r.amount)}
+                  <button class="lab-add" data-lab="name-refund" data-name="${esc(r.newname)}">Claim it</button>
+                </li>`).join('')}
+              </ul>
+            </div>` : ''}
+          ${state.myBids.length === 0
+            ? '<p class="lab-empty">No bid found in the history window. History nodes do not keep everything, so this is not proof you never bid.</p>'
+            : `<div class="lab-rows">
+                 ${state.myBids.map((b) => `
+                   <div class="lab-row">
+                     <span class="lab-tag">${esc(b.newname)}</span>
+                     <span class="lab-row-main">
+                       <strong>${esc(b.bid)}</strong>
+                       <span class="lab-tpl-meta">${esc(b.timestamp.slice(0, 19).replace('T', ' '))}</span>
+                     </span>
+                     <button class="lab-add" data-lab="name-recheck" data-name="${esc(b.newname)}">Check it</button>
+                   </div>`).join('')}
+               </div>`}
+          <button class="lab-ghost" data-lab="name-reload">Refresh</button>`}`;
+}
+
 // ─── page ───────────────────────────────────────────────────────────────
 
 export function renderLabPage(): string {
@@ -2089,6 +2424,28 @@ export function renderLabPage(): string {
         : state.step === 3
           ? stepRules()
           : stepReview();
+
+  // The tool bar sits above everything: it decides which workbench is on
+  // screen. The Create / Change switch below it belongs to one tool only.
+  const toolBar = `
+    <div class="lab-tools">
+      <button class="${state.tool === 'recipes' ? 'on' : ''}" data-lab="tool-recipes">
+        Recipes<small>blends, upgrades, drops</small>
+      </button>
+      <button class="${state.tool === 'names' ? 'on' : ''}" data-lab="tool-names">
+        WAX names<small>premium name auctions</small>
+      </button>
+    </div>`;
+
+  if (state.tool === 'names') {
+    return `
+      <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
+      <section class="lab">
+        ${toolBar}
+        ${walletBar()}
+        <div class="lab-panel">${nameTool()}</div>
+      </section>`;
+  }
 
   const title = state.kind === 'blend' ? 'a blend' : state.kind === 'upgrade' ? 'an upgrade' : 'a drop';
   // The switch sits in the header rather than under it, with a line saying
@@ -2113,6 +2470,8 @@ export function renderLabPage(): string {
     return `
       <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
       <section class="lab">
+        ${toolBar}
+        ${walletBar()}
         ${modeHeader(
           'Change something you already made',
           state.editing
@@ -2129,6 +2488,8 @@ export function renderLabPage(): string {
   return `
     <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
     <section class="lab">
+      ${toolBar}
+      ${walletBar()}
       ${modeHeader(
         `Create ${title}`,
         'One question per screen. Templates are picked from your collection instead of typed, odds are drawn instead of counted, and upgrade attribute types are read from the schema. <strong>This signs real transactions.</strong>',
@@ -2511,6 +2872,24 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           state.tokenPickerOpen = false;
           break;
 
+        case 'tool-recipes': state.tool = 'recipes'; break;
+        case 'tool-names':
+          state.tool = 'names';
+          state.lastTx = ''; state.lastError = '';
+          if (state.actor && state.myBidsState === 'idle') void loadMyBids();
+          break;
+        case 'login':  void onLabLogin(); return;
+        case 'logout': void onLabLogout(); return;
+
+        case 'name-check':  void onCheckName(); return;
+        case 'name-bid':    void onPlaceBid(); return;
+        case 'name-reload': void loadMyBids(); return;
+        case 'name-refund': void onClaimRefund(el.dataset.name ?? ''); return;
+        case 'name-recheck':
+          state.nameQuery = el.dataset.name ?? '';
+          void onCheckName();
+          return;
+
         case 'mode-create': state.mode = 'create'; state.editing = undefined; break;
         case 'mode-edit':
           state.mode = 'edit'; state.editing = undefined;
@@ -2566,6 +2945,16 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
 
   bind('lab-search', (v) => { state.search = v; }, 'live');
   bind('lab-token-search', (v) => { state.tokenSearch = v; }, 'live');
+  bind('lab-name-query', (v) => { state.nameQuery = v; });
+  bind('lab-name-bid', (v) => { state.nameBidAmount = v; });
+  // Enter searches: typing a name and reaching for the mouse is the wrong
+  // rhythm for a tool whose whole loop is "try another name".
+  const nameInput = root.querySelector<HTMLInputElement>('#lab-name-query');
+  if (nameInput) {
+    nameInput.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Enter') void onCheckName();
+    });
+  }
   bind('lab-name', (v) => { state.name = v; });
   bind('lab-description', (v) => { state.description = v; });
   bind('lab-image', (v) => { state.image = v; });
