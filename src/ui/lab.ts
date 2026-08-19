@@ -287,6 +287,8 @@ interface LabState extends LabForm {
   // ── the name-auction tool ──
   nameQuery: string;
   nameStatus?: NameAvailability;
+  /** The name `nameStatus` is about, which is not always what is typed. */
+  nameStatusFor: string;
   nameChecking: boolean;
   nameBidAmount: string;
   myBids: BidHistoryEntry[];
@@ -350,6 +352,7 @@ const state: LabState = {
   hidden: true,
   search: '',
   nameQuery: '',
+  nameStatusFor: '',
   nameChecking: false,
   nameBidAmount: '',
   myBids: [],
@@ -506,6 +509,45 @@ const OUTCOME_COLOURS = ['#7c9cff', '#86c97f', '#f0a860', '#e8798f', '#c58cf5', 
 // ─── loading from the chain ─────────────────────────────────────────────
 
 let rerender: () => void = () => {};
+
+/**
+ * Typing into a field and then clicking a button used to lose the click.
+ *
+ * The sequence: pressing the mouse blurs the input, which fires `change`,
+ * which re-renders. A render replaces the whole panel, so by the time the
+ * button is released it is a DIFFERENT element, and a click only fires
+ * when press and release land on the same one. The first click vanished
+ * and the second worked, because by then nothing had changed.
+ *
+ * So a repaint asked for while the pointer is down waits for the release.
+ * The state is already up to date, applied on `input`; only the redraw
+ * moves, and only by the length of a click.
+ *
+ * These listeners live at module level and are attached once. `#root`
+ * survives every render, so wiring them inside the render pass would stack
+ * a new listener each time.
+ */
+let pointerHeld = false;
+let repaintQueued = false;
+let pointerWired = false;
+
+function wirePointerGuard(root: HTMLElement) {
+  if (pointerWired) return;
+  pointerWired = true;
+  root.addEventListener('pointerdown', () => { pointerHeld = true; }, true);
+  const release = () => {
+    pointerHeld = false;
+    if (repaintQueued) { repaintQueued = false; rerender(); }
+  };
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', release);
+}
+
+/** Repaint now, or right after the pointer is released. */
+function deferrableRender() {
+  if (pointerHeld) { repaintQueued = true; return; }
+  rerender();
+}
 
 /**
  * The tokens a drop may be priced in. Loaded lazily the first time the
@@ -2181,12 +2223,21 @@ function relativeTime(ms: number): string {
 /** Reads the chain for one name. Two calls, because both answers matter. */
 async function onCheckName() {
   const q = state.nameQuery.trim().toLowerCase();
-  if (!q) { state.nameStatus = undefined; rerender(); return; }
+  if (!q) { state.nameStatus = undefined; state.nameStatusFor = ''; rerender(); return; }
   state.nameChecking = true;
   state.lastError = '';
+  // Drop the old verdict before the new one lands. Keeping it meant the
+  // card showed the PREVIOUS name's auction under the name just typed,
+  // which reads as a wrong answer rather than as a pending one.
+  state.nameStatus = undefined;
+  state.nameStatusFor = '';
   rerender();
   try {
-    state.nameStatus = await readNameStatus(q);
+    const found = await readNameStatus(q);
+    // A slower earlier lookup must not overwrite a newer one.
+    if (state.nameQuery.trim().toLowerCase() !== q) return;
+    state.nameStatus = found;
+    state.nameStatusFor = q;
     // Prefill the bid with the smallest amount the contract will take, so
     // the common case is one click and the number is never guessed.
     if (state.nameStatus.kind === 'auction') {
@@ -2297,8 +2348,10 @@ async function onClaimRefund(newname: string) {
 /** The verdict card. Each shape says something different to a bidder. */
 function nameVerdict(): string {
   const st = state.nameStatus;
-  if (!st) return '';
-  const name = esc(state.nameQuery.trim().toLowerCase());
+  if (!st) return state.nameChecking ? '<p class="lab-hint">Reading the chain.</p>' : '';
+  // The name the ANSWER is about. Reading the live input here is what
+  // paired a new name with the previous name's result.
+  const name = esc(state.nameStatusFor);
 
   if (st.kind === 'not_biddable') {
     return `<div class="lab-callout"><strong>${name} is not an auctioned name.</strong> ${esc(st.why)}</div>`;
@@ -2763,6 +2816,7 @@ function newIngredient(kind: LabIngredient['kind']): LabIngredient {
 /** Wires the page. Every input carries an id so focus survives a re-render. */
 export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   rerender = render;
+  wirePointerGuard(root);
 
   // First paint with a connected wallet: go and find its collections.
   const session = getCurrentSession();
@@ -2999,7 +3053,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
       apply(el.value);
       if (isSelect || repaint === 'live') render();
     });
-    if (!isSelect) el.addEventListener('change', () => render());
+    if (!isSelect) el.addEventListener('change', deferrableRender);
   };
 
   bind('lab-search', (v) => { state.search = v; }, 'live');
