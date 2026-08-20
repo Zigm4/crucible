@@ -17,6 +17,10 @@
  *   PHASE C - the schema gate. Against a real collection read live from
  *             the chain, the attribute picker must block exactly the
  *             attributes an upgrade cannot really change, and no others.
+ *   PHASE E - the queue verdict. Leading a name is not the same as being
+ *             near winning it, so the card must say where the bid sits in
+ *             the chain-wide order, and must not paint a hopeless position
+ *             as good news.
  *   PHASE D - deep links. A shared #/lab/<tool>/<name> must open on that
  *             tool with that auction already resolved, and the workbench
  *             must write back a URL that reproduces what is on screen.
@@ -35,7 +39,7 @@ try {
   process.exit(1);
 }
 const { __setForm, __builtAction, __problems, __warnings, __attributeBlock,
-        __where, __myBidsState, applyLabRoute } = lab;
+        __where, __myBidsState, applyLabRoute, renderLabPage } = lab;
 
 const RPC = ['https://wax.greymass.com', 'https://api.waxsweden.org', 'https://wax.eosphere.io'];
 const ATOMIC = ['https://wax.api.atomicassets.io', 'https://aa.wax.blacklusion.io'];
@@ -832,6 +836,67 @@ async function main() {
     fails.push(`route #/lab/nonsense: switched to "${__where().tool}", should have stayed on "${before}"`);
   } else {
     console.log(`   ok  #/lab/nonsense       -> stays on ${before}, and the URL is repaired to ${globalThis.location.hash}`);
+  }
+
+  // ── PHASE E ──
+  //
+  // The card used to say "You are the highest bidder" and paint it green.
+  // On a 5 WAX bid with 423 larger ones queued that reads as won, when the
+  // true answer is over a year away. Colour is an assertion here, so it is
+  // tested like one.
+  console.log('\n=== PHASE E - what the card claims about a bid ===');
+
+  const names = await import('./.build/names.mjs');
+  const qBid = await names.readNameBid('gainz');
+  const qGate = await names.readCloseGate();
+
+  if (!qBid) {
+    console.log('   skipped: gainz carries no auction row today');
+  } else {
+    const text = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    const card = () => {
+      const m = renderLabPage().match(/<div class="lab-callout([^"]*)">([\s\S]*?)<\/div>/);
+      return m ? { cls: m[1].trim(), body: text(m[2]) } : { cls: '(none)', body: '' };
+    };
+    const cases = [
+      { what: 'still reading the queue', ahead: undefined, cls: '',
+        must: /Reading where that puts you/, mustNot: /leads the whole chain/ },
+      { what: 'leads the whole chain', ahead: { ahead: 0, capped: false }, cls: 'ok',
+        must: /leads the whole chain/, mustNot: /not the same as winning/ },
+      { what: '423 larger bids queued ahead', ahead: { ahead: 423, capped: false }, cls: 'caution',
+        must: /not the same as winning it.*423 open bids.*over a year/s, mustNot: /leads the whole chain/ },
+      { what: 'so far down the count is capped', ahead: { ahead: 2000, capped: true }, cls: 'caution',
+        must: /Over 2000 open bids/, mustNot: /leads the whole chain/ },
+    ];
+    for (const c of cases) {
+      __setForm({
+        tool: 'names', actor: qBid.high_bidder, nameQuery: 'gainz', nameStatusFor: 'gainz',
+        nameStatus: { kind: 'auction', bid: qBid, settlesAt: qBid.last_bid_time + 86400000 },
+        bidAhead: c.ahead, closeGate: qGate,
+      });
+      const got = card();
+      if (got.cls !== c.cls) {
+        fails.push(`queue verdict, ${c.what}: card styled "${got.cls || '(neutral)'}", expected "${c.cls || '(neutral)'}"`);
+      } else if (!c.must.test(got.body)) {
+        fails.push(`queue verdict, ${c.what}: card does not say what it must. It says: ${got.body.slice(0, 140)}`);
+      } else if (c.mustNot.test(got.body)) {
+        fails.push(`queue verdict, ${c.what}: card wrongly claims ${c.mustNot}. It says: ${got.body.slice(0, 140)}`);
+      } else {
+        console.log(`   ok  ${c.what.padEnd(32)} -> ${c.cls || 'neutral'}`);
+      }
+    }
+
+    // The mechanism the whole page depends on has to be ON the page, not
+    // only in a commit message.
+    const page = renderLabPage();
+    const owed = ['onblock', 'last_name_close', 'largest open bid on the whole chain',
+                  'every half second', 'bidrefund', 'newaccount'];
+    const missing = owed.filter((t) => !page.includes(t));
+    if (missing.length) {
+      fails.push(`the settlement explainer omits: ${missing.join(', ')}`);
+    } else {
+      console.log(`   ok  the explainer covers all ${owed.length} mechanics a bidder needs`);
+    }
   }
 
   console.log('');

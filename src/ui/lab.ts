@@ -41,8 +41,9 @@ import { listDropTokens, type DropToken } from '../nefty/dropTokens';
 import {
   readNameStatus, readMyBids, readTopBids, minimumNextBid, formatWax, QUIET_PERIOD_MS,
   buildBidName, buildBidRefund, readRefundsFor, canOutbid,
-  buildClaimName, readAccountKeys,
+  buildClaimName, readAccountKeys, readBidsAhead, readCloseGate,
   type NameAvailability, type BidHistoryEntry, type NameBid, type PendingRefund,
+  type BidQueuePosition, type CloseGate,
 } from '../wax/names';
 import { listBlends, type DiscoveredBlend } from '../nefty/discover';
 import { listUpgrades, type DiscoveredUpgrade } from '../nefty/upgrades';
@@ -296,6 +297,13 @@ interface LabState extends LabForm {
   nameStatus?: NameAvailability;
   /** The name `nameStatus` is about, which is not always what is typed. */
   nameStatusFor: string;
+  /**
+   * Where this bid sits in the chain-wide order, and when the chain may
+   * next close anything at all. Leading a name says nothing on its own:
+   * these two are what decide whether it ever settles.
+   */
+  bidAhead?: BidQueuePosition;
+  closeGate?: CloseGate;
   /** Which button just copied, so only that one says so. Momentary. */
   shareCopied: ShareScope | '';
   nameChecking: boolean;
@@ -366,6 +374,8 @@ const state: LabState = {
   search: '',
   nameQuery: '',
   nameStatusFor: '',
+  bidAhead: undefined,
+  closeGate: undefined,
   shareCopied: '',
   nameChecking: false,
   nameBidAmount: '',
@@ -2471,6 +2481,8 @@ async function onCheckName() {
   // which reads as a wrong answer rather than as a pending one.
   state.nameStatus = undefined;
   state.nameStatusFor = '';
+  state.bidAhead = undefined;
+  state.closeGate = undefined;
   rerender();
   try {
     const found = await readNameStatus(q, state.actor);
@@ -2478,8 +2490,24 @@ async function onCheckName() {
     if (state.nameQuery.trim().toLowerCase() !== q) return;
     state.nameStatus = found;
     state.nameStatusFor = q;
+    state.bidAhead = undefined;
+    state.closeGate = undefined;
     // The URL now points at this exact auction, ready to be copied.
     writeLabHash();
+    // Leading a name is not the same as being near winning it, so read the
+    // two things that actually decide: how many larger bids stand in front
+    // of this one, and when the chain may next close anything at all.
+    if (found.kind === 'auction') {
+      void Promise.all([readBidsAhead(found.bid), readCloseGate()])
+        .then(([ahead, gate]) => {
+          // A newer lookup may have landed while these were in flight.
+          if (state.nameStatusFor !== q) return;
+          state.bidAhead = ahead;
+          state.closeGate = gate;
+          rerender();
+        })
+        .catch(() => { /* the verdict stands on its own without these */ });
+    }
     // Only reached for a name we won, and only if the fields are untouched.
     if (found.kind === 'won' && found.mine && !state.claimOwnerKey) {
       const keys = await readAccountKeys(state.actor);
@@ -2769,27 +2797,155 @@ function nameVerdict(): string {
   const b = st.bid;
   const mine = b.high_bidder === state.actor;
   const settled = st.settlesAt <= Date.now();
+  const q = state.bidAhead;
+  const gate = state.closeGate;
+  // Leading the name is one of three conditions, and on its own it is the
+  // weakest. First in the chain-wide order is what makes a bid close.
+  const leads = q !== undefined && q.ahead === 0;
+  const gateAt = gate ? gate.opensAt : 0;
+  const closesAt = Math.max(st.settlesAt, gateAt);
+
+  // The headline used to say "You are the highest bidder" and paint it
+  // green, which reads as won. For a bid sitting behind hundreds of
+  // others that is the opposite of the truth.
+  const headline = mine
+    ? (q === undefined
+        ? `<strong>You hold the highest bid on ${name}.</strong> Reading where that puts you on the chain.`
+        : leads
+          ? `<strong>You hold the highest bid on ${name}, and it leads the whole chain.</strong>
+             ${settled && gate && Date.now() >= gateAt
+               ? 'All three conditions are met, so this one closes on the next block that checks.'
+               : `Nothing is ahead of it, so it closes ${relativeTime(closesAt)} unless somebody outbids you first.`}`
+          : `<strong>You hold the highest bid on ${name}, which is not the same as winning it.</strong>
+             ${queueSentence(q)}`)
+    : `<strong>${name} is under auction.</strong> Highest bidder: <code>${esc(b.high_bidder)}</code>.`;
+
   return `
-    <div class="lab-callout ${mine ? 'ok' : ''}">
-      <strong>${name} is under auction.</strong>
-      ${mine ? 'You are the highest bidder.' : `Highest bidder: <code>${esc(b.high_bidder)}</code>.`}
-    </div>
+    <div class="lab-callout ${
+      // No colour until the queue is read: an orange box while the answer
+      // is still loading is a verdict passed before the evidence arrives.
+      mine && q !== undefined ? (leads ? 'ok' : 'caution') : ''
+    }">${headline}</div>
     <div class="lab-review">
       <div><span>Highest bid</span><b>${waxOf(b.high_bid)} WAX</b></div>
       <div><span>Bidder</span><b>${esc(b.high_bidder)}${mine ? ' (you)' : ''}</b></div>
       <div><span>Last bid</span><b>${new Date(b.last_bid_time).toLocaleString()}, ${relativeTime(b.last_bid_time)}</b></div>
       <div><span>Quiet since</span><b class="${settled ? '' : 'warn'}">${
         settled
-          ? 'over 24 hours, so this one is eligible to settle'
-          : `not yet, eligible ${relativeTime(st.settlesAt)}`
+          ? 'over 24 hours, so condition 1 is met'
+          : `not yet, 24 hours is up ${relativeTime(st.settlesAt)}`
+      }</b></div>
+      <div><span>Larger bids on the chain</span><b class="${q && q.ahead > 0 ? 'warn' : ''}">${
+        q === undefined
+          ? 'reading'
+          : q.ahead === 0
+            ? 'none, this bid leads the chain'
+            : `${q.capped ? 'over ' : ''}${q.ahead}, and each one settles first`
+      }</b></div>
+      <div><span>Chain may next close</span><b>${
+        gate === undefined
+          ? 'reading'
+          : Date.now() >= gateAt
+            ? 'now, the daily wait has already passed'
+            : `${relativeTime(gateAt)}, one day after the last win`
       }</b></div>
       <div><span>To outbid</span><b>${minimumNextBid(b)} WAX minimum</b></div>
     </div>
-    <div class="lab-callout">
-      Being eligible is not the same as winning. The chain settles <strong>one name a day</strong>,
-      the single highest bid on the whole chain, so a quiet auction can wait a long time behind
-      bigger ones.
-    </div>`;
+    ${howAuctionsSettle()}`;
+}
+
+/**
+ * How the auction really settles, for anyone who wants the mechanism.
+ *
+ * Folded away by default: the verdict above already says what THIS name
+ * is doing, and most readers never need the rest. But the rule that
+ * decides everything is counter-intuitive enough that guessing it wrong
+ * costs real WAX, so the full version has to be somewhere on the page.
+ */
+function howAuctionsSettle(): string {
+  return `
+    <details class="lab-explain">
+      <summary>How these auctions actually settle</summary>
+
+      <h5>Where this happens</h5>
+      <p>
+        Inside the <code>eosio</code> system contract itself, in a table called
+        <code>namebids</code>. There is no marketplace, no website and no operator. Nobody can
+        cancel an auction, extend one, or be persuaded to sell you a name.
+      </p>
+
+      <h5>Bidding</h5>
+      <ul>
+        <li>A bid is <code>eosio::bidname(bidder, newname, bid)</code>. Your WAX leaves your
+            account at that moment, not when you win.</li>
+        <li>A later bid has to beat the standing one by at least 10 percent.</li>
+        <li>When somebody outbids you the contract does <strong>not</strong> send your WAX back.
+            It writes a row in <code>bidrefunds</code> and waits. You collect it with
+            <code>eosio::bidrefund</code>, and nothing does that for you. The panel further down
+            this page finds those rows and claims them.</li>
+      </ul>
+
+      <h5>Settling, which is the part that surprises people</h5>
+      <p>
+        There is no timer and no nightly job at a fixed hour. The check lives in
+        <code>onblock</code>, which the system contract runs on <strong>every single block</strong>.
+        WAX produces a block every half second, so the question "should a name close now?" is
+        asked around 172,800 times a day. It almost always answers no, because three conditions
+        have to hold at the same instant:
+      </p>
+      <ol>
+        <li>The standing bid has not moved for 24 hours.</li>
+        <li>More than a day has passed since the last name closed <strong>anywhere on the
+            chain</strong>. The contract keeps a single global value, <code>last_name_close</code>,
+            for exactly this.</li>
+        <li>The name is the <strong>largest open bid on the whole chain</strong>. The contract
+            looks only at the top of that order. It never scans for anything else that might be
+            ready.</li>
+      </ol>
+      <p>
+        So at most one name closes per day, for everyone, and it is always the biggest. Condition
+        3 is the one that catches people. A bid can lead its own name, sit untouched for years,
+        and still never close, because something larger is always in front of it. This chain
+        carries open bids that have not moved since 2021.
+      </p>
+      <p>
+        It also means an active bidding war at the top blocks everybody underneath. While the
+        largest bid keeps being raised, its 24 hour clock keeps restarting, and nothing settles
+        at all that day.
+      </p>
+
+      <h5>Winning is not owning</h5>
+      <ul>
+        <li>Closing an auction flips <code>high_bid</code> negative in the table. That is the
+            entire event. No account is created.</li>
+        <li>Only the winner can create it, with <code>eosio::newaccount</code>, which also needs
+            RAM and a little staked NET and CPU. This page builds that transaction for you when
+            the verdict says you won.</li>
+        <li>There is no deadline and nothing expires. A won name sits unclaimed for as long as
+            the winner leaves it, and some have sat for years.</li>
+      </ul>
+    </details>`;
+}
+
+/**
+ * What a queue position means in days. The chain takes at most one name a
+ * day, so the count of larger bids IS the wait, in days, at best.
+ */
+function queueSentence(q: BidQueuePosition): string {
+  const days = q.ahead;
+  const years = Math.floor(days / 365);
+  const span = days >= 365
+    ? (years === 1 ? 'over a year' : `over ${years} years`)
+    : days >= 60
+      ? `over ${Math.floor(days / 30)} months`
+      : days === 1
+        ? 'at least a day'
+        : `at least ${days} days`;
+  return `${q.capped ? 'Over ' : ''}${days} open bids on the chain are larger than yours, and the chain
+    closes the largest one first, at most one a day. So this name cannot settle for ${span},
+    and only if none of those bids grows and nothing new is bid above yours. Raising your own
+    bid is the only thing that moves you up, and the contract will not let you outbid yourself
+    while you already lead this name.`;
 }
 
 /**

@@ -2321,3 +2321,35 @@ input.lab-inline { max-width: 190px; }
   display: flex; align-items: center; gap: 10px; margin: 10px 0 0;
   font-size: 12px; color: var(--muted);
 }
+
+/* The mechanism, folded away. The verdict above answers the question that
+   was asked; this answers the one a reader has next, and only if they do. */
+.lab-explain {
+  margin-top: 14px; padding: 0 13px;
+  border-left: 3px solid var(--border-soft); border-radius: 3px;
+  background: rgba(10, 22, 38, 0.4);
+  font-size: 11.5px; line-height: 1.65; color: var(--fg-dim);
+}
+.lab-explain > summary {
+  padding: 11px 0; cursor: pointer; color: var(--fg-dim);
+  font-size: 12px; letter-spacing: 0.2px;
+}
+.lab-explain > summary:hover { color: var(--fg); }
+.lab-explain[open] > summary { color: var(--fg); }
+.lab-explain h5 {
+  margin: 16px 0 6px; color: var(--fg);
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+}
+.lab-explain p { margin: 0 0 10px; }
+.lab-explain ul, .lab-explain ol { margin: 0 0 10px; padding-left: 20px; }
+.lab-explain li { margin-bottom: 5px; }
+.lab-explain code { font-size: 10.5px; color: var(--accent); }
+.lab-explain strong { color: var(--fg); }
+.lab-explain > *:last-child { margin-bottom: 14px; }
+
+/* Leading a name while hundreds of bigger bids queue ahead is not good
+   news, and must not be painted like the green "you lead the chain" case. */
+.lab-callout.caution {
+  border-left-color: var(--warn);
+  background: rgba(255, 206, 92, 0.07);
+}

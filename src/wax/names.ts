@@ -184,6 +184,82 @@ export async function readTopBids(limit = 10): Promise<NameBid[]> {
 }
 
 /**
+ * How many OPEN auctions on the chain are larger than this one.
+ *
+ * Holding the highest bid on a name is not the same as being close to
+ * owning it. The chain settles one name a day and always takes the single
+ * largest open bid, so a bid's position in that chain-wide order is what
+ * decides whether it settles this week or never. A 5 WAX bid can lead its
+ * own name and still sit behind hundreds of others.
+ *
+ * One request, not a scan. Larger bids sort BEFORE this one in the
+ * secondary index (the key is the negated bid, so it falls as the bid
+ * rises), which means they all live in the key range between the open
+ * floor and this bid's own key. Bounding both ends turns a walk over tens
+ * of thousands of rows into a single bounded read.
+ *
+ * Equal bids are not counted: they do not beat this one, and the contract
+ * breaks that tie by name rather than by size.
+ */
+export interface BidQueuePosition {
+  /** Open bids strictly larger than this one. */
+  ahead: number;
+  /** True when the count hit the cap, so `ahead` is a floor, not a total. */
+  capped: boolean;
+}
+
+export async function readBidsAhead(bid: NameBid, cap = 2000): Promise<BidQueuePosition> {
+  if (bid.closed || bid.high_bid <= 0) return { ahead: 0, capped: false };
+  const floor = BigInt(OPEN_BID_FLOOR);
+  const key = (1n << 64n) - BigInt(Math.round(bid.high_bid));
+  // Nothing can sort above the floor, so this bid already leads the chain.
+  if (key <= floor) return { ahead: 0, capped: false };
+  const rows = await getTableRows<{
+    newname: string; high_bidder: string; high_bid: string | number; last_bid_time: string;
+  }>({
+    code: SYSTEM,
+    scope: SYSTEM,
+    table: 'namebids',
+    index_position: 'secondary',
+    key_type: 'i64',
+    lower_bound: OPEN_BID_FLOOR,
+    upper_bound: (key - 1n).toString(),
+    limit: cap,
+  });
+  // Same defence as readTopBids: a closed row is not competition.
+  return { ahead: rows.map(decode).filter((b) => !b.closed).length, capped: rows.length >= cap };
+}
+
+/**
+ * When the chain may next close an auction, for anyone.
+ *
+ * `eosio/global.last_name_close` is a single value for the whole chain,
+ * and the settlement check refuses to run again until a day has passed
+ * since it. So even a bid that leads the chain and has been quiet for
+ * 24 hours waits for this clock, which somebody else's win just reset.
+ */
+export interface CloseGate {
+  lastClose: number;
+  /** No auction anywhere can close before this. */
+  opensAt: number;
+}
+
+export async function readCloseGate(): Promise<CloseGate | undefined> {
+  const rows = await getTableRows<{ last_name_close?: string }>({
+    code: SYSTEM,
+    scope: SYSTEM,
+    table: 'global',
+    limit: 1,
+  });
+  const raw = rows[0]?.last_name_close;
+  if (!raw) return undefined;
+  // Stored as a zoneless time_point, and it is UTC.
+  const lastClose = Date.parse(raw + 'Z');
+  if (!Number.isFinite(lastClose)) return undefined;
+  return { lastClose, opensAt: lastClose + QUIET_PERIOD_MS };
+}
+
+/**
  * The smallest bid the contract will accept next, in WAX.
  *
  * The system requires a new bid to beat the standing one by at least ten
