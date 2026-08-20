@@ -17,7 +17,8 @@
 import { Action, APIClient } from '@wharfkit/session';
 import {
   readNameStatus, readNameBid, readTopBids, minimumNextBid, biddableName, formatWax,
-  buildBidName, buildBidRefund,
+  buildBidName, buildBidRefund, canOutbid, readRefundsFor,
+  buildClaimName, readAccountKeys,
 } from './.build/names.mjs';
 
 const fails = [];
@@ -86,12 +87,58 @@ for (const b of top.slice(0, 3)) {
   console.log(`        ${b.newname.padEnd(14)} ${(b.high_bid / 1e8).toFixed(2).padStart(10)} WAX  ${b.high_bidder}`);
 }
 
-console.log('\n=== PHASE C - both actions against the live eosio ABI ===');
+console.log('\n=== PHASE B3 - you cannot outbid yourself ===');
+// The system contract refuses a bid from whoever already holds the top
+// one. Offering the button anyway is offering a transaction that fails.
+// Corroborated on chain: of 496 consecutive bid pairs, zero repeat the
+// same bidder.
+if (bid) {
+  ok(canOutbid(bid, bid.high_bidder) === false, 'the standing bidder must not be offered a raise');
+  ok(canOutbid(bid, 'someoneelse11') === true, 'anyone else must be able to outbid');
+  console.log(`   ok   ${bid.high_bidder} cannot raise their own bid, others can`);
+}
+ok(canOutbid(undefined, 'anyone') === true, 'a name with no bid must be biddable');
+console.log('   ok   a name nobody has bid on is biddable by anyone');
+
+console.log('\n=== PHASE B4 - refunds are scoped by NAME, not by bidder ===');
+// The scope is the name being bid on and the primary key is the bidder,
+// the reverse of the obvious reading. Scoping by the bidder returns an
+// empty list for everyone forever, so the panel could never show a row.
+const owed = await readRefundsFor('croplandgame', ['rekt']);
+ok(owed.length === 1, `croplandgame should be owed on rekt, got ${owed.length} row(s)`);
+ok(owed[0]?.wax > 0, 'the refund amount must parse to a number');
+console.log(`   ${owed.length === 1 ? 'ok  ' : 'FAIL'} croplandgame is owed ${owed[0]?.amount ?? '?'} on rekt`);
+const notOwed = await readRefundsFor('zzznobodyzzz', ['rekt']);
+ok(notOwed.length === 0, 'an account with no refund must get an empty list');
+console.log(`   ${notOwed.length === 0 ? 'ok  ' : 'FAIL'} an unrelated account is owed nothing`);
+
+console.log('\n=== PHASE B5 - a won name is not a created account ===');
+// Closing the auction only flips the sign. The account appears when the
+// winner calls newaccount, which is what erases the row. Names sit won
+// and unclaimed for years, so "won" must not read as "taken".
+const won = await readNameStatus('13', '.nzni.c.wam');
+ok(won.kind === 'won', `13 should read as won, got ${won.kind}`);
+ok(won.kind === 'won' && won.mine === true, 'the winner must be told the name is theirs to claim');
+const wonByOther = await readNameStatus('13', 'someoneelse11');
+ok(wonByOther.kind === 'won' && wonByOther.mine === false, 'a bystander must not be offered the claim');
+console.log(`   ${won.kind === 'won' ? 'ok  ' : 'FAIL'} 13 reads as won by its bidder, and as not-mine to anyone else`);
+
+console.log('\n=== PHASE C - every action against the live eosio ABI ===');
 const client = new APIClient({ url: 'https://wax.greymass.com' });
 const abi = (await client.v1.chain.get_abi('eosio')).abi;
+const claimKeys = await readAccountKeys('croplandgame');
+ok(Boolean(claimKeys.owner && claimKeys.active),
+  'account keys must be readable, WharfKit returns typed objects rather than strings');
+const claim = buildClaimName({
+  creator: 'croplandgame', newname: '13',
+  ownerKey: claimKeys.owner, activeKey: claimKeys.active,
+});
 for (const [label, action] of [
   ['bidname',   buildBidName('zigm4.gm', 'rekt', 220.00000001)],
   ['bidrefund', buildBidRefund('zigm4.gm', 'rekt')],
+  ['newaccount',  claim[0]],
+  ['buyrambytes', claim[1]],
+  ['delegatebw',  claim[2]],
 ]) {
   try {
     Action.from({ account: action.account, name: action.name, authorization: action.authorization, data: action.data }, abi);

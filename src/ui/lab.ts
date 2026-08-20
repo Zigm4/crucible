@@ -40,8 +40,9 @@ import { clearDropsCache } from '../nefty/drops';
 import { listDropTokens, type DropToken } from '../nefty/dropTokens';
 import {
   readNameStatus, readMyBids, readTopBids, minimumNextBid, formatWax, QUIET_PERIOD_MS,
-  buildBidName, buildBidRefund, readRefunds,
-  type NameAvailability, type BidHistoryEntry, type NameBid,
+  buildBidName, buildBidRefund, readRefundsFor, canOutbid,
+  buildClaimName, readAccountKeys,
+  type NameAvailability, type BidHistoryEntry, type NameBid, type PendingRefund,
 } from '../wax/names';
 import { listBlends, type DiscoveredBlend } from '../nefty/discover';
 import { listUpgrades, type DiscoveredUpgrade } from '../nefty/upgrades';
@@ -297,7 +298,10 @@ interface LabState extends LabForm {
   nameBidAmount: string;
   myBids: BidHistoryEntry[];
   myBidsState: LoadState;
-  refunds: { newname: string; amount: string }[];
+  refunds: PendingRefund[];
+  /** Claiming a name we won: the keys the new account will answer to. */
+  claimOwnerKey: string;
+  claimActiveKey: string;
   topBids: NameBid[];
   topBidsState: LoadState;
 
@@ -363,6 +367,8 @@ const state: LabState = {
   myBids: [],
   myBidsState: 'idle',
   refunds: [],
+  claimOwnerKey: '',
+  claimActiveKey: '',
   topBids: [],
   topBidsState: 'idle',
   busy: false,
@@ -2317,11 +2323,17 @@ async function onCheckName() {
   state.nameStatusFor = '';
   rerender();
   try {
-    const found = await readNameStatus(q);
+    const found = await readNameStatus(q, state.actor);
     // A slower earlier lookup must not overwrite a newer one.
     if (state.nameQuery.trim().toLowerCase() !== q) return;
     state.nameStatus = found;
     state.nameStatusFor = q;
+    // Only reached for a name we won, and only if the fields are untouched.
+    if (found.kind === 'won' && found.mine && !state.claimOwnerKey) {
+      const keys = await readAccountKeys(state.actor);
+      state.claimOwnerKey = keys.owner ?? '';
+      state.claimActiveKey = keys.active ?? '';
+    }
     // Prefill the bid with the smallest amount the contract will take, so
     // the common case is one click and the number is never guessed.
     if (state.nameStatus.kind === 'auction') {
@@ -2350,12 +2362,12 @@ async function loadMyBids() {
   if (!state.actor) return;
   state.myBidsState = 'loading';
   rerender();
-  const [bids, refunds] = await Promise.all([
-    readMyBids(state.actor).catch(() => []),
-    readRefunds(state.actor).catch(() => []),
-  ]);
+  const bids = await readMyBids(state.actor).catch(() => []);
   state.myBids = bids;
-  state.refunds = refunds;
+  // There is no index from an account to what it is owed, so the names it
+  // bid on are the only way in. A refund the history window has forgotten
+  // is invisible here, which is worth saying rather than hiding.
+  state.refunds = await readRefundsFor(state.actor, bids.map((b) => b.newname)).catch(() => []);
   state.myBidsState = 'done';
   rerender();
 }
@@ -2410,6 +2422,99 @@ async function onPlaceBid() {
   rerender();
 }
 
+/**
+ * Creates the account for a name we won. Three actions in one
+ * transaction, because an account has to exist before anyone can buy RAM
+ * for it or stake to it, and because a half-done claim is worse than none.
+ */
+async function onClaimName() {
+  const session = getCurrentSession();
+  const st = state.nameStatus;
+  if (!session || !st || st.kind !== 'won' || !st.mine) return;
+  const newname = st.bid.newname;
+  const owner = state.claimOwnerKey.trim();
+  const active = state.claimActiveKey.trim();
+  if (!owner || !active) {
+    state.lastError = 'Both keys are required. An account with no key can never be used again.';
+    rerender();
+    return;
+  }
+
+  const summary = [
+    `CREATE THE ACCOUNT "${newname}"`,
+    '',
+    `You won it for ${waxOf(st.bid.high_bid)} WAX, already paid.`,
+    '',
+    'This transaction does three things:',
+    `  eosio::newaccount    creates ${newname}`,
+    '  eosio::buyrambytes   buys it about 4 KB of RAM, which costs WAX',
+    '  eosio::delegatebw    stakes 1 WAX to its CPU and NET',
+    '',
+    `owner  ${owner}`,
+    `active ${active}`,
+    '',
+    'Check both keys. An account created with a key nobody holds the',
+    'private half of is unrecoverable, and the name is spent.',
+  ].join('\n');
+  if (!(await confirmCreate(summary))) return;
+
+  state.busy = true;
+  state.lastError = '';
+  state.lastTx = '';
+  rerender();
+  try {
+    const result = await session.transact({
+      actions: buildClaimName({ creator: state.actor, newname, ownerKey: owner, activeKey: active }),
+    });
+    state.lastTx =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    // The claim erases the bid row, so the verdict changes to "taken".
+    await onCheckName();
+    void loadTopBids();
+  } catch (err) {
+    state.lastError = err instanceof Error ? err.message : String(err);
+  }
+  state.busy = false;
+  rerender();
+}
+
+/** Every refund at once. They are separate actions, one signature. */
+async function onClaimAllRefunds() {
+  const session = getCurrentSession();
+  if (!session || state.refunds.length === 0) return;
+  const total = state.refunds.reduce((n, r) => n + r.wax, 0);
+  const summary = [
+    `CLAIM ${state.refunds.length} REFUND(S)`,
+    '',
+    ...state.refunds.map((r) => `  ${r.newname}  ${r.amount}`),
+    '',
+    `Total returned to you: ${formatWax(total)}`,
+    '',
+    'These are bids you were outbid on. The WAX has been yours all along,',
+    'it just sits on the contract until asked for.',
+  ].join('\n');
+  if (!(await confirmCreate(summary))) return;
+
+  state.busy = true;
+  state.lastError = '';
+  state.lastTx = '';
+  rerender();
+  try {
+    const result = await session.transact({
+      actions: state.refunds.map((r) => buildBidRefund(state.actor, r.newname)),
+    });
+    state.lastTx =
+      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
+      String(result.resolved?.transaction.id ?? '');
+    void loadMyBids();
+  } catch (err) {
+    state.lastError = err instanceof Error ? err.message : String(err);
+  }
+  state.busy = false;
+  rerender();
+}
+
 async function onClaimRefund(newname: string) {
   const session = getCurrentSession();
   if (!session) return;
@@ -2427,6 +2532,45 @@ async function onClaimRefund(newname: string) {
   }
   state.busy = false;
   rerender();
+}
+
+/**
+ * Turning a won auction into an account you own.
+ *
+ * The keys default to the ones the winning wallet already uses, because
+ * that is what almost everyone wants and because typing a key by hand is
+ * the step where a name gets locked away forever. They stay editable for
+ * the case where the new account is meant for someone else.
+ */
+function claimForm(newname: string): string {
+  return `
+    <div class="lab-field" style="margin-top:18px">
+      <label>Owner key <span class="lab-note">controls everything, including the active key</span></label>
+      <input id="lab-claim-owner" type="text" value="${esc(state.claimOwnerKey)}"
+             placeholder="EOS... or PUB_K1_..." autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="lab-field">
+      <label>Active key <span class="lab-note">day to day signing</span></label>
+      <input id="lab-claim-active" type="text" value="${esc(state.claimActiveKey)}"
+             placeholder="EOS... or PUB_K1_..." autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="lab-callout">
+      <strong>These are your own wallet's keys, prefilled.</strong> Keep them and
+      <code>${esc(newname)}</code> answers to the same wallet you are signing with. Replace them
+      only if the account is for somebody else, and only with a key whose private half exists
+      somewhere: an account created with a key nobody holds is gone for good.
+    </div>
+    <div class="lab-callout danger">
+      <strong>Creating it costs WAX on top of the bid you already paid.</strong> A new account owns
+      no RAM and no resources, so the transaction also buys it about 4 KB of RAM (a fraction of a
+      WAX) and stakes 1 WAX to CPU and NET. The stake is not spent, you can unstake it later. The
+      RAM is a purchase.
+    </div>
+    <div class="lab-nav-actions">
+      <button class="lab-primary" data-lab="name-claim" ${state.busy || !state.actor ? 'disabled' : ''}>
+        ${state.busy ? 'Waiting for your wallet' : `Create ${esc(newname)}`}
+      </button>
+    </div>`;
 }
 
 /** The verdict card. Each shape says something different to a bidder. */
@@ -2447,11 +2591,21 @@ function nameVerdict(): string {
     </div>`;
   }
   if (st.kind === 'won') {
-    return `<div class="lab-callout danger">
-      <strong>${name} was won at auction by <code>${esc(st.bid.high_bidder)}</code> for ${waxOf(st.bid.high_bid)} WAX.</strong>
-      The auction is closed and the account has been created. The row is kept on chain as a record,
-      which is why a bid still appears against this name.
-    </div>`;
+    if (!st.mine) {
+      return `<div class="lab-callout danger">
+        <strong>${name} was won by <code>${esc(st.bid.high_bidder)}</code> for ${waxOf(st.bid.high_bid)} WAX.</strong>
+        The auction is closed, so nobody can bid on it any more. The account itself has not been
+        created yet, and only the winner can do that, but the name is theirs for as long as they
+        leave it there. Names sit like this for years.
+      </div>`;
+    }
+    return `
+      <div class="lab-callout ok">
+        <strong>You won ${name}, for ${waxOf(st.bid.high_bid)} WAX.</strong>
+        The account does not exist yet. Winning only closed the auction; creating the account is a
+        separate transaction that only you can sign, and nothing does it for you.
+      </div>
+      ${claimForm(st.bid.newname)}`;
   }
   if (st.kind === 'free') {
     return `<div class="lab-callout ok">
@@ -2528,7 +2682,12 @@ function topBidsBoard(): string {
 
 function nameTool(): string {
   const st = state.nameStatus;
-  const canBid = st && (st.kind === 'auction' || st.kind === 'free');
+  const standing = st && st.kind === 'auction' ? st.bid : undefined;
+  const ours = Boolean(standing && standing.high_bidder === state.actor);
+  // The contract refuses a bid from whoever already holds the top one, so
+  // showing the form here would only offer a transaction that must fail.
+  const canBid = Boolean(st && (st.kind === 'auction' || st.kind === 'free')
+    && canOutbid(standing, state.actor));
   return `
     <h3 class="lab-q">WAX premium names</h3>
     <p class="lab-hint">
@@ -2549,6 +2708,14 @@ function nameTool(): string {
     </div>
 
     ${nameVerdict()}
+
+    ${ours ? `
+      <div class="lab-callout ok">
+        <strong>You already hold the highest bid, so there is nothing to do.</strong>
+        The system contract refuses a bid from whoever is already on top, which means you cannot
+        raise your own offer even if you want to. Your bid stands until somebody beats it by 10
+        percent, and the clock only restarts when they do.
+      </div>` : ''}
 
     ${canBid ? `
       <div class="lab-field" style="margin-top:18px">
@@ -2581,17 +2748,24 @@ function nameTool(): string {
         : `
           ${state.refunds.length ? `
             <div class="lab-callout ok">
-              <strong>${state.refunds.length} refund(s) waiting for you.</strong> These are bids you were
-              outbid on. The WAX is yours and sits on the contract until you ask for it.
+              <strong>${formatWax(state.refunds.reduce((n, r) => n + r.wax, 0))} waiting for you,
+              across ${state.refunds.length} name(s).</strong>
+              These are bids you were outbid on. The WAX has been yours the whole time, it just sits
+              on the contract until somebody asks for it, and nothing ever asks on your behalf.
               <ul class="lab-list">
                 ${state.refunds.map((r) => `<li>
                   <code>${esc(r.newname)}</code> ${esc(r.amount)}
                   <button class="lab-add" data-lab="name-refund" data-name="${esc(r.newname)}">Claim it</button>
                 </li>`).join('')}
               </ul>
+              <div class="lab-nav-actions">
+                <button class="lab-primary" data-lab="name-refund-all" ${state.busy ? 'disabled' : ''}>
+                  ${state.busy ? 'Waiting for your wallet' : `Claim all ${state.refunds.length} in one signature`}
+                </button>
+              </div>
             </div>` : ''}
           ${state.myBids.length === 0
-            ? '<p class="lab-empty">No bid found in the history window. History nodes do not keep everything, so this is not proof you never bid.</p>'
+            ? '<p class="lab-empty">No bid found in the history window. History nodes do not keep everything, so this is not proof you never bid, and a refund on a forgotten name would not show up here either.</p>'
             : `<div class="lab-rows">
                  ${state.myBids.map((b) => `
                    <div class="lab-row">
@@ -3141,7 +3315,9 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'name-bid':    void onPlaceBid(); return;
         case 'name-reload': void loadMyBids(); return;
         case 'top-reload':  void loadTopBids(); return;
-        case 'name-refund': void onClaimRefund(el.dataset.name ?? ''); return;
+        case 'name-refund':     void onClaimRefund(el.dataset.name ?? ''); return;
+        case 'name-refund-all': void onClaimAllRefunds(); return;
+        case 'name-claim':      void onClaimName(); return;
         case 'name-recheck':
           state.nameQuery = el.dataset.name ?? '';
           void onCheckName();
@@ -3204,6 +3380,8 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   bind('lab-token-search', (v) => { state.tokenSearch = v; }, 'live');
   bind('lab-name-query', (v) => { state.nameQuery = v; });
   bind('lab-name-bid', (v) => { state.nameBidAmount = v; });
+  bind('lab-claim-owner', (v) => { state.claimOwnerKey = v; });
+  bind('lab-claim-active', (v) => { state.claimActiveKey = v; });
   // Enter searches: typing a name and reaching for the mouse is the wrong
   // rhythm for a tool whose whole loop is "try another name".
   const nameInput = root.querySelector<HTMLInputElement>('#lab-name-query');

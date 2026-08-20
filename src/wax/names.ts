@@ -18,8 +18,11 @@
  * nobody guesses:
  *
  *   high_bid > 0   the auction is OPEN, the name is still up for grabs
- *   high_bid < 0   the auction is CLOSED and the name was created for
- *                  `high_bidder`. The absolute value is the winning bid.
+ *   high_bid < 0   the auction is CLOSED. `high_bidder` won it and may now
+ *                  claim it, and the absolute value is the winning bid.
+ *                  The account does NOT exist yet: the row survives until
+ *                  the winner calls `newaccount`, which erases it. `13`
+ *                  was won in 2022 and is still sitting there unclaimed.
  *
  * So a row is not proof a name is taken, and no row is not proof it is
  * free. Both have to be read, which is what `readNameStatus` does.
@@ -51,8 +54,12 @@ export type NameAvailability =
   | { kind: 'free' }
   /** An auction is running. */
   | { kind: 'auction'; bid: NameBid; settlesAt: number }
-  /** Won at auction and created. */
-  | { kind: 'won'; bid: NameBid }
+  /**
+   * The auction closed and this bidder may now create the account. The
+   * name does NOT exist yet: the row survives until someone calls
+   * `newaccount`, which is what erases it. Names sit here for years.
+   */
+  | { kind: 'won'; bid: NameBid; mine: boolean }
   /** The account exists. Nothing to bid on. */
   | { kind: 'taken'; created?: string }
   /** Not a name the auction accepts (12 chars, or a dot, or bad letters). */
@@ -120,7 +127,7 @@ export async function readNameBid(name: string): Promise<NameBid | undefined> {
  * created as a 12-character name or a subaccount), and an auction row can
  * exist for a name that is still unclaimed.
  */
-export async function readNameStatus(raw: string): Promise<NameAvailability> {
+export async function readNameStatus(raw: string, forActor = ''): Promise<NameAvailability> {
   const check = biddableName(raw);
   if (!check.ok) return { kind: 'not_biddable', why: check.why };
   const name = check.name;
@@ -130,7 +137,7 @@ export async function readNameStatus(raw: string): Promise<NameAvailability> {
     getAccount(name).then((a) => a, () => undefined),
   ]);
 
-  if (bid?.closed) return { kind: 'won', bid };
+  if (bid?.closed && !account) return { kind: 'won', bid, mine: bid.high_bidder === forActor };
   if (account) return { kind: 'taken', created: String(account.created ?? '') };
   if (bid) return { kind: 'auction', bid, settlesAt: bid.last_bid_time + QUIET_PERIOD_MS };
   return { kind: 'free' };
@@ -206,6 +213,20 @@ export function buildBidName(bidder: string, newname: string, waxAmount: number)
 }
 
 /**
+ * Can this account outbid the standing bid?
+ *
+ * The system contract refuses a bid from whoever already holds the top
+ * one: `check(high_bidder != bidder, "account is already highest bidder")`.
+ * Confirmed against 496 consecutive bid pairs on chain, of which exactly
+ * zero repeat the same bidder. Raising your own bid is not a thing, so
+ * offering the button is offering a transaction that will fail.
+ */
+export function canOutbid(bid: NameBid | undefined, actor: string): boolean {
+  if (!bid || bid.closed) return true;
+  return bid.high_bidder !== actor;
+}
+
+/**
  * Claims back a bid that was outbid. The refund is NOT automatic: the WAX
  * sits in `bidrefunds` until the loser asks for it, which is why people
  * forget it exists.
@@ -219,15 +240,42 @@ export function buildBidRefund(bidder: string, newname: string): BuiltAction {
   };
 }
 
-/** Refunds waiting to be claimed by this account, scoped by the bidder. */
-export async function readRefunds(bidder: string): Promise<{ newname: string; amount: string }[]> {
-  const rows = await getTableRows<{ bidder: string; amount: string }>({
-    code: SYSTEM, scope: bidder, table: 'bidrefunds', limit: 100,
-  });
-  // The row's primary key is the name being bid on, which the JSON view
-  // exposes as the scope's key rather than a field, so read it back from
-  // the bids this account made instead when the field is absent.
-  return rows.map((r) => ({ newname: (r as unknown as { newname?: string }).newname ?? '', amount: r.amount }));
+export interface PendingRefund {
+  newname: string;
+  amount: string;
+  wax: number;
+}
+
+/**
+ * Refunds this account can claim, one name at a time.
+ *
+ * The scope is the NAME being bid on and the primary key is the BIDDER,
+ * which is the reverse of the obvious reading. Scoping by the bidder, as
+ * this module first did, returns an empty list for everyone, forever: the
+ * refund panel could never have shown a real row. Meanwhile `rekt` alone
+ * holds two unclaimed refunds today.
+ *
+ * There is no index from an account to the names it is owed on, so the
+ * caller supplies the names, normally from that account's bid history.
+ */
+export async function readRefundsFor(
+  bidder: string,
+  names: string[],
+): Promise<PendingRefund[]> {
+  const unique = [...new Set(names.map((n) => n.trim().toLowerCase()).filter(Boolean))];
+  const found = await Promise.all(unique.map(async (newname) => {
+    try {
+      const rows = await getTableRows<{ bidder: string; amount: string }>({
+        code: SYSTEM, scope: newname, table: 'bidrefunds', limit: 50,
+      });
+      const mine = rows.find((r) => r.bidder === bidder);
+      if (!mine) return undefined;
+      return { newname, amount: mine.amount, wax: Number(String(mine.amount).split(' ')[0]) };
+    } catch {
+      return undefined;
+    }
+  }));
+  return found.filter((r): r is PendingRefund => Boolean(r));
 }
 
 export interface BidHistoryEntry {
@@ -264,4 +312,117 @@ export async function readMyBids(actor: string, limit = 100): Promise<BidHistory
     } catch { /* next host */ }
   }
   return [];
+}
+
+// ─── claiming a name you won ────────────────────────────────────────────
+
+/**
+ * Winning is not receiving. The auction closing only flips `high_bid`
+ * negative; the account still has to be created, by the winner, with
+ * `eosio::newaccount`. That call is what erases the bid row.
+ *
+ * Nobody does it for you and nothing expires, which is why names sit won
+ * and unclaimed for years: `13` since 2022, `133` since 2020.
+ *
+ * A real claim is three actions in one transaction, taken from
+ * `croplandgame` claiming `croplands` on 2026-08-19:
+ *
+ *   eosio::newaccount    the account and its two permissions
+ *   eosio::buyrambytes   it owns no RAM, so the winner pays for its rows
+ *   eosio::delegatebw    a little CPU and NET so it can act at all
+ *
+ * All three are needed. `newaccount` alone leaves an account that cannot
+ * hold anything or sign anything.
+ */
+
+/** An EOSIO permission: one key, weight 1, threshold 1. The common shape. */
+function singleKeyAuthority(key: string) {
+  return { threshold: 1, keys: [{ key, weight: 1 }], accounts: [], waits: [] };
+}
+
+export interface ClaimNameArgs {
+  /** The winner, who pays for everything. */
+  creator: string;
+  /** The name won at auction. */
+  newname: string;
+  ownerKey: string;
+  activeKey: string;
+  /** Rows cost RAM. 4096 is comfortable for an account that will hold NFTs. */
+  ramBytes?: number;
+  /** Staked, not spent: it can be unstaked later. */
+  stakeNetWax?: number;
+  stakeCpuWax?: number;
+}
+
+/**
+ * The three actions, in the order the chain needs them: the account must
+ * exist before anyone can buy RAM for it or stake to it.
+ */
+export function buildClaimName(a: ClaimNameArgs): BuiltAction[] {
+  const auth = [{ actor: a.creator, permission: 'active' }];
+  const ram = a.ramBytes ?? 4096;
+  const net = a.stakeNetWax ?? 0.1;
+  const cpu = a.stakeCpuWax ?? 0.9;
+  return [
+    {
+      account: SYSTEM,
+      name: 'newaccount',
+      authorization: auth,
+      data: {
+        creator: a.creator,
+        name: a.newname,
+        owner: singleKeyAuthority(a.ownerKey),
+        active: singleKeyAuthority(a.activeKey),
+      },
+    },
+    {
+      account: SYSTEM,
+      name: 'buyrambytes',
+      authorization: auth,
+      data: { payer: a.creator, receiver: a.newname, bytes: ram },
+    },
+    {
+      account: SYSTEM,
+      name: 'delegatebw',
+      authorization: auth,
+      data: {
+        from: a.creator,
+        receiver: a.newname,
+        stake_net_quantity: formatWax(net),
+        stake_cpu_quantity: formatWax(cpu),
+        transfer: false,
+      },
+    },
+  ];
+}
+
+/**
+ * The public keys already on an account, to offer as the default for a
+ * name it just won. Most people want the new name to answer to the same
+ * keys as the wallet that won it, and typing a key by hand is the step
+ * where a name gets locked away forever.
+ */
+export async function readAccountKeys(
+  actor: string,
+): Promise<{ owner?: string; active?: string }> {
+  try {
+    const acc = await getAccount(actor);
+    const out: { owner?: string; active?: string } = {};
+    // WharfKit hands back typed objects, not the raw JSON: `perm_name` is a
+    // Name and `key` is a PublicKey. Comparing them to strings silently
+    // never matches, which left both fields blank with no error anywhere.
+    for (const p of (acc as unknown as {
+      permissions?: { perm_name: unknown; required_auth?: { keys?: { key: unknown }[] } }[];
+    }).permissions ?? []) {
+      const raw = p.required_auth?.keys?.[0]?.key;
+      if (raw === undefined || raw === null) continue;
+      const key = String(raw);
+      const perm = String(p.perm_name);
+      if (perm === 'owner') out.owner = key;
+      if (perm === 'active') out.active = key;
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
