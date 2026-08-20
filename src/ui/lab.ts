@@ -140,6 +140,8 @@ type LabMode = 'create' | 'edit';
  * the wallet, so each keeps its own state.
  */
 type LabTool = 'recipes' | 'names' | 'crucible';
+/** Which of the two share buttons a copy came from. */
+type ShareScope = 'tool' | 'auction';
 
 /** One existing recipe, flattened to what the editor can change. */
 interface LabExisting {
@@ -294,6 +296,8 @@ interface LabState extends LabForm {
   nameStatus?: NameAvailability;
   /** The name `nameStatus` is about, which is not always what is typed. */
   nameStatusFor: string;
+  /** Which button just copied, so only that one says so. Momentary. */
+  shareCopied: ShareScope | '';
   nameChecking: boolean;
   nameBidAmount: string;
   myBids: BidHistoryEntry[];
@@ -362,6 +366,7 @@ const state: LabState = {
   search: '',
   nameQuery: '',
   nameStatusFor: '',
+  shareCopied: '',
   nameChecking: false,
   nameBidAmount: '',
   myBids: [],
@@ -1297,6 +1302,20 @@ export {
   attributeBlock as __attributeBlock,
 };
 
+/** Whether the wallet's bid history was ever asked for. Test-only. */
+export function __myBidsState(): string {
+  return state.myBidsState;
+}
+
+/** Reads back where the workbench thinks it is. Test-only. */
+export function __where(): { tool: string; nameStatusFor: string; kind: string } {
+  return {
+    tool: state.tool,
+    nameStatusFor: state.nameStatusFor,
+    kind: state.nameStatus ? state.nameStatus.kind : 'none',
+  };
+}
+
 /**
  * The page signs real transactions, so it needs its own way to connect.
  *
@@ -1333,6 +1352,14 @@ async function onLabLogin() {
     // The collection list is per-wallet, so it has to be re-read.
     state.collectionsState = 'idle';
     await loadCollections();
+    // So is the bid history, and the names tool is where a shared link
+    // lands. Whoever follows one arrives signed out, connects, and would
+    // otherwise be told "No bid found" as a fact, with any refund the
+    // contract owes them left off the page.
+    if (state.tool === 'names' && state.actor) {
+      state.myBidsState = 'idle';
+      void loadMyBids();
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Closing the wallet popup is a choice, not a failure worth shouting.
@@ -1348,6 +1375,129 @@ async function onLabLogout() {
   state.collections = [];
   state.collectionsState = 'idle';
   rerender();
+}
+
+// ─── deep links ─────────────────────────────────────────────────────────
+//
+// The workbench is several tools behind one path, so a bare #/lab is not
+// enough to send someone to what you are looking at. The grammar mirrors
+// the app's own: #/lab/<tool>, then whatever that tool is showing.
+//
+//   #/lab                 the workbench, on whichever tool was last used
+//   #/lab/recipes         the creator and editor
+//   #/lab/names           the name auctions, with the leaderboard
+//   #/lab/names/rekt      that auction, already looked up
+//
+// Writing uses replaceState so it never fires hashchange: the URL follows
+// the page, and the page follows an incoming URL, but the two never chase
+// each other.
+
+/**
+ * Copies the current link. The lab renders standalone, so it cannot reach
+ * the app's own share button and gets its own; the label doubles as the
+ * feedback, since a silent copy leaves the user wondering.
+ */
+function shareButton(scope: ShareScope, label: string): string {
+  const done = state.shareCopied === scope;
+  return `<button class="lab-share" data-lab="share-${scope}">&#9112; ${esc(done ? 'copied' : label)}</button>`;
+}
+
+/**
+ * The two buttons promise different things, so they copy different
+ * things: the tool bar sends someone to the workbench, the auction row
+ * sends them to one name already looked up.
+ */
+function labHref(scope: ShareScope): string {
+  const base = location.href.split('#')[0];
+  const subject = scope === 'auction' && state.nameStatusFor ? `/${encodeSubject(state.nameStatusFor)}` : '';
+  return `${base}#/lab/${state.tool}${subject}`;
+}
+
+// A verdict is worth sharing even when the answer is "that is not a name",
+// and the input takes anything typed. So the subject is not always made of
+// characters a URL leaves alone: a space became %20, and the recipient then
+// got a verdict about the literal text "a%20b". Encoding on the way out and
+// decoding on the way in is what makes the link reproduce what was on
+// screen. Real names are a to z, 1 to 5 and dots, none of which encoding
+// touches, so shareable links stay readable.
+
+function encodeSubject(name: string): string {
+  try { return encodeURIComponent(name); } catch { return ''; }
+}
+
+function decodeSubject(raw: string): string {
+  // A lone percent sign is a malformed escape and throws. A hand-mangled
+  // URL is still a visitor, so fall back to the literal text.
+  try { return decodeURIComponent(raw); } catch { return raw; }
+}
+
+async function onCopyLabLink(scope: ShareScope) {
+  try {
+    await navigator.clipboard?.writeText(labHref(scope));
+    state.shareCopied = scope;
+    // A copy that worked must not leave the previous failure on screen.
+    if (state.lastError.startsWith('Could not reach the clipboard')) state.lastError = '';
+    rerender();
+    // Back to the neutral label, so the next copy still says something.
+    setTimeout(() => {
+      // Another button may have been copied since; do not clear its badge.
+      if (state.shareCopied === scope) state.shareCopied = '';
+      rerender();
+    }, 2000);
+  } catch {
+    state.lastError = 'Could not reach the clipboard. The link is in the address bar.';
+    rerender();
+  }
+}
+
+/**
+ * Writes the current position into the address bar.
+ *
+ * Only while the lab is still the page on screen. A name lookup takes two
+ * chain reads, and the visitor can click "Back to the app" while they are
+ * outstanding; writing then would leave the app page under a #/lab address,
+ * and since replaceState fires no hashchange nothing would ever correct it.
+ * Reloading or copying the URL would send them somewhere they had left.
+ */
+function writeLabHash() {
+  try {
+    if (!location.hash.startsWith('#/lab')) return;
+    const subject = state.tool === 'names' && state.nameStatusFor ? `/${encodeSubject(state.nameStatusFor)}` : '';
+    const target = `#/lab/${state.tool}${subject}`;
+    if (location.hash === target) return;
+    history.replaceState(null, '', target);
+  } catch { /* a hash we cannot write is not worth failing a render over */ }
+}
+
+/**
+ * Opens the workbench where a link points. Called on arrival and on every
+ * hash change, so a pasted link, a bookmark and the back button all land
+ * in the same place.
+ */
+export function applyLabRoute(tool: string, subject: string): void {
+  if (tool === 'names' || tool === 'recipes' || tool === 'crucible') state.tool = tool;
+  const wanted = state.tool === 'names' ? decodeSubject(subject).trim().toLowerCase() : '';
+  // A bare #/lab is not a link anyone can share back, so fill it in. Not
+  // when a name is still being looked up: that would write the previous
+  // name over the one just asked for.
+  if (!wanted) writeLabHash();
+  if (state.tool !== 'names') return;
+  // The same reads the tool bar performs, because arriving by link has to
+  // show the same page as arriving by click. Without the bid history the
+  // panel states "No bid found" as a fact and hides claimable refunds,
+  // which is worse than saying nothing.
+  if (state.topBidsState === 'idle') void loadTopBids();
+  if (state.actor && state.myBidsState === 'idle') void loadMyBids();
+  if (!wanted) return;
+  // Skip only what is already answered or already on its way. Comparing
+  // against nameQuery alone would also match a name merely TYPED and never
+  // submitted, and then the link would be ignored: the address bar would
+  // name one auction while the card below still showed another.
+  const answered = wanted === state.nameStatusFor;
+  const inFlight = state.nameChecking && wanted === state.nameQuery.trim().toLowerCase();
+  if (answered || inFlight) return;
+  state.nameQuery = wanted;
+  void onCheckName();
 }
 
 // ─── shared UI pieces ───────────────────────────────────────────────────
@@ -2328,6 +2478,8 @@ async function onCheckName() {
     if (state.nameQuery.trim().toLowerCase() !== q) return;
     state.nameStatus = found;
     state.nameStatusFor = q;
+    // The URL now points at this exact auction, ready to be copied.
+    writeLabHash();
     // Only reached for a name we won, and only if the fields are untouched.
     if (found.kind === 'won' && found.mine && !state.claimOwnerKey) {
       const keys = await readAccountKeys(state.actor);
@@ -2708,6 +2860,8 @@ function nameTool(): string {
     </div>
 
     ${nameVerdict()}
+    ${state.nameStatusFor ? `<p class="lab-sharerow">${shareButton('auction', 'link to this auction')}
+      <span>Opens straight on ${esc(state.nameStatusFor)}, already looked up.</span></p>` : ''}
 
     ${ours ? `
       <div class="lab-callout ok">
@@ -2807,6 +2961,7 @@ export function renderLabPage(): string {
       <button class="${state.tool === 'crucible' ? 'on' : ''}" data-lab="tool-crucible">
         Crucible Contracts<small>our own engine, in preview</small>
       </button>
+      ${shareButton('tool', 'link to this tool')}
     </div>`;
 
   if (state.tool === 'crucible') {
@@ -3300,17 +3455,20 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           state.tokenPickerOpen = false;
           break;
 
-        case 'tool-recipes': state.tool = 'recipes'; break;
-        case 'tool-crucible': state.tool = 'crucible'; break;
+        case 'tool-recipes': state.tool = 'recipes'; writeLabHash(); break;
+        case 'tool-crucible': state.tool = 'crucible'; writeLabHash(); break;
         case 'tool-names':
           state.tool = 'names';
           state.lastTx = ''; state.lastError = '';
           if (state.actor && state.myBidsState === 'idle') void loadMyBids();
           if (state.topBidsState === 'idle') void loadTopBids();
+          writeLabHash();
           break;
         case 'login':  void onLabLogin(); return;
         case 'logout': void onLabLogout(); return;
 
+        case 'share-tool':    void onCopyLabLink('tool'); return;
+        case 'share-auction': void onCopyLabLink('auction'); return;
         case 'name-check':  void onCheckName(); return;
         case 'name-bid':    void onPlaceBid(); return;
         case 'name-reload': void loadMyBids(); return;

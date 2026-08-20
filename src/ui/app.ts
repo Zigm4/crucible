@@ -198,7 +198,7 @@ import {
   toggleCatalogGroup,
   type CatalogGrouping,
 } from './catalog';
-import { renderLabPage, attachLabHandlers } from './lab';
+import { renderLabPage, attachLabHandlers, applyLabRoute } from './lab';
 
 type AppView =
   | 'blends'   // Nefty: blend.nefty
@@ -874,6 +874,10 @@ export interface ParsedRoute {
   id?: string;
   /** Standalone pages that sit outside the platform/tab grammar (e.g. #/status). */
   page: 'app' | 'status' | 'catalog' | 'lab';
+  /** #/lab/<tool>, so a link can open the workbench on the right tool. */
+  labTool: string;
+  /** #/lab/names/<name>, the thing that tool should already be showing. */
+  labSubject: string;
 }
 
 function tabSlugToView(platform: Platform, slug: string | undefined): AppView {
@@ -930,14 +934,18 @@ function parseHashRoute(): ParsedRoute {
           ? 'blenderizer'
           : 'nefty';
     const view = tabSlugToView(platform, (parts[1] || '').toLowerCase());
-    // Standalone pages have their own grammar: #/catalog/<collection>
-    // carries the collection where an entity id would normally sit.
+    // Standalone pages have their own grammar. #/catalog/<collection>
+    // carries the collection where an entity id would normally sit, and
+    // #/lab/<tool>/<subject> names a tool then whatever that tool is
+    // looking at, e.g. #/lab/names/rekt.
     const id = page === 'catalog'
       ? (parts[1] ? parts[1].toLowerCase() : undefined)
       : (parts[2] ? parts[2] : undefined);
-    return { platform, view, id, page };
+    const labTool = page === 'lab' ? (parts[1] || '').toLowerCase() : '';
+    const labSubject = page === 'lab' ? (parts[2] || '').toLowerCase() : '';
+    return { platform, view, id, page, labTool, labSubject };
   } catch {
-    return { platform: 'nefty', view: 'blends', page: 'app' };
+    return { platform: 'nefty', view: 'blends', page: 'app', labTool: '', labSubject: '' };
   }
 }
 
@@ -8509,9 +8517,15 @@ export async function mount() {
         mutated = true;
         if (r.page === 'status') maybeScanStatus();
         if (r.page === 'catalog') maybeScanCatalog(r.id);
+        if (r.page === 'lab') applyLabRoute(r.labTool, r.labSubject);
       } else if (r.page === 'catalog') {
         // Same page, different collection in the hash: switch to it.
         maybeScanCatalog(r.id);
+      } else if (r.page === 'lab') {
+        // Same page, different tool or name: follow the link. Always a
+        // repaint, since the tool that is on screen may have changed.
+        applyLabRoute(r.labTool, r.labSubject);
+        mutated = true;
       }
       // Platform/tab/deep-link only matter for the normal app page.
       if (r.page === 'app') {
@@ -8566,4 +8580,11 @@ export async function mount() {
   if (state.page === 'status') maybeScanStatus();
   // Same for #/catalog/<collection>.
   if (state.page === 'catalog') maybeScanCatalog(parseHashRoute().id);
+  // And for #/lab/<tool>/<subject>, so a shared link opens on the right
+  // tool with the right thing already looked up.
+  if (state.page === 'lab') {
+    const r = parseHashRoute();
+    applyLabRoute(r.labTool, r.labSubject);
+    render();
+  }
 }

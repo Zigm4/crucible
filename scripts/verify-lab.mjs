@@ -17,6 +17,9 @@
  *   PHASE C - the schema gate. Against a real collection read live from
  *             the chain, the attribute picker must block exactly the
  *             attributes an upgrade cannot really change, and no others.
+ *   PHASE D - deep links. A shared #/lab/<tool>/<name> must open on that
+ *             tool with that auction already resolved, and the workbench
+ *             must write back a URL that reproduces what is on screen.
  *
  * As with the other harnesses, this imports the REAL module. It does not
  * re-implement it: a previous harness here reimplemented the parsers, and
@@ -31,7 +34,8 @@ try {
   console.error('Missing scripts/.build/lab.mjs - run `npm run verify:lab`.');
   process.exit(1);
 }
-const { __setForm, __builtAction, __problems, __warnings, __attributeBlock } = lab;
+const { __setForm, __builtAction, __problems, __warnings, __attributeBlock,
+        __where, __myBidsState, applyLabRoute } = lab;
 
 const RPC = ['https://wax.greymass.com', 'https://api.waxsweden.org', 'https://wax.eosphere.io'];
 const ATOMIC = ['https://wax.api.atomicassets.io', 'https://aa.wax.blacklusion.io'];
@@ -659,6 +663,175 @@ async function main() {
         console.log(`        ${targeted.size} attribute(s) rewritten by real upgrades, all allowed: ${[...targeted].join(', ')}`);
       }
     }
+  }
+
+  // ── PHASE D ──
+  //
+  // A link is only shareable if the round trip closes: the URL opens the
+  // page, and the page writes back the same URL. Test both directions
+  // through the real module, with the browser globals it expects.
+  console.log('\n=== PHASE D - deep links into the workbench ===');
+
+  // Count the writes, not just the end state. The loop below arrives at
+  // each URL the way a visitor does, with the address bar ALREADY holding
+  // it, so writeLabHash's "already there" guard makes it a no-op and the
+  // final hash matches whether or not the page ever writes back. Proving
+  // the write direction needs a case that starts somewhere else, and needs
+  // to watch the call rather than the result.
+  const writes = [];
+  globalThis.location = { hash: '#/lab' };
+  globalThis.history = {
+    replaceState(_s, _t, url) { globalThis.location.hash = url; writes.push(url); },
+  };
+
+  // Names that exercise each verdict shape the tool can reach.
+  const routes = [
+    ['recipes', '',      'recipes', '',       'none'],
+    ['names',   '',      'names',   '',       'none'],
+    ['crucible', '',     'crucible', '',      'none'],
+    // Long-settled, famously taken: the account exists, so no auction.
+    ['names',   'eosio', 'names',   'eosio',  'taken'],
+    // A verdict is shareable even when the answer is "that is not a name",
+    // and the input takes anything typed. A space has to survive the round
+    // trip, or the recipient reads a verdict about the text "a%20b".
+    ['names',   'a b',   'names',   'a b',    'not_biddable'],
+  ];
+
+  for (const [tool, subject, wantTool, wantSubject, wantKind] of routes) {
+    // What the browser actually puts in the address bar, and therefore what
+    // applyLabRoute receives: percent-encoded, never the raw text.
+    const wire = subject ? encodeURIComponent(subject) : '';
+    const url = `#/lab/${tool}${wire ? '/' + wire : ''}`;
+    globalThis.location.hash = url;
+    applyLabRoute(tool, wire);
+    // A subject means a chain read, and applyLabRoute deliberately does
+    // not await it: the page paints "reading" first. Give it a moment.
+    if (subject) await new Promise((r) => setTimeout(r, 4000));
+    const at = __where();
+
+    if (at.tool !== wantTool) {
+      fails.push(`route ${url}: opened tool "${at.tool}", expected "${wantTool}"`);
+      continue;
+    }
+    if (at.nameStatusFor !== wantSubject) {
+      fails.push(`route ${url}: looked up "${at.nameStatusFor}", expected "${wantSubject}"`);
+      continue;
+    }
+    if (at.kind !== wantKind) {
+      fails.push(`route ${url}: verdict "${at.kind}", expected "${wantKind}"`);
+      continue;
+    }
+    // The written hash must reproduce the page. That is the whole point:
+    // what the user copies has to bring the next person to the same view.
+    const written = globalThis.location.hash;
+    const expected = `#/lab/${wantTool}${wantSubject ? '/' + encodeURIComponent(wantSubject) : ''}`;
+    if (written !== expected) {
+      fails.push(`route ${url}: address bar reads "${written}", expected "${expected}"`);
+      continue;
+    }
+    console.log(`   ok  ${url.padEnd(22)} -> ${wantTool}${wantSubject ? ` / ${wantSubject} (${wantKind})` : ''}`);
+  }
+
+  // Now the other direction, from a URL that does NOT already say where
+  // the page is. Both cases below are real: a visitor can type a bare
+  // #/lab, and can follow a shared names link then switch tool. If the
+  // address bar does not follow, there is nothing to copy and the feature
+  // does not exist. Asserting the end state alone would not catch that,
+  // so assert that a write actually happened.
+  // Each case sets up the page state it is about, so the expected URL is
+  // stated rather than recomputed from the code under test.
+  const writeBacks = [
+    {
+      what: 'a bare #/lab names the tool it opened',
+      setup: { tool: 'names', nameStatusFor: '' },
+      from: '#/lab', tool: '', subject: '',
+      expect: '#/lab/names',
+    },
+    {
+      what: 'a bare #/lab carries the auction still on screen',
+      setup: { tool: 'names', nameStatusFor: 'eosio' },
+      from: '#/lab', tool: '', subject: '',
+      expect: '#/lab/names/eosio',
+    },
+    {
+      what: 'switching tool follows, so the URL is never a stale auction',
+      setup: { tool: 'names', nameStatusFor: 'eosio' },
+      from: '#/lab/names/eosio', tool: 'recipes', subject: '',
+      expect: '#/lab/recipes',
+    },
+    {
+      what: 'a subject that needs encoding survives the write',
+      setup: { tool: 'names', nameStatusFor: 'a b' },
+      from: '#/lab', tool: '', subject: '',
+      expect: '#/lab/names/a%20b',
+    },
+  ];
+  for (const c of writeBacks) {
+    __setForm(c.setup);
+    globalThis.location.hash = c.from;
+    writes.length = 0;
+    applyLabRoute(c.tool, c.subject);
+    if (!writes.length) {
+      fails.push(`${c.what}: nothing was written back, so ${c.from} stays ${c.from} and there is no link to share`);
+    } else if (globalThis.location.hash !== c.expect) {
+      fails.push(`${c.what}: address bar reads "${globalThis.location.hash}", expected "${c.expect}"`);
+    } else {
+      console.log(`   ok  ${c.from.padEnd(22)} -> written back as ${globalThis.location.hash}`);
+    }
+  }
+
+  // Leaving the lab MID-LOOKUP must not drag the address bar back. A name
+  // takes two chain reads, and the visitor can click "Back to the app"
+  // while they are outstanding. The read then resolves against a page that
+  // is no longer on screen, and since replaceState fires no hashchange, a
+  // write here would never be corrected: reloading would reopen the lab.
+  __setForm({ tool: 'names', nameStatusFor: '', nameQuery: '', nameChecking: false });
+  globalThis.location.hash = '#/lab/names';
+  writes.length = 0;
+  applyLabRoute('names', 'eosio');          // the chain read starts
+  globalThis.location.hash = '#/nefty/blends';   // and the visitor leaves
+  await new Promise((r) => setTimeout(r, 5000)); // the read lands anyway
+  if (writes.length || globalThis.location.hash !== '#/nefty/blends') {
+    fails.push(`left the lab mid-lookup: the address bar was rewritten to "${globalThis.location.hash}" behind another page (writes: ${JSON.stringify(writes)})`);
+  } else {
+    console.log('   ok  left mid-lookup      -> the lab does not write behind another page');
+  }
+
+  // A name merely TYPED into the box, never submitted, must not make a
+  // link a no-op. Skipping the lookup there would leave the address bar
+  // naming one auction while the card below still showed another, which is
+  // the exact wrong-answer shape this page has already been burned by.
+  __setForm({ tool: 'names', nameStatusFor: 'eosio', nameQuery: 'zeus', nameChecking: false });
+  globalThis.location.hash = '#/lab/names/zeus';
+  applyLabRoute('names', 'zeus');
+  await new Promise((r) => setTimeout(r, 5000));
+  if (__where().nameStatusFor !== 'zeus') {
+    fails.push(`typed but not submitted: following #/lab/names/zeus left the card showing "${__where().nameStatusFor}"`);
+  } else {
+    console.log('   ok  typed, not submitted -> the link still wins, and the card follows it');
+  }
+
+  // Arriving by link must read what arriving by click reads. Without the
+  // bid history the panel states "No bid found" as a fact and hides
+  // refunds the contract owes, which is worse than saying nothing at all.
+  __setForm({ tool: 'recipes', actor: 'zigm4.gm', myBidsState: 'idle' });
+  applyLabRoute('names', '');
+  await new Promise((r) => setTimeout(r, 5000));
+  if (__myBidsState() === 'idle') {
+    fails.push('deep link to #/lab/names never asked for the wallet bids, so the page claims "No bid found" and hides claimable refunds');
+  } else {
+    console.log(`   ok  #/lab/names          -> wallet bids requested (state: ${__myBidsState()})`);
+  }
+
+  // An unknown tool must not blank the page. It keeps whatever is open,
+  // because a truncated or mistyped link is still a visitor.
+  const before = __where().tool;
+  globalThis.location.hash = '#/lab/nonsense';
+  applyLabRoute('nonsense', '');
+  if (__where().tool !== before) {
+    fails.push(`route #/lab/nonsense: switched to "${__where().tool}", should have stayed on "${before}"`);
+  } else {
+    console.log(`   ok  #/lab/nonsense       -> stays on ${before}, and the URL is repaired to ${globalThis.location.hash}`);
   }
 
   console.log('');
