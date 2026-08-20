@@ -184,36 +184,48 @@ export async function readTopBids(limit = 10): Promise<NameBid[]> {
 }
 
 /**
- * How many OPEN auctions on the chain are larger than this one.
+ * How many auctions settle before this one, in the contract's own order.
  *
  * Holding the highest bid on a name is not the same as being close to
- * owning it. The chain settles one name a day and always takes the single
- * largest open bid, so a bid's position in that chain-wide order is what
- * decides whether it settles this week or never. A 5 WAX bid can lead its
- * own name and still sit behind hundreds of others.
+ * owning it. The chain settles one name a day and always takes whatever
+ * sits at the top of the `highbid` index, so a bid's position in that
+ * chain-wide order is what decides whether it settles this week or never.
+ * A 5 WAX bid can lead its own name and still sit behind hundreds.
  *
- * One request, not a scan. Larger bids sort BEFORE this one in the
- * secondary index (the key is the negated bid, so it falls as the bid
- * rises), which means they all live in the key range between the open
- * floor and this bid's own key. Bounding both ends turns a walk over tens
- * of thousands of rows into a single bounded read.
+ * Position, not a comparison of amounts. An earlier version counted only
+ * bids STRICTLY larger and argued that ties do not beat this one. That was
+ * backwards: the index is ordered by (negated bid, name), so among equal
+ * bids the contract takes the one whose NAME sorts first, and every tied
+ * name ahead of yours settles ahead of you. Reading the window in index
+ * order and taking this row's place in it counts what the contract counts,
+ * and needs no name encoding to do it.
  *
- * Equal bids are not counted: they do not beat this one, and the contract
- * breaks that tie by name rather than by size.
+ * One request, not a scan. Larger bids sort before this one (the key is
+ * the negated bid, so it falls as the bid rises), so everything ahead lies
+ * between the open floor and this bid's own key. The upper bound is
+ * INCLUSIVE of that key, which is what keeps the tied group in view.
  */
 export interface BidQueuePosition {
-  /** Open bids strictly larger than this one. */
+  /** Auctions that settle before this one. */
   ahead: number;
-  /** True when the count hit the cap, so `ahead` is a floor, not a total. */
+  /** True when `ahead` is a floor rather than a total. */
   capped: boolean;
 }
 
-export async function readBidsAhead(bid: NameBid, cap = 2000): Promise<BidQueuePosition> {
+/**
+ * Nodes refuse more than this per call whatever limit is asked for, and
+ * report the rest only through `more`, which `getTableRows` does not
+ * return. So this is the real window, and asking for more than it would
+ * make truncation invisible instead of detectable.
+ */
+const NODE_ROW_LIMIT = 1000;
+
+export async function readBidsAhead(bid: NameBid): Promise<BidQueuePosition> {
   if (bid.closed || bid.high_bid <= 0) return { ahead: 0, capped: false };
   const floor = BigInt(OPEN_BID_FLOOR);
   const key = (1n << 64n) - BigInt(Math.round(bid.high_bid));
   // Nothing can sort above the floor, so this bid already leads the chain.
-  if (key <= floor) return { ahead: 0, capped: false };
+  if (key < floor) return { ahead: 0, capped: false };
   const rows = await getTableRows<{
     newname: string; high_bidder: string; high_bid: string | number; last_bid_time: string;
   }>({
@@ -223,11 +235,18 @@ export async function readBidsAhead(bid: NameBid, cap = 2000): Promise<BidQueueP
     index_position: 'secondary',
     key_type: 'i64',
     lower_bound: OPEN_BID_FLOOR,
-    upper_bound: (key - 1n).toString(),
-    limit: cap,
+    upper_bound: key.toString(),
+    limit: NODE_ROW_LIMIT,
   });
   // Same defence as readTopBids: a closed row is not competition.
-  return { ahead: rows.map(decode).filter((b) => !b.closed).length, capped: rows.length >= cap };
+  const open = rows.map(decode).filter((b) => !b.closed);
+  const here = open.findIndex((b) => b.newname === bid.newname);
+  // Found: everything before it in index order settles before it, exactly.
+  if (here >= 0) return { ahead: here, capped: false };
+  // Not found means the window ended before reaching this row, so what was
+  // counted is a floor. Saying so is the difference between a number and a
+  // guess presented as a number.
+  return { ahead: open.length, capped: true };
 }
 
 /**

@@ -863,10 +863,10 @@ async function main() {
         must: /Reading where that puts you/, mustNot: /leads the whole chain/ },
       { what: 'leads the whole chain', ahead: { ahead: 0, capped: false }, cls: 'ok',
         must: /leads the whole chain/, mustNot: /not the same as winning/ },
-      { what: '423 larger bids queued ahead', ahead: { ahead: 423, capped: false }, cls: 'caution',
-        must: /not the same as winning it.*423 open bids.*over a year/s, mustNot: /leads the whole chain/ },
-      { what: 'so far down the count is capped', ahead: { ahead: 2000, capped: true }, cls: 'caution',
-        must: /Over 2000 open bids/, mustNot: /leads the whole chain/ },
+      { what: '423 auctions settle first', ahead: { ahead: 423, capped: false }, cls: 'caution',
+        must: /not the same as winning it.*423 auctions on the chain settle before yours.*over a year/s, mustNot: /leads the whole chain/ },
+      { what: 'so deep the count is a floor', ahead: { ahead: 2000, capped: true }, cls: 'caution',
+        must: /Over 2000 auctions on the chain settle before yours/, mustNot: /leads the whole chain/ },
     ];
     for (const c of cases) {
       __setForm({
@@ -890,12 +890,41 @@ async function main() {
     // only in a commit message.
     const page = renderLabPage();
     const owed = ['onblock', 'last_name_close', 'largest open bid on the whole chain',
-                  'every half second', 'bidrefund', 'newaccount'];
+                  'about once a minute', 'A tie is not a tie', 'bidrefund', 'newaccount'];
     const missing = owed.filter((t) => !page.includes(t));
     if (missing.length) {
       fails.push(`the settlement explainer omits: ${missing.join(', ')}`);
     } else {
       console.log(`   ok  the explainer covers all ${owed.length} mechanics a bidder needs`);
+    }
+  }
+
+  // The capped branch exists to say "this is a floor, not a total". Pinning
+  // it only with a hand-injected {ahead, capped} would pass even if the
+  // production path could never produce it, which is what happened: the cap
+  // was set above the row limit every node enforces, so it never fired.
+  // This drives the real function against the real chain.
+  {
+    const deep = await names.readNameBid('action');
+    if (!deep || deep.closed) {
+      console.log('   note: no deep open bid to test the capped path with today');
+    } else {
+      const q = await names.readBidsAhead(deep);
+      if (!q.capped) {
+        fails.push(`the capped path is unreachable in production: a bid ${q.ahead} deep reported an exact count`);
+      } else {
+        console.log(`   ok  a bid far down the queue reports a floor, not a total (over ${q.ahead})`);
+      }
+    }
+    // And a tie must count as ahead: the contract orders equal bids by name.
+    const tied = await names.readNameBid('uncleted');
+    if (tied && !tied.closed) {
+      const q = await names.readBidsAhead(tied);
+      if (q.ahead < 20) {
+        fails.push(`tied bids are not counted: uncleted reported ${q.ahead} ahead, but it shares 50 WAX with two dozen names that sort before it`);
+      } else {
+        console.log(`   ok  a tied bid counts the names that sort before it (${q.ahead} ahead)`);
+      }
     }
   }
 

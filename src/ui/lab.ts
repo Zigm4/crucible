@@ -2835,12 +2835,12 @@ function nameVerdict(): string {
           ? 'over 24 hours, so condition 1 is met'
           : `not yet, 24 hours is up ${relativeTime(st.settlesAt)}`
       }</b></div>
-      <div><span>Larger bids on the chain</span><b class="${q && q.ahead > 0 ? 'warn' : ''}">${
+      <div><span>Settling before yours</span><b class="${q && q.ahead > 0 ? 'warn' : ''}">${
         q === undefined
           ? 'reading'
           : q.ahead === 0
-            ? 'none, this bid leads the chain'
-            : `${q.capped ? 'over ' : ''}${q.ahead}, and each one settles first`
+            ? 'nothing, this bid is first in line'
+            : `${q.capped ? 'over ' : ''}${q.ahead} other auction${q.ahead === 1 ? '' : 's'}`
       }</b></div>
       <div><span>Chain may next close</span><b>${
         gate === undefined
@@ -2888,20 +2888,26 @@ function howAuctionsSettle(): string {
       <h5>Settling, which is the part that surprises people</h5>
       <p>
         There is no timer and no nightly job at a fixed hour. The check lives in
-        <code>onblock</code>, which the system contract runs on <strong>every single block</strong>.
-        WAX produces a block every half second, so the question "should a name close now?" is
-        asked around 172,800 times a day. It almost always answers no, because three conditions
-        have to hold at the same instant:
+        <code>onblock</code>, the action the system contract runs on every block. The name part
+        of it, though, sits behind the producer schedule update, which the contract performs
+        only <strong>about once a minute</strong>. So the question "should a name close now?" is
+        asked roughly 1,440 times a day, not on all 172,800 blocks WAX produces. It almost
+        always answers no, because three conditions have to hold at the same instant:
       </p>
       <ol>
         <li>The standing bid has not moved for 24 hours.</li>
         <li>More than a day has passed since the last name closed <strong>anywhere on the
             chain</strong>. The contract keeps a single global value, <code>last_name_close</code>,
             for exactly this.</li>
-        <li>The name is the <strong>largest open bid on the whole chain</strong>. The contract
-            looks only at the top of that order. It never scans for anything else that might be
-            ready.</li>
+        <li>The name is at the <strong>top of the largest open bid on the whole chain</strong>.
+            The contract looks only at that one row. It never scans for anything else that might
+            be ready.</li>
       </ol>
+      <p>
+        A tie is not a tie. When two names carry the same bid, the order runs by name, so every
+        equal bid whose name sorts before yours settles before yours. Today 24 names sit at
+        exactly 50 WAX, and the last of them is 26 places down rather than 3.
+      </p>
       <p>
         So at most one name closes per day, for everyone, and it is always the biggest. Condition
         3 is the one that catches people. A bid can lead its own name, sit untouched for years,
@@ -2941,11 +2947,11 @@ function queueSentence(q: BidQueuePosition): string {
       : days === 1
         ? 'at least a day'
         : `at least ${days} days`;
-  return `${q.capped ? 'Over ' : ''}${days} open bids on the chain are larger than yours, and the chain
-    closes the largest one first, at most one a day. So this name cannot settle for ${span},
-    and only if none of those bids grows and nothing new is bid above yours. Raising your own
-    bid is the only thing that moves you up, and the contract will not let you outbid yourself
-    while you already lead this name.`;
+  return `${q.capped ? 'Over ' : ''}${days} auctions on the chain settle before yours, and the chain
+    closes at most one a day. So this name cannot settle for ${span}, and only if none of those
+    bids grows and nothing new is bid above yours. Raising your own bid is the only thing that
+    moves you up, and the contract will not let you outbid yourself while you already lead this
+    name.`;
 }
 
 /**
