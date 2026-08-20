@@ -29,6 +29,7 @@
  * classic panels once the interaction has been through real testers.
  */
 
+import { renderCrucibleTool, attachCrucibleHandlers } from './crucibleLab';
 import { getCurrentSession, login, logout } from '../chain/session';
 import { atomicFetch } from '../chain/rpc';
 import { listAuthorizedCollections, isContractAuthorized } from '../atomic/collections';
@@ -137,7 +138,7 @@ type LabMode = 'create' | 'edit';
  * the WAX premium-name auction reader and bidder. They share nothing but
  * the wallet, so each keeps its own state.
  */
-type LabTool = 'recipes' | 'names';
+type LabTool = 'recipes' | 'names' | 'crucible';
 
 /** One existing recipe, flattened to what the editor can change. */
 interface LabExisting {
@@ -270,6 +271,9 @@ interface LabState extends LabForm {
   /** A snapshot of `editing` as loaded, so only real changes are signed. */
   editingOriginal?: LabExisting;
   step: number;
+  /** Steps the author has actually worked on. Problems stay quiet until then,
+      so the wizard explains rather than scolds someone who just arrived. */
+  visited: boolean[];
   collections: { collection_name: string; name: string }[];
   collectionsState: LoadState;
   /** Which collection the loaded schemas/templates belong to. */
@@ -312,6 +316,7 @@ const state: LabState = {
   existingState: 'idle',
   kind: 'blend',
   step: 0,
+  visited: [],
   actor: '',
   collections: [],
   collectionsState: 'idle',
@@ -1080,91 +1085,147 @@ function builtAction() {
  * The shared validators do the contract-level work; the extra checks here
  * are the ones only the wizard can make, because only it knows the schema.
  */
-function problems(): string[] {
-  const out: string[] = [];
-  if (!state.actor) out.push('Connect a wallet to sign.');
-  if (!state.collection.trim()) out.push('Pick the collection this belongs to.');
+type Problem = { step: number; text: string };
+
+/**
+ * Every reason this recipe cannot be created, each tagged with the step that
+ * owns the field at fault. The tag is the whole point: without it the wizard
+ * can only complain on the review screen, which is four steps after the author
+ * could have fixed it. Steps are 0 collection, 1 what players give or what it
+ * mints, 2 what they get or price or changes, 3 rules, 4 review.
+ */
+/**
+ * The whole-recipe validators, run defensively.
+ *
+ * They used to be reached only from the review screen, so they could assume a
+ * recipe complete enough to assemble into contract arguments. Per-step
+ * validation calls them from step 0 onwards, where that assumption does not
+ * hold and the argument builders can throw on half-filled state. A throw here
+ * is not a silent pass: it can only happen while the recipe is still
+ * incomplete, and the field-level checks above already say what is missing.
+ */
+function wholeRecipe(run: () => string[]): string[] {
+  try {
+    return run();
+  } catch {
+    return [];
+  }
+}
+
+function taggedProblems(): Problem[] {
+  const out: Problem[] = [];
+  const at = (step: number, text: string) => out.push({ step, text });
+
+  // A missing wallet is deliberately filed under review rather than step 0.
+  // It blocks signing, which is correct, but it must not block an author from
+  // building a recipe before they connect.
+  if (!state.actor) at(4, 'Connect a wallet to sign.');
+  if (!state.collection.trim()) at(0, 'Pick the collection this belongs to.');
+  // Filed under review, not step 0. Authorisation is not a field the author
+  // fills in, it is an external precondition discovered asynchronously, and
+  // walling off the wizard on it would stop anyone exploring the tool against
+  // a collection they have not authorised yet. It still blocks signing.
   if (state.contractAuthorized === false) {
-    out.push(
+    at(4,
       `${state.collection} has not authorized ${CONTRACT_FOR[state.kind]}, so the contract could not ` +
       'mint and nobody could ever run this. Add it to the collection on AtomicHub first.',
     );
   }
 
   if (state.kind === 'drop') {
-    if (state.mints.length === 0) out.push('Add at least one template for the drop to mint.');
-    if (!state.unlimited && intOr(state.maxClaimable) === 0) out.push('Set a max supply, or tick "unlimited".');
+    if (state.mints.length === 0) at(1, 'Add at least one template for the drop to mint.');
+    if (!state.unlimited && intOr(state.maxClaimable) === 0) at(2, 'Set a max supply, or tick "unlimited".');
     if (!state.free) {
-      if (!(Number(state.priceAmount) > 0)) out.push('Set a price above zero, or make the drop free.');
+      if (!(Number(state.priceAmount) > 0)) at(2, 'Set a price above zero, or make the drop free.');
       const picked = state.priceToken.trim().toUpperCase();
-      if (!picked) out.push('Pick the token players pay in.');
+      if (!picked) at(2, 'Pick the token players pay in.');
       else if (state.tokens.length && !state.tokens.some((t) => t.ticker === picked)) {
         // The list is the contract's own, so this is not a style rule: a
         // drop priced in a token neftyblocksd does not know is rejected.
-        out.push(`"${picked}" is not in the ${state.tokens.length} tokens neftyblocksd accepts, so the drop would be rejected.`);
+        at(2, `"${picked}" is not in the ${state.tokens.length} tokens neftyblocksd accepts, so the drop would be rejected.`);
       }
     }
   } else {
-    if (state.ingredients.length === 0) out.push('Add at least one thing the player gives up.');
+    if (state.ingredients.length === 0) at(1, 'Add at least one thing the player gives up.');
     // The shared upgrade validator does not look at ingredients at all, so
     // these checks have to run for both contracts rather than only blends.
     for (const i of state.ingredients) {
       if (i.kind === 'token') {
         if (!/^\d+(\.\d+)? [A-Z]{1,7}$/.test(i.quantity.trim())) {
-          out.push(`"${i.quantity.trim() || 'empty'}" is not a token amount. Write it with the token's exact decimals, e.g. 10.00000000 WAX.`);
+          at(1, `"${i.quantity.trim() || 'empty'}" is not a token amount. Write it with the token's exact decimals, e.g. 10.00000000 WAX.`);
         }
-        if (!i.to.trim()) out.push('A token cost with no receiving account would burn the tokens. Name an account.');
+        if (!i.to.trim()) at(1, 'A token cost with no receiving account would burn the tokens. Name an account.');
       } else if ('amount' in i && i.amount < 1) {
-        out.push('An ingredient asks for fewer than one NFT.');
+        at(1, 'An ingredient asks for fewer than one NFT.');
       }
       if (i.kind === 'attribute' && splitValues(i.values).length === 0) {
-        out.push(`Ingredient on ${i.attribute_name} lists no allowed value.`);
+        at(1, `Ingredient on ${i.attribute_name} lists no allowed value.`);
       }
     }
   }
 
   if (state.kind === 'blend') {
-    if (state.outcomes.length === 0) out.push('Add at least one outcome.');
+    if (state.outcomes.length === 0) at(2, 'Add at least one outcome.');
     if (state.outcomes.length && state.outcomes.every((o) => o.kind === 'nothing')) {
-      out.push('Every outcome is blank, so a player could never win anything.');
+      at(2, 'Every outcome is blank, so a player could never win anything.');
     }
-    out.push(...validateNewBlend(blendArgs()));
+    // The whole-recipe validators are filed under Rules, the last step before
+    // review. They judge the assembled arguments rather than one field, so
+    // pinning them to an earlier step would block a page whose own fields are
+    // all fine and name a problem that lives somewhere else.
+    for (const t of wholeRecipe(() => validateNewBlend(blendArgs()))) at(3, t);
   }
 
   if (state.kind === 'upgrade') {
-    if (!state.schemaName) out.push('Pick the schema the upgrade applies to.');
-    if (state.mutations.length === 0) out.push('Add at least one attribute change.');
+    if (!state.schemaName) at(2, 'Pick the schema the upgrade applies to.');
+    if (state.mutations.length === 0) at(2, 'Add at least one attribute change.');
     for (const m of state.mutations) {
-      if (!m.attribute_name) { out.push('An attribute change has no attribute selected.'); continue; }
+      if (!m.attribute_name) { at(2, 'An attribute change has no attribute selected.'); continue; }
       const type = schemaType(state.schemaName, m.attribute_name);
       const why = attributeBlock(state.schemaName, m.attribute_name, true);
-      if (why) out.push(`"${m.attribute_name}" cannot be rewritten: ${why}.`);
-      if (!String(m.value).trim()) out.push(`"${m.attribute_name}" has no value.`);
+      if (why) at(2, `"${m.attribute_name}" cannot be rewritten: ${why}.`);
+      if (!String(m.value).trim()) at(2, `"${m.attribute_name}" has no value.`);
       else if (isNumericType(type) && !Number.isFinite(Number(m.value))) {
-        out.push(`"${m.attribute_name}" is declared ${type} on the schema, so its value must be a number.`);
+        at(2, `"${m.attribute_name}" is declared ${type} on the schema, so its value must be a number.`);
       }
       if (m.op === UPGRADE_OP.ADD && !isNumericType(type)) {
-        out.push(`"${m.attribute_name}" is ${type}, which cannot be added to. Use "is set to".`);
+        at(2, `"${m.attribute_name}" is ${type}, which cannot be added to. Use "is set to".`);
       }
     }
     for (const r of state.requirements) {
       if (r.kind === 'attribute' && splitValues(r.values).length === 0) {
-        out.push(`The condition on "${r.attribute_name}" lists no value to match.`);
+        at(2, `The condition on "${r.attribute_name}" lists no value to match.`);
       }
     }
-    out.push(...validateNewUpgrade(upgradeArgs()));
+    for (const t of wholeRecipe(() => validateNewUpgrade(upgradeArgs()))) at(3, t);
   }
 
   const start = toUnix(state.startTime);
   const end = toUnix(state.endTime);
-  if (end !== 0 && start !== 0 && end <= start) out.push('The end time is not after the start time.');
+  if (end !== 0 && start !== 0 && end <= start) at(3, 'The end time is not after the start time.');
   // An empty start means "now", so an end in the past would be created
   // already finished. Comparing only start against end misses that.
   if (end !== 0 && end <= Math.floor(Date.now() / 1000)) {
-    out.push('The end time is in the past, so this would be over before it began.');
+    at(3, 'The end time is in the past, so this would be over before it began.');
   }
 
-  return [...new Set(out)];
+  return out;
+}
+
+/** Every problem, whatever step owns it. The review screen shows this. */
+function problems(): string[] {
+  return [...new Set(taggedProblems().map((p) => p.text))];
+}
+
+/** Only what an author can fix without leaving the step they are on. */
+function stepProblems(step: number): string[] {
+  return [...new Set(taggedProblems().filter((p) => p.step === step).map((p) => p.text))];
+}
+
+/** The first step that is not complete. The rail cannot jump past it. */
+function firstIncompleteStep(): number {
+  for (let i = 0; i < STEP_COUNT - 1; i++) if (stepProblems(i).length) return i;
+  return STEP_COUNT - 1;
 }
 
 /**
@@ -1285,15 +1346,38 @@ async function onLabLogout() {
 
 // ─── shared UI pieces ───────────────────────────────────────────────────
 
+/**
+ * What is stopping this step, shown at the top of it. Silent until the author
+ * has touched the step: arriving on a blank page to a list of complaints reads
+ * as being told off for something you have not had a chance to do yet.
+ */
+function stepBlockers(): string {
+  if (state.step === STEP_COUNT - 1) return '';
+  const list = stepProblems(state.step);
+  if (!list.length || !state.visited[state.step]) return '';
+  return `
+    <div class="lab-callout danger">
+      <strong>${list.length === 1 ? 'One thing to fix' : `${list.length} things to fix`} before this step is done.</strong>
+      <ul class="lab-list">${list.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>
+    </div>`;
+}
+
 function stepRail(): string {
   return `
     <ol class="lab-rail">
-      ${steps().map((label, i) => `
-        <li class="lab-rail-step${i === state.step ? ' current' : ''}${i < state.step ? ' done' : ''}"
-            data-lab="step" data-step="${i}">
-          <span class="lab-rail-dot">${i < state.step ? '&check;' : i + 1}</span>
+      ${steps().map((label, i) => {
+        const done = i < state.step && stepProblems(i).length === 0;
+        // Going back is always allowed. Going forward stops at the first step
+        // that is not finished, so the rail cannot be used to skip the
+        // Continue button it would otherwise have to get past.
+        const reachable = i <= state.step || i <= firstIncompleteStep();
+        return `
+        <li class="lab-rail-step${i === state.step ? ' current' : ''}${done ? ' done' : ''}"
+            data-lab="step" data-step="${i}"${reachable ? '' : ' aria-disabled="true"'}>
+          <span class="lab-rail-dot">${done ? '&check;' : i + 1}</span>
           <span class="lab-rail-label">${esc(label)}</span>
-        </li>`).join('')}
+        </li>`;
+      }).join('')}
     </ol>`;
 }
 
@@ -2525,6 +2609,7 @@ function nameTool(): string {
 // ─── page ───────────────────────────────────────────────────────────────
 
 export function renderLabPage(): string {
+  const blockers = stepProblems(state.step);
   const body = state.step === 0
     ? stepCollection()
     : state.step === 1
@@ -2545,7 +2630,20 @@ export function renderLabPage(): string {
       <button class="${state.tool === 'names' ? 'on' : ''}" data-lab="tool-names">
         WAX names<small>premium name auctions</small>
       </button>
+      <button class="${state.tool === 'crucible' ? 'on' : ''}" data-lab="tool-crucible">
+        Crucible Contracts<small>our own engine, in preview</small>
+      </button>
     </div>`;
+
+  if (state.tool === 'crucible') {
+    return `
+      <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
+      <section class="lab">
+        ${toolBar}
+        ${walletBar()}
+        ${renderCrucibleTool()}
+      </section>`;
+  }
 
   if (state.tool === 'names') {
     return `
@@ -2606,12 +2704,20 @@ export function renderLabPage(): string {
       )}
       ${stepRail()}
       ${state.step === STEP_COUNT - 1 ? '' : `<div class="lab-sentence">${esc(plainSentence())}</div>`}
-      <div class="lab-panel">${body}</div>
+      <div class="lab-panel">${stepBlockers()}${body}</div>
 
       <div class="lab-nav">
         <button class="lab-ghost" data-lab="prev" ${state.step === 0 ? 'disabled' : ''}>Back</button>
-        <span class="lab-step-of">Step ${state.step + 1} of ${STEP_COUNT}</span>
-        <button class="lab-primary" data-lab="next" ${state.step === STEP_COUNT - 1 ? 'disabled' : ''}>Continue</button>
+        <span class="lab-step-of">
+          Step ${state.step + 1} of ${STEP_COUNT}${
+            blockers.length
+              ? ` &middot; ${blockers.length === 1 ? 'one thing is' : `${blockers.length} things are`} still missing`
+              : ''}
+        </span>
+        <button class="lab-primary" data-lab="next" ${
+          state.step === STEP_COUNT - 1 || blockers.length
+            ? `disabled title="${esc(blockers.length ? 'Fix what is listed above first' : '')}"`
+            : ''}>Continue</button>
       </div>
     </section>`;
 }
@@ -2814,9 +2920,32 @@ function newIngredient(kind: LabIngredient['kind']): LabIngredient {
 }
 
 /** Wires the page. Every input carries an id so focus survives a re-render. */
+/** attachLabHandlers re-binds on every paint, so once-only wiring needs a flag. */
+let visitWired = false;
+
 export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   rerender = render;
   wirePointerGuard(root);
+  attachCrucibleHandlers(root, render);
+
+  // Leaving a field is when the author has finished thinking about it, and so
+  // when this step's problems start being shown. Capture phase, because blur
+  // does not bubble.
+  if (!visitWired) {
+    visitWired = true;
+    const worked = (ev: Event) => {
+      const el = ev.target as HTMLElement | null;
+      if (!el || !['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName)) return;
+      if (state.visited[state.step]) return;
+      state.visited[state.step] = true;
+      rerender();
+    };
+    // Both, because neither is enough on its own: blur does not fire for a
+    // field committed with Enter, and change does not fire for a field left
+    // untouched but tabbed through.
+    root.addEventListener('blur', worked, true);
+    root.addEventListener('change', worked, true);
+  }
 
   // First paint with a connected wallet: go and find its collections.
   const session = getCurrentSession();
@@ -2913,8 +3042,22 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     el.addEventListener('click', () => {
       const i = idx(el);
       switch (kind) {
-        case 'step': state.step = Number(el.dataset.step); break;
-        case 'next': state.step = Math.min(STEP_COUNT - 1, state.step + 1); break;
+        // Leaving a step means the author has had their turn at it, so from
+        // here on its problems are shown rather than held back.
+        case 'step': {
+          const want = Number(el.dataset.step);
+          // Backwards is free. Forwards stops where the recipe does.
+          if (want > state.step && want > firstIncompleteStep()) break;
+          state.visited[state.step] = true;
+          state.step = want;
+          break;
+        }
+        case 'next': {
+          state.visited[state.step] = true;
+          if (stepProblems(state.step).length) break;
+          state.step = Math.min(STEP_COUNT - 1, state.step + 1);
+          break;
+        }
         case 'prev': state.step = Math.max(0, state.step - 1); break;
         case 'kind':
           state.kind = el.dataset.kind as LabKind;
@@ -2984,6 +3127,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           break;
 
         case 'tool-recipes': state.tool = 'recipes'; break;
+        case 'tool-crucible': state.tool = 'crucible'; break;
         case 'tool-names':
           state.tool = 'names';
           state.lastTx = ''; state.lastError = '';

@@ -2186,3 +2186,113 @@ input.lab-inline { max-width: 190px; }
 }
 .lab-row-mine { border-color: var(--ok); background: rgba(46, 250, 166, 0.06); }
 .lab-row-mine .lab-rank { border-color: var(--ok); color: var(--ok); }
+
+/* ─── the Crucible Contracts brief ──────────────────────────────────────────
+   The explainer that opens on entering the tool. It reuses .modal-backdrop,
+   but not .modal: that one is the confirm dialog, narrow and edged in red
+   because it guards a signature. This one is wide, calm, and carries reading
+   rather than a decision. */
+.brief {
+  width: 100%;
+  max-width: 760px;
+  max-height: calc(100vh - 40px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+}
+.brief-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 16px 20px 0;
+}
+.brief-head h2 { font-size: 15px; margin: 0; letter-spacing: 0.6px; }
+.brief-head .lab-badge { flex: none; }
+.brief-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 12px 20px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.brief-tab {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.brief-tab:hover { color: var(--fg); }
+.brief-tab[aria-selected="true"] {
+  color: var(--accent);
+  border-color: var(--border-soft);
+  background: rgba(255, 255, 255, 0.03);
+  margin-bottom: -1px;
+  border-bottom: 1px solid var(--panel);
+}
+/* The reading area scrolls on its own so the tab strip and the footer button
+   stay put, however long a panel runs. */
+.brief-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--fg-dim);
+}
+.brief-body h3 {
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--fg);
+  margin: 18px 0 6px;
+}
+.brief-body h3:first-child { margin-top: 0; }
+.brief-body p { margin: 0 0 10px; }
+.brief-body strong { color: var(--fg); }
+.brief-body ul { margin: 0 0 10px; padding-left: 18px; }
+.brief-body li { margin-bottom: 6px; }
+.brief-split { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; margin: 0 0 10px; }
+.brief-card {
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.25);
+}
+.brief-card h4 { margin: 0 0 6px; font-size: 12.5px; color: var(--fg); }
+.brief-card .tag {
+  display: inline-block;
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  border-radius: 10px;
+  padding: 2px 8px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border-soft);
+}
+.brief-card .tag.now { color: var(--ok); border-color: var(--ok); }
+.brief-card .tag.later { color: var(--fg-dim); }
+.brief-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--border-soft);
+}
+.brief-foot .lab-hint { margin: 0; }
+@media (max-width: 620px) {
+  .brief-split { grid-template-columns: 1fr; }
+  .brief-head, .brief-tabs, .brief-body, .brief-foot { padding-left: 14px; padding-right: 14px; }
+}
