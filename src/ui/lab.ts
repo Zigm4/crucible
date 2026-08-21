@@ -632,17 +632,36 @@ async function loadDropTokens() {
 }
 
 /** Collections this wallet is allowed to manage. Nothing else is offered. */
+/**
+ * Everything that could only be asked once there is somebody to ask about.
+ *
+ * The wallet is not known when the page first runs: render() paints on the
+ * next frame, so a shared link starts its work with an empty actor. Guards
+ * of the shape `if (state.actor)` scattered through the arrival paths all
+ * read false there and simply never run, which is how "No bid found" came
+ * to be stated as a fact to somebody holding three bids. This is the one
+ * place that learns the answer, so it is the one place that acts on it.
+ */
+function onActorKnown() {
+  if (!state.actor) return;
+  // A verdict rendered before the wallet was known says "theirs" about the
+  // visitor's own name. Ask again now that there is somebody to compare to.
+  if (state.nameStatusFor && state.nameStatusActor !== state.actor) {
+    state.nameQuery = state.nameStatusFor;
+    void onCheckName();
+  }
+  if (state.tool === 'names') {
+    if (state.myBidsState === 'idle') void loadMyBids();
+    if (state.topBidsState === 'idle') void loadTopBids();
+  }
+}
+
 async function loadCollections() {
   const session = getCurrentSession();
   const actor = session ? String(session.actor) : '';
   const changed = actor !== state.actor;
   state.actor = actor;
-  // A verdict rendered before the wallet was known says "theirs" about the
-  // visitor's own name. Ask again now that there is somebody to compare to.
-  if (changed && state.nameStatusFor && state.nameStatusActor !== actor) {
-    state.nameQuery = state.nameStatusFor;
-    void onCheckName();
-  }
+  if (changed) onActorKnown();
   if (!actor) { state.collectionsState = 'idle'; state.collections = []; return; }
   state.collectionsState = 'loading';
   rerender();
@@ -1359,6 +1378,15 @@ export {
   attributeBlock as __attributeBlock,
 };
 
+/**
+ * Simulates the wallet finishing its restore, which in the browser happens
+ * a frame after the page has already started work. Test-only.
+ */
+export function __labActorArrived(actor: string): void {
+  state.actor = actor;
+  onActorKnown();
+}
+
 /** Whether the wallet's bid history was ever asked for. Test-only. */
 export function __myBidsState(): string {
   return state.myBidsState;
@@ -1666,7 +1694,10 @@ export function applyLabRoute(tool: string, subject: string): void {
   // panel states "No bid found" as a fact and hides claimable refunds,
   // which is worse than saying nothing.
   if (state.topBidsState === 'idle') void loadTopBids();
-  if (state.actor && state.myBidsState === 'idle') void loadMyBids();
+  // Not guarded on state.actor. Arriving by link runs before the wallet is
+  // known, so the guard would always be false here; onActorKnown picks this
+  // up the moment there is an actor.
+  onActorKnown();
   if (!wanted) return;
   // Skip only what is already answered or already on its way. Comparing
   // against nameQuery alone would also match a name merely TYPED and never

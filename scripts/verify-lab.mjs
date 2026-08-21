@@ -42,7 +42,7 @@ try {
   process.exit(1);
 }
 const { __setForm, __builtAction, __problems, __warnings, __attributeBlock,
-        __where, __myBidsState, __claimAuthority, applyLabRoute, renderLabPage } = lab;
+        __where, __myBidsState, __claimAuthority, __labActorArrived, applyLabRoute, renderLabPage } = lab;
 
 const RPC = ['https://wax.greymass.com', 'https://api.waxsweden.org', 'https://wax.eosphere.io'];
 const ATOMIC = ['https://wax.api.atomicassets.io', 'https://aa.wax.blacklusion.io'];
@@ -821,13 +821,20 @@ async function main() {
   // Arriving by link must read what arriving by click reads. Without the
   // bid history the panel states "No bid found" as a fact and hides
   // refunds the contract owes, which is worse than saying nothing at all.
-  __setForm({ tool: 'recipes', actor: 'zigm4.gm', myBidsState: 'idle' });
-  applyLabRoute('names', '');
-  await new Promise((r) => setTimeout(r, 5000));
+  //
+  // Arriving with the actor ALREADY set is not the case that broke. render()
+  // paints on the next frame, so a shared link runs applyLabRoute before the
+  // wallet has restored and every `if (state.actor)` guard on that path is
+  // false. An earlier version of this check seated the actor first, so it
+  // passed while the real page told somebody with three bids "No bid found".
+  __setForm({ tool: 'recipes', actor: '', myBidsState: 'idle', collectionsState: 'idle' });
+  applyLabRoute('names', '');              // no wallet yet, as on a cold load
+  __labActorArrived('zigm4.gm');           // and it lands a moment later
+  await new Promise((r) => setTimeout(r, 6000));
   if (__myBidsState() === 'idle') {
-    fails.push('deep link to #/lab/names never asked for the wallet bids, so the page claims "No bid found" and hides claimable refunds');
+    fails.push('a wallet that arrived after the link was followed never had its bids read, so the page states "No bid found" to somebody who has bid');
   } else {
-    console.log(`   ok  #/lab/names          -> wallet bids requested (state: ${__myBidsState()})`);
+    console.log(`   ok  #/lab/names          -> a late wallet still gets its bids read (state: ${__myBidsState()})`);
   }
 
   // An unknown tool must not blank the page. It keeps whatever is open,
