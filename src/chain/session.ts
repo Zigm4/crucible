@@ -61,3 +61,53 @@ export async function logout(): Promise<void> {
     current = undefined;
   }
 }
+
+/**
+ * Every account this browser has already attached, not just the last one.
+ *
+ * SessionKit keeps a session per account and restores whichever was used
+ * last. Without a way to list them, switching accounts meant disconnecting
+ * and going back through the wallet, even though both were already there.
+ */
+export interface KnownSession {
+  actor: string;
+  permission: string;
+  /** The one `restore()` picks with no arguments. */
+  isDefault: boolean;
+}
+
+export async function listSessions(): Promise<KnownSession[]> {
+  try {
+    const stored = await getSessionKit().getSessions();
+    return stored.map((s) => ({
+      // Serialized sessions carry Antelope types, so never compare raw.
+      actor: String(s.actor),
+      permission: String(s.permission),
+      isDefault: s.default === true,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Moves to an account already attached, without a wallet round trip.
+ *
+ * Returns undefined when that session is gone, in which case the caller
+ * should fall back to a full login rather than assume it worked.
+ */
+export async function switchSession(
+  actor: string,
+  permission: string,
+): Promise<Session | undefined> {
+  const restored = await getSessionKit().restore({
+    chain: WAX_CHAIN_ID,
+    actor,
+    permission,
+  });
+  if (!restored) return undefined;
+  current = restored;
+  // So a reload comes back to the account the user last chose.
+  await getSessionKit().persistSession(restored, true);
+  return current;
+}

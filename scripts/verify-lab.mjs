@@ -21,6 +21,9 @@
  *             near winning it, so the card must say where the bid sits in
  *             the chain-wide order, and must not paint a hopeless position
  *             as good news.
+ *   PHASE F - claiming a name. The account is created from the winner's
+ *             own permissions, so what the form assembles decides whether
+ *             the winner can ever sign for what they just paid for.
  *   PHASE D - deep links. A shared #/lab/<tool>/<name> must open on that
  *             tool with that auction already resolved, and the workbench
  *             must write back a URL that reproduces what is on screen.
@@ -39,7 +42,7 @@ try {
   process.exit(1);
 }
 const { __setForm, __builtAction, __problems, __warnings, __attributeBlock,
-        __where, __myBidsState, applyLabRoute, renderLabPage } = lab;
+        __where, __myBidsState, __claimAuthority, applyLabRoute, renderLabPage } = lab;
 
 const RPC = ['https://wax.greymass.com', 'https://api.waxsweden.org', 'https://wax.eosphere.io'];
 const ATOMIC = ['https://wax.api.atomicassets.io', 'https://aa.wax.blacklusion.io'];
@@ -926,6 +929,78 @@ async function main() {
         console.log(`   ok  a tied bid counts the names that sort before it (${q.ahead} ahead)`);
       }
     }
+  }
+
+  // ── PHASE F ──
+  //
+  // Getting this wrong costs a name outright: the account exists, the bid
+  // is spent, and no wallet can sign for it. Every case here is one an
+  // adversarial review found in a version that had already been checked.
+  console.log('\n=== PHASE F - what a claim would actually send ===');
+  {
+    const auth = await names.readAccountAuthorities('zigm4.gm');
+    const other = await names.readAccountAuthorities('croplandgame');
+    const seat = (over) => __setForm({
+      tool: 'names', actor: 'zigm4.gm', claimAuthFor: 'zigm4.gm',
+      claimOwner: auth.owner, claimActive: auth.active,
+      claimOwnerPicked: auth.owner.keys.map((k) => k.key),
+      claimActivePicked: auth.active.keys.map((k) => k.key),
+      claimExtraOwner: '', claimExtraActive: '',
+      ...over,
+    });
+    const ascending = (ks) => ks.every((k, i) => i === 0 || k > ks[i - 1]);
+    const sent = () => names.buildClaimName({
+      creator: 'zigm4.gm', newname: 'rekt', owner: auth.owner, active: __claimAuthority('active'),
+    }).find((a) => a.name === 'newaccount').data.active;
+
+    seat({});
+    let a = sent();
+    if (a.keys.length !== auth.active.keys.length) {
+      fails.push(`claim: the default drops keys, ${a.keys.length} of ${auth.active.keys.length}`);
+    } else console.log(`   ok  the default carries every key of the signer (${a.keys.length})`);
+
+    // A key that sorts BEFORE the account's own. The chain refuses any
+    // authority whose keys are not ascending, and nothing downstream sorts
+    // a plain object, so appending it would abort the transaction.
+    seat({ claimExtraActive: 'PUB_K1_11111111111111111111111111111111149Mr2R' });
+    a = sent();
+    if (a.keys.length !== auth.active.keys.length + 1) {
+      fails.push(`claim: a typed key did not reach the action (${a.keys.length} keys)`);
+    } else if (!ascending(a.keys.map((k) => k.key))) {
+      fails.push(`claim: keys are not ascending, the chain refuses this: ${a.keys.map((k) => k.key.slice(0, 14)).join(' ')}`);
+    } else console.log('   ok  a typed key lands in sorted position, not appended');
+
+    // The same key has two spellings that share no characters. Pasting the
+    // other one would add it twice, and a duplicate is refused.
+    seat({ claimExtraActive: 'EOS6rGewGtiqCWQTU6ttSxR8Av6fVGeHZ58JC9KxCW6QmrUsQvMpB' });
+    a = sent();
+    if (a.keys.length !== auth.active.keys.length) {
+      fails.push(`claim: the same key in its legacy spelling was added twice (${a.keys.length} keys)`);
+    } else console.log('   ok  a key already present in its other spelling is not duplicated');
+
+    // Keys cached from one account must never render under another. This
+    // is what "Add account" reached: a green all-clear over the wrong keys.
+    __setForm({
+      tool: 'names', actor: 'croplandgame', claimAuthFor: 'zigm4.gm',
+      claimOwner: auth.owner, claimActive: auth.active,
+      claimOwnerPicked: auth.owner.keys.map((k) => k.key),
+      claimActivePicked: auth.active.keys.map((k) => k.key),
+      claimExtraOwner: '', claimExtraActive: '',
+      nameStatusFor: 'rekt',
+      nameStatus: { kind: 'won', mine: true, bid: {
+        newname: 'rekt', high_bidder: 'croplandgame', high_bid: 20000000000,
+        closed: true, last_bid_time: 1,
+      } },
+      bidAhead: { ahead: 0, capped: false },
+    });
+    const page = renderLabPage();
+    const leaked = auth.active.keys.filter((k) => page.includes(k.key));
+    if (leaked.length) {
+      fails.push(`claim: ${leaked.length} key(s) of zigm4.gm render while signed in as croplandgame`);
+    } else if (/mirrors <code>croplandgame<\/code> exactly/.test(page)) {
+      fails.push('claim: the page claims to mirror croplandgame while holding another account\'s keys');
+    } else console.log('   ok  keys cached from one account never render under another');
+    void other;
   }
 
   console.log('');

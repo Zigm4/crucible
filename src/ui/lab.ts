@@ -30,7 +30,10 @@
  */
 
 import { renderCrucibleTool, attachCrucibleHandlers } from './crucibleLab';
-import { getCurrentSession, login, logout } from '../chain/session';
+import {
+  getCurrentSession, login, logout, listSessions, switchSession,
+  type KnownSession,
+} from '../chain/session';
 import { atomicFetch } from '../chain/rpc';
 import { listAuthorizedCollections, isContractAuthorized } from '../atomic/collections';
 import { readCollectionSecurities, executeAdminAction } from '../nefty/admin';
@@ -41,9 +44,10 @@ import { listDropTokens, type DropToken } from '../nefty/dropTokens';
 import {
   readNameStatus, readMyBids, readTopBids, minimumNextBid, formatWax, QUIET_PERIOD_MS,
   buildBidName, buildBidRefund, readRefundsFor, canOutbid,
-  buildClaimName, readAccountKeys, readBidsAhead, readCloseGate,
+  buildClaimName, readAccountAuthorities, readBidsAhead, readCloseGate,
+  isSimpleAuthority, authorityReach, normalizeKey, isValidKey,
   type NameAvailability, type BidHistoryEntry, type NameBid, type PendingRefund,
-  type BidQueuePosition, type CloseGate,
+  type BidQueuePosition, type CloseGate, type Authority,
 } from '../wax/names';
 import { listBlends, type DiscoveredBlend } from '../nefty/discover';
 import { listUpgrades, type DiscoveredUpgrade } from '../nefty/upgrades';
@@ -306,14 +310,35 @@ interface LabState extends LabForm {
   closeGate?: CloseGate;
   /** Which button just copied, so only that one says so. Momentary. */
   shareCopied: ShareScope | '';
+  /** Accounts already attached in this browser, for switching between. */
+  sessions: KnownSession[];
   nameChecking: boolean;
   nameBidAmount: string;
   myBids: BidHistoryEntry[];
   myBidsState: LoadState;
   refunds: PendingRefund[];
   /** Claiming a name we won: the keys the new account will answer to. */
-  claimOwnerKey: string;
-  claimActiveKey: string;
+  /**
+   * The signing account's own permissions, mirrored. Not one key each:
+   * a permission can carry several, and creating the new account with
+   * only one of them can leave the wallet unable to sign for it.
+   */
+  claimOwner?: Authority;
+  claimActive?: Authority;
+  /**
+   * Whose permissions those are. Clearing them on logout and on a switch
+   * was not enough: "Add account" attaches a second wallet without either,
+   * and the form then offered the FIRST account's keys under a green
+   * "mirrors exactly", which is the lock-out this whole form exists to
+   * prevent. Naming the owner makes every path self-correcting.
+   */
+  claimAuthFor: string;
+  /** Keys the author chose to carry over. Every key, until they say not. */
+  claimOwnerPicked: string[];
+  claimActivePicked: string[];
+  /** A key that is not on the signing account, for claiming on behalf. */
+  claimExtraOwner: string;
+  claimExtraActive: string;
   topBids: NameBid[];
   topBidsState: LoadState;
 
@@ -377,13 +402,19 @@ const state: LabState = {
   bidAhead: undefined,
   closeGate: undefined,
   shareCopied: '',
+  sessions: [],
   nameChecking: false,
   nameBidAmount: '',
   myBids: [],
   myBidsState: 'idle',
   refunds: [],
-  claimOwnerKey: '',
-  claimActiveKey: '',
+  claimOwner: undefined,
+  claimActive: undefined,
+  claimAuthFor: '',
+  claimOwnerPicked: [],
+  claimActivePicked: [],
+  claimExtraOwner: '',
+  claimExtraActive: '',
   topBids: [],
   topBidsState: 'idle',
   busy: false,
@@ -1317,6 +1348,13 @@ export function __myBidsState(): string {
   return state.myBidsState;
 }
 
+/** The authority a claim would send, from the current picks. Test-only. */
+export function __claimAuthority(which: 'owner' | 'active') {
+  return which === 'owner'
+    ? claimAuthority(state.claimOwner, state.claimOwnerPicked, state.claimExtraOwner)
+    : claimAuthority(state.claimActive, state.claimActivePicked, state.claimExtraActive);
+}
+
 /** Reads back where the workbench thinks it is. Test-only. */
 export function __where(): { tool: string; nameStatusFor: string; kind: string } {
   return {
@@ -1335,21 +1373,104 @@ export function __where(): { tool: string; nameStatusFor: string; kind: string }
  */
 function walletBar(): string {
   if (state.actor) {
+    // Only worth a switch when there is somewhere to switch to. One account
+    // gets the plain bar it always had.
+    const others = state.sessions.filter((s) => s.actor !== state.actor);
     return `
       <div class="lab-wallet">
         <span class="lab-wallet-dot" aria-hidden="true"></span>
         <span>Signed in as <strong>${esc(state.actor)}</strong></span>
+        ${others.length ? `
+          <span class="lab-wallet-switch">
+            switch to
+            ${others.map((o) => `
+              <button class="lab-ghost lab-wallet-btn" data-lab="session-switch"
+                      data-session="${esc(o.actor)}@${esc(o.permission)}" ${state.busy ? 'disabled' : ''}>
+                ${esc(o.actor)}
+              </button>`).join('')}
+          </span>` : ''}
+        <button class="lab-ghost lab-wallet-btn" data-lab="login" ${state.busy ? 'disabled' : ''}>
+          Add account
+        </button>
         <button class="lab-ghost lab-wallet-btn" data-lab="logout">Disconnect</button>
       </div>`;
   }
+  // Disconnecting one account leaves the others attached, and going back
+  // through the wallet to reach one this browser already holds is a step
+  // for nothing.
   return `
     <div class="lab-wallet lab-wallet-off">
       <span class="lab-wallet-dot" aria-hidden="true"></span>
       <span>Not connected. Nothing on this page can be signed until a wallet is attached.</span>
+      ${state.sessions.length ? `
+        <span class="lab-wallet-switch">
+          already attached
+          ${state.sessions.map((o) => `
+            <button class="lab-ghost lab-wallet-btn" data-lab="session-switch"
+                    data-session="${esc(o.actor)}@${esc(o.permission)}" ${state.busy ? 'disabled' : ''}>
+              ${esc(o.actor)}
+            </button>`).join('')}
+        </span>` : ''}
       <button class="lab-primary lab-wallet-btn" data-lab="login" ${state.busy ? 'disabled' : ''}>
         ${state.busy ? 'Opening your wallet' : 'Connect wallet'}
       </button>
     </div>`;
+}
+
+/**
+ * Which accounts this browser already has, so the bar can offer them.
+ *
+ * SessionKit stores one session per account but restores only the last,
+ * so without this the other accounts exist and are simply invisible.
+ */
+async function refreshSessions() {
+  const found = await listSessions();
+  const same = found.length === state.sessions.length
+    && found.every((f, i) => f.actor === state.sessions[i].actor);
+  if (same) return;
+  state.sessions = found;
+  rerender();
+}
+
+/**
+ * Moves to an account already attached, with no wallet round trip.
+ *
+ * Everything the tools hold is about the previous account, so it is all
+ * dropped rather than left to look current under a new name.
+ */
+async function onSwitchAccount(actor: string, permission: string) {
+  if (actor === state.actor) return;
+  state.busy = true; state.lastError = ''; state.lastTx = '';
+  rerender();
+  try {
+    const session = await switchSession(actor, permission);
+    if (!session) {
+      // The stored session was gone, so the wallet has to be asked again.
+      state.lastError = `The stored session for ${actor} is no longer valid. Use Add account to attach it again.`;
+      await refreshSessions();
+      return;
+    }
+    state.actor = String(session.actor);
+    // Per-account state, none of which survives the move.
+    state.collectionsState = 'idle';
+    state.collections = [];
+    state.collection = '';
+    state.myBids = []; state.myBidsState = 'idle';
+    state.refunds = [];
+    state.claimOwner = undefined; state.claimActive = undefined;
+    state.claimAuthFor = '';
+    state.claimOwnerPicked = []; state.claimActivePicked = [];
+    state.claimExtraOwner = ''; state.claimExtraActive = '';
+    await loadCollections();
+    if (state.tool === 'names') { state.myBidsState = 'idle'; void loadMyBids(); }
+    // The verdict said "you" about somebody else, so ask the chain again.
+    if (state.nameStatusFor) { state.nameQuery = state.nameStatusFor; void onCheckName(); }
+  } catch (err) {
+    state.lastError = err instanceof Error ? err.message : String(err);
+  }
+  state.busy = false;
+  await refreshSessions();
+  rerender();
 }
 
 /** Attaching a wallet changes what every tool on the page can do. */
@@ -1370,6 +1491,7 @@ async function onLabLogin() {
       state.myBidsState = 'idle';
       void loadMyBids();
     }
+    await refreshSessions();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Closing the wallet popup is a choice, not a failure worth shouting.
@@ -1384,6 +1506,15 @@ async function onLabLogout() {
   state.actor = '';
   state.collections = [];
   state.collectionsState = 'idle';
+  // Whose keys these were is no longer on screen, so they must not sit in
+  // memory ready to prefill a form for whoever connects next.
+  state.claimOwner = undefined; state.claimActive = undefined;
+  state.claimAuthFor = '';
+  state.claimOwnerPicked = []; state.claimActivePicked = [];
+  state.claimExtraOwner = ''; state.claimExtraActive = '';
+  state.myBids = []; state.myBidsState = 'idle'; state.refunds = [];
+  // Disconnecting one account does not detach the others.
+  await refreshSessions();
   rerender();
 }
 
@@ -2509,10 +2640,19 @@ async function onCheckName() {
         .catch(() => { /* the verdict stands on its own without these */ });
     }
     // Only reached for a name we won, and only if the fields are untouched.
-    if (found.kind === 'won' && found.mine && !state.claimOwnerKey) {
-      const keys = await readAccountKeys(state.actor);
-      state.claimOwnerKey = keys.owner ?? '';
-      state.claimActiveKey = keys.active ?? '';
+    if (found.kind === 'won' && found.mine && state.claimAuthFor !== state.actor) {
+      const who = state.actor;
+      const auth = await readAccountAuthorities(who);
+      // A wallet switch mid-read would otherwise land one account's keys
+      // on another account's form.
+      if (state.actor !== who) return;
+      state.claimAuthFor = who;
+      state.claimOwner = auth.owner;
+      state.claimActive = auth.active;
+      // Everything is carried over by default. Dropping a key is a choice
+      // the author has to make deliberately, and gets warned about.
+      state.claimOwnerPicked = (auth.owner?.keys ?? []).map((k) => k.key);
+      state.claimActivePicked = (auth.active?.keys ?? []).map((k) => k.key);
     }
     // Prefill the bid with the smallest amount the contract will take, so
     // the common case is one click and the number is never guessed.
@@ -2612,13 +2752,28 @@ async function onClaimName() {
   const st = state.nameStatus;
   if (!session || !st || st.kind !== 'won' || !st.mine) return;
   const newname = st.bid.newname;
-  const owner = state.claimOwnerKey.trim();
-  const active = state.claimActiveKey.trim();
-  if (!owner || !active) {
-    state.lastError = 'Both keys are required. An account with no key can never be used again.';
-    rerender();
-    return;
+  const owner = claimAuthority(state.claimOwner, state.claimOwnerPicked, state.claimExtraOwner);
+  const active = claimAuthority(state.claimActive, state.claimActivePicked, state.claimExtraActive);
+  // The form already says why, in full. This is the last gate before a
+  // wallet popup, and it refuses rather than explains.
+  for (const [label, a] of [['owner', owner], ['active', active]] as const) {
+    if (!a.keys.length && !a.accounts.length) {
+      state.lastError = `The ${label} permission has no key. An account nobody can sign for is unrecoverable.`;
+      rerender();
+      return;
+    }
+    if (authorityReach(a, a.keys.map((k) => k.key)) < a.threshold) {
+      state.lastError = `The ${label} permission cannot meet its own threshold of ${a.threshold}.`;
+      rerender();
+      return;
+    }
   }
+  const describe = (a: typeof owner) => a.keys.map((k) => k.key).join('\n         ')
+    + a.accounts.map((c) => `\n         ${c.actor}@${c.permission}`).join('');
+  const dropped = [
+    ...(state.claimOwner?.keys ?? []).filter((k) => !owner.keys.some((p) => p.key === k.key)),
+    ...(state.claimActive?.keys ?? []).filter((k) => !active.keys.some((p) => p.key === k.key)),
+  ];
 
   const summary = [
     `CREATE THE ACCOUNT "${newname}"`,
@@ -2630,11 +2785,20 @@ async function onClaimName() {
     '  eosio::buyrambytes   buys it about 4 KB of RAM, which costs WAX',
     '  eosio::delegatebw    stakes 1 WAX to its CPU and NET',
     '',
-    `owner  ${owner}`,
-    `active ${active}`,
+    `owner  ${describe(owner)}`,
+    `active ${describe(active)}`,
     '',
-    'Check both keys. An account created with a key nobody holds the',
-    'private half of is unrecoverable, and the name is spent.',
+    ...(dropped.length ? [
+      `WARNING: ${dropped.length} key(s) on your own account are NOT carried over:`,
+      ...dropped.map((k) => `         ${k.key}`),
+      '',
+      'Your wallet never says which key it signs with, so this cannot be',
+      'checked for you. If one of those is the key it holds, the account',
+      'will exist and you will not be able to sign for it.',
+      '',
+    ] : []),
+    'An account created with a key nobody holds the private half of is',
+    'unrecoverable, and the name is spent.',
   ].join('\n');
   if (!(await confirmCreate(summary))) return;
 
@@ -2644,7 +2808,7 @@ async function onClaimName() {
   rerender();
   try {
     const result = await session.transact({
-      actions: buildClaimName({ creator: state.actor, newname, ownerKey: owner, activeKey: active }),
+      actions: buildClaimName({ creator: state.actor, newname, owner, active }),
     });
     state.lastTx =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
@@ -2722,24 +2886,128 @@ async function onClaimRefund(newname: string) {
  * the step where a name gets locked away forever. They stay editable for
  * the case where the new account is meant for someone else.
  */
-function claimForm(newname: string): string {
+/**
+ * Builds the authority to hand `newaccount`, from what the author picked.
+ *
+ * The source permission's threshold, weights, delegates and waits all
+ * travel unchanged. Only the set of keys is the author's to narrow, and
+ * narrowing it is what `claimRisk` warns about.
+ */
+function claimAuthority(source: Authority | undefined, picked: string[], extra: string): Authority {
+  const base: Authority = source ?? { threshold: 1, keys: [], accounts: [], waits: [] };
+  const keys = base.keys.filter((k) => picked.includes(k.key));
+  const more = extra.trim();
+  // A key typed in by hand stands on its own, so it needs to clear the
+  // threshold by itself or it would be authority nobody can use.
+  //
+  // Compared normalised, because the same key has a legacy EOS spelling
+  // and a modern PUB_K1_ one that share no characters. Pasting the other
+  // spelling of a key already listed would otherwise add it twice, and the
+  // chain rejects a duplicate. wireAuthority sorts, so position here does
+  // not matter.
+  if (more && isValidKey(more)) {
+    const seen = keys.map((k) => normalizeKey(k.key));
+    const norm = normalizeKey(more);
+    if (!seen.includes(norm)) keys.push({ key: norm, weight: base.threshold });
+  }
+  return { ...base, keys };
+}
+
+/**
+ * What could go wrong with this choice, in the author's own terms.
+ *
+ * The dangerous case is invisible from here: a wallet never tells an app
+ * which key it signs with, so leaving one out may or may not be the one
+ * that matters. Since it cannot be checked, it has to be said.
+ */
+function claimRisk(source: Authority | undefined, picked: string[], extra: string, label: string): string {
+  if (!source) return '';
+  const typed = extra.trim();
+  if (typed && !isValidKey(typed)) {
+    return `<div class="lab-callout danger"><strong>That is not a public key the chain can read.</strong>
+      A WAX key starts with <code>EOS</code> or <code>PUB_K1_</code>. As typed it would be refused,
+      and it counts for nothing in the ${label} permission below.</div>`;
+  }
+  const dropped = source.keys.filter((k) => !picked.includes(k.key));
+  const auth = claimAuthority(source, picked, extra);
+  const reach = authorityReach(auth, auth.keys.map((k) => k.key));
+
+  if (!auth.keys.length && !auth.accounts.length) {
+    return `<div class="lab-callout danger"><strong>The ${label} permission would have no key at all.</strong>
+      An account nobody can sign for is unusable and unrecoverable, and the name is spent.</div>`;
+  }
+  if (reach < auth.threshold) {
+    return `<div class="lab-callout danger"><strong>What you picked cannot meet the ${label} threshold.</strong>
+      It needs weight ${source.threshold} and this reaches ${reach}, so the chain would create an
+      account that can never sign.</div>`;
+  }
+  if (dropped.length) {
+    return `<div class="lab-callout danger">
+      <strong>You are leaving ${dropped.length} of your ${label} key${source.keys.length === 1 ? '' : 's'} behind, and nothing here can tell you if that is safe.</strong>
+      Anchor and the Cloud Wallet never tell an application which key they hold, so this page
+      cannot check that what you kept is the one your wallet signs with. If it is not, the account
+      will be created, the name will be spent, and you will not be able to sign for it from the
+      wallet you are using right now.
+      <ul class="lab-list">${dropped.map((k) => `<li><code>${esc(k.key)}</code> left out</li>`).join('')}</ul>
+      Keep every key unless you know which one your wallet holds.
+    </div>`;
+  }
+  return '';
+}
+
+/** One permission, as a set of keys the author can narrow. */
+function claimKeyPicker(
+  label: string, source: Authority | undefined, picked: string[],
+  pickAction: string, extraId: string, extra: string, hint: string,
+): string {
+  if (!source) return '';
+  const odd = !isSimpleAuthority(source);
   return `
     <div class="lab-field" style="margin-top:18px">
-      <label>Owner key <span class="lab-note">controls everything, including the active key</span></label>
-      <input id="lab-claim-owner" type="text" value="${esc(state.claimOwnerKey)}"
-             placeholder="EOS... or PUB_K1_..." autocomplete="off" spellcheck="false" />
-    </div>
-    <div class="lab-field">
-      <label>Active key <span class="lab-note">day to day signing</span></label>
-      <input id="lab-claim-active" type="text" value="${esc(state.claimActiveKey)}"
-             placeholder="EOS... or PUB_K1_..." autocomplete="off" spellcheck="false" />
-    </div>
-    <div class="lab-callout">
-      <strong>These are your own wallet's keys, prefilled.</strong> Keep them and
-      <code>${esc(newname)}</code> answers to the same wallet you are signing with. Replace them
-      only if the account is for somebody else, and only with a key whose private half exists
-      somewhere: an account created with a key nobody holds is gone for good.
-    </div>
+      <label>${esc(label)} authority <span class="lab-note">${esc(hint)}</span></label>
+      ${source.keys.length === 0
+        ? '<p class="lab-note">This permission carries no key of its own.</p>'
+        : source.keys.map((k) => `
+        <label class="lab-check">
+          <input type="checkbox" data-lab="${pickAction}" data-key="${esc(k.key)}"
+                 ${picked.includes(k.key) ? 'checked' : ''} />
+          <code>${esc(k.key)}</code>${k.weight === 1 ? '' : ` <span class="lab-note">weight ${k.weight}</span>`}
+        </label>`).join('')}
+      ${odd ? `<p class="lab-note">
+        Threshold ${source.threshold}${source.accounts.length ? `, plus ${source.accounts.map((c) => `<code>${esc(c.actor)}@${esc(c.permission)}</code>`).join(', ')}` : ''}${source.waits.length ? `, plus ${source.waits.length} wait rule(s)` : ''}.
+        These travel to the new account unchanged.</p>` : ''}
+      <input id="${extraId}" type="text" value="${esc(extra)}"
+             placeholder="or a key that is not on your account, for claiming on somebody else's behalf"
+             autocomplete="off" spellcheck="false" />
+    </div>`;
+}
+
+function claimForm(newname: string): string {
+  // Belt and braces. If the cache ever names another account, say so
+  // rather than render keys that look like the signer's and are not.
+  if (state.claimAuthFor && state.claimAuthFor !== state.actor) {
+    return `<p class="lab-hint">Reading the permissions of ${esc(state.actor)}.</p>`;
+  }
+  const ownerRisk = claimRisk(state.claimOwner, state.claimOwnerPicked, state.claimExtraOwner, 'owner');
+  const activeRisk = claimRisk(state.claimActive, state.claimActivePicked, state.claimExtraActive, 'active');
+  const mirrored = !ownerRisk && !activeRisk
+    && !state.claimExtraOwner.trim() && !state.claimExtraActive.trim();
+  return `
+    ${claimKeyPicker('Owner', state.claimOwner, state.claimOwnerPicked,
+      'claim-pick-owner', 'lab-claim-extra-owner', state.claimExtraOwner,
+      'controls everything, including the active permission')}
+    ${ownerRisk}
+    ${claimKeyPicker('Active', state.claimActive, state.claimActivePicked,
+      'claim-pick-active', 'lab-claim-extra-active', state.claimExtraActive,
+      'day to day signing')}
+    ${activeRisk}
+    ${mirrored ? `
+      <div class="lab-callout ok">
+        <strong>This mirrors <code>${esc(state.actor)}</code> exactly.</strong>
+        Every key on your own permissions carries over, so whichever one your wallet actually
+        signs with will work on <code>${esc(newname)}</code> too, and both accounts will show up
+        together when you attach your wallet.
+      </div>` : ''}
     <div class="lab-callout danger">
       <strong>Creating it costs WAX on top of the bid you already paid.</strong> A new account owns
       no RAM and no resources, so the transaction also buys it about 4 KB of RAM (a fraction of a
@@ -3444,6 +3712,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   if (actor !== state.actor || (actor && state.collectionsState === 'idle')) {
     void loadCollections();
   }
+  if (actor && !state.sessions.length) void refreshSessions();
 
   const idx = (el: HTMLElement) => Number(el.dataset.idx);
 
@@ -3635,6 +3904,21 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'name-bid':    void onPlaceBid(); return;
         case 'name-reload': void loadMyBids(); return;
         case 'top-reload':  void loadTopBids(); return;
+        case 'claim-pick-owner':
+        case 'claim-pick-active': {
+          const key = el.dataset.key ?? '';
+          const list = kind === 'claim-pick-owner' ? state.claimOwnerPicked : state.claimActivePicked;
+          const on = (el as HTMLInputElement).checked;
+          const next = on ? [...new Set([...list, key])] : list.filter((k) => k !== key);
+          if (kind === 'claim-pick-owner') state.claimOwnerPicked = next;
+          else state.claimActivePicked = next;
+          break;
+        }
+        case 'session-switch': {
+          const [a, perm] = (el.dataset.session ?? '').split('@');
+          if (a) void onSwitchAccount(a, perm || 'active');
+          return;
+        }
         case 'name-refund':     void onClaimRefund(el.dataset.name ?? ''); return;
         case 'name-refund-all': void onClaimAllRefunds(); return;
         case 'name-claim':      void onClaimName(); return;
@@ -3700,8 +3984,8 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   bind('lab-token-search', (v) => { state.tokenSearch = v; }, 'live');
   bind('lab-name-query', (v) => { state.nameQuery = v; });
   bind('lab-name-bid', (v) => { state.nameBidAmount = v; });
-  bind('lab-claim-owner', (v) => { state.claimOwnerKey = v; });
-  bind('lab-claim-active', (v) => { state.claimActiveKey = v; });
+  bind('lab-claim-extra-owner', (v) => { state.claimExtraOwner = v; });
+  bind('lab-claim-extra-active', (v) => { state.claimExtraActive = v; });
   // Enter searches: typing a name and reaching for the mouse is the wrong
   // rhythm for a tool whose whole loop is "try another name".
   const nameInput = root.querySelector<HTMLInputElement>('#lab-name-query');

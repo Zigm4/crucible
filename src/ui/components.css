@@ -2353,3 +2353,11 @@ input.lab-inline { max-width: 190px; }
   border-left-color: var(--warn);
   background: rgba(255, 206, 92, 0.07);
 }
+
+/* Several accounts can be attached at once, so the bar has to name them
+   rather than assume there is only ever one. */
+.lab-wallet-switch {
+  display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
+}
+.lab-wallet-switch .lab-wallet-btn { text-transform: none; letter-spacing: normal; }

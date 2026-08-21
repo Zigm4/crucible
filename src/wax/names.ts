@@ -30,6 +30,8 @@
  * Everything here is pure or read-only, with the same split as the rest of
  * the project: builders return a `BuiltAction` and never decide who signs.
  */
+import { Authority as WireAuthority, PublicKey } from '@wharfkit/session';
+
 import type { BuiltAction } from '../chain/action';
 import { getTableRows, getAccount, HYPERION_ENDPOINTS } from '../chain/rpc';
 
@@ -430,9 +432,64 @@ export async function readMyBids(actor: string, limit = 100): Promise<BidHistory
  * hold anything or sign anything.
  */
 
-/** An EOSIO permission: one key, weight 1, threshold 1. The common shape. */
-function singleKeyAuthority(key: string) {
-  return { threshold: 1, keys: [{ key, weight: 1 }], accounts: [], waits: [] };
+/**
+ * An Authority in the shape `newaccount` expects, and in the ORDER it
+ * demands.
+ *
+ * The chain runs `validate()` on both authorities and refuses any whose
+ * keys are not in strictly ascending order of their binary value. Nothing
+ * downstream sorts for you: `Action.from()` given a plain object encodes
+ * whatever order it was handed, so an appended key reaches the chain out
+ * of order and the whole transaction aborts on "Invalid active authority".
+ * Routing through WharfKit's own Authority does it, since its `from()`
+ * sorts, and using the library's ordering beats reimplementing a base58
+ * comparison here.
+ */
+function wireAuthority(a: Authority) {
+  const sorted = WireAuthority.from({
+    threshold: a.threshold,
+    keys: a.keys.map((k) => ({ key: k.key, weight: k.weight })),
+    accounts: a.accounts.map((c) => ({
+      permission: { actor: c.actor, permission: c.permission }, weight: c.weight,
+    })),
+    waits: a.waits.map((w) => ({ wait_sec: w.wait_sec, weight: w.weight })),
+  });
+  // Back to plain data, so the confirmation dialog and the verify scripts
+  // read it as JSON rather than as Antelope types.
+  return JSON.parse(JSON.stringify(sorted)) as {
+    threshold: number;
+    keys: { key: string; weight: number }[];
+    accounts: { permission: { actor: string; permission: string }; weight: number }[];
+    waits: { wait_sec: number; weight: number }[];
+  };
+}
+
+/**
+ * One public key, in one spelling.
+ *
+ * The same key has a legacy `EOS...` form and a modern `PUB_K1_...` form,
+ * and they share no characters past the prefix. Comparing the two as
+ * strings says they differ, which would let the same key be added twice
+ * and get the authority rejected as a duplicate. Returns the input
+ * untouched when it cannot be parsed, so the caller can still show it back
+ * to whoever typed it.
+ */
+export function normalizeKey(raw: string): string {
+  try {
+    return String(PublicKey.from(raw.trim()));
+  } catch {
+    return raw.trim();
+  }
+}
+
+/** Whether a key is spelled in a way the chain will accept at all. */
+export function isValidKey(raw: string): boolean {
+  try {
+    PublicKey.from(raw.trim());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export interface ClaimNameArgs {
@@ -440,8 +497,13 @@ export interface ClaimNameArgs {
   creator: string;
   /** The name won at auction. */
   newname: string;
-  ownerKey: string;
-  activeKey: string;
+  /**
+   * Whole authorities, not single keys. An account whose owner or active
+   * carries two keys and gets created with one of them is an account its
+   * own wallet may not be able to sign for.
+   */
+  owner: Authority;
+  active: Authority;
   /** Rows cost RAM. 4096 is comfortable for an account that will hold NFTs. */
   ramBytes?: number;
   /** Staked, not spent: it can be unstaked later. */
@@ -466,8 +528,8 @@ export function buildClaimName(a: ClaimNameArgs): BuiltAction[] {
       data: {
         creator: a.creator,
         name: a.newname,
-        owner: singleKeyAuthority(a.ownerKey),
-        active: singleKeyAuthority(a.activeKey),
+        owner: wireAuthority(a.owner),
+        active: wireAuthority(a.active),
       },
     },
     {
@@ -497,24 +559,83 @@ export function buildClaimName(a: ClaimNameArgs): BuiltAction[] {
  * keys as the wallet that won it, and typing a key by hand is the step
  * where a name gets locked away forever.
  */
-export async function readAccountKeys(
+/**
+ * One permission exactly as the chain stores it.
+ *
+ * Not "the key", which is what an earlier version of this read. A
+ * permission can hold several keys, each with a weight, and clears only
+ * when the weights of whoever signed reach the threshold. It can also
+ * delegate to another account, or to a wait. Reducing all of that to
+ * `keys[0]` was silently dropping authority.
+ */
+export interface Authority {
+  threshold: number;
+  keys: { key: string; weight: number }[];
+  accounts: { actor: string; permission: string; weight: number }[];
+  waits: { wait_sec: number; weight: number }[];
+}
+
+/** Whether an authority is the ordinary "any one of these keys" shape. */
+export function isSimpleAuthority(a: Authority): boolean {
+  return a.threshold === 1
+    && a.accounts.length === 0
+    && a.waits.length === 0
+    && a.keys.every((k) => k.weight === 1);
+}
+
+/** Weight the picked keys carry, against what the threshold demands. */
+export function authorityReach(a: Authority, pickedKeys: string[]): number {
+  let sum = 0;
+  for (const k of a.keys) if (pickedKeys.includes(k.key)) sum += k.weight;
+  // Delegates and waits come along unchanged, so they still count.
+  for (const c of a.accounts) sum += c.weight;
+  return sum;
+}
+
+/**
+ * Both permissions of an account, whole.
+ *
+ * WharfKit hands back typed objects, not the raw JSON: `perm_name` is a
+ * Name and `key` is a PublicKey. Comparing them to strings silently never
+ * matches, which once left every field blank with no error anywhere. So
+ * everything is put through String() before it is compared or kept.
+ */
+export async function readAccountAuthorities(
   actor: string,
-): Promise<{ owner?: string; active?: string }> {
+): Promise<{ owner?: Authority; active?: Authority }> {
   try {
     const acc = await getAccount(actor);
-    const out: { owner?: string; active?: string } = {};
-    // WharfKit hands back typed objects, not the raw JSON: `perm_name` is a
-    // Name and `key` is a PublicKey. Comparing them to strings silently
-    // never matches, which left both fields blank with no error anywhere.
-    for (const p of (acc as unknown as {
-      permissions?: { perm_name: unknown; required_auth?: { keys?: { key: unknown }[] } }[];
-    }).permissions ?? []) {
-      const raw = p.required_auth?.keys?.[0]?.key;
-      if (raw === undefined || raw === null) continue;
-      const key = String(raw);
+    const out: { owner?: Authority; active?: Authority } = {};
+    type RawPerm = {
+      perm_name: unknown;
+      required_auth?: {
+        threshold?: unknown;
+        keys?: { key: unknown; weight: unknown }[];
+        accounts?: { permission?: { actor: unknown; permission: unknown }; weight: unknown }[];
+        waits?: { wait_sec: unknown; weight: unknown }[];
+      };
+    };
+    for (const p of (acc as unknown as { permissions?: RawPerm[] }).permissions ?? []) {
       const perm = String(p.perm_name);
-      if (perm === 'owner') out.owner = key;
-      if (perm === 'active') out.active = key;
+      if (perm !== 'owner' && perm !== 'active') continue;
+      const ra = p.required_auth ?? {};
+      const auth: Authority = {
+        threshold: Number(ra.threshold ?? 1),
+        keys: (ra.keys ?? [])
+          .filter((k) => k?.key !== undefined && k?.key !== null)
+          .map((k) => ({ key: String(k.key), weight: Number(k.weight ?? 1) })),
+        accounts: (ra.accounts ?? [])
+          .filter((c) => c?.permission)
+          .map((c) => ({
+            actor: String(c.permission!.actor),
+            permission: String(c.permission!.permission),
+            weight: Number(c.weight ?? 1),
+          })),
+        waits: (ra.waits ?? []).map((w) => ({
+          wait_sec: Number(w.wait_sec ?? 0), weight: Number(w.weight ?? 1),
+        })),
+      };
+      out[perm] = auth;
     }
     return out;
   } catch {
