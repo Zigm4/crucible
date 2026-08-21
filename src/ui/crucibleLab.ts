@@ -82,11 +82,18 @@ interface CruState {
   visited: boolean[];
 }
 
-// The account name is not reserved yet, and the auction has not run. Printing a
-// guess here would put a name in front of authors that we may not end up
-// holding, so the tool prints a placeholder everywhere the account would go and
-// the review says plainly why.
-const CONTRACT = '[REDACTED].wax';
+/**
+ * Where the engine will live.
+ *
+ * This was a placeholder while the name was still unreserved. The auction on
+ * `crucible` is now running with our bid at the top of the whole chain, so the
+ * name is printed rather than hidden: an author being asked to authorise an
+ * account on their own collection deserves to read which one.
+ *
+ * Until that auction closes the name is not held, which the review step says
+ * out loud rather than leaving the reader to assume otherwise.
+ */
+const CONTRACT = 'crucible';
 
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -929,14 +936,13 @@ function stepReview(): string {
         : ''}
 
       <div class="lab-note">
-        <strong>Nothing here can be broadcast.</strong> The account name is held
-        back on purpose: <code>${CONTRACT}</code> is a placeholder, because the name
-        has not been reserved and goes to auction first. Printing a guess here would
-        put a name in front of you that we may not end up holding. This preview is
-        otherwise the contract's
-        real action shapes, produced by the same rules the engine enforces, so the
-        format can be judged before it is frozen. Once a wire format has clients, it
-        cannot be changed.
+        <strong>Nothing here can be broadcast.</strong> No contract is deployed at
+        <code>${CONTRACT}</code> yet, and the name itself is still under auction:
+        won means nothing until the chain closes it. Treat the account as intended,
+        not as held. What this preview does show is the contract's real action
+        shapes, produced by the same rules the engine enforces, so the format can be
+        judged before it is frozen. Once a wire format has clients, it cannot be
+        changed.
       </div>
     </div>`;
 }
