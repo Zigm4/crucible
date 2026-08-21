@@ -79,12 +79,17 @@ export interface KnownSession {
 export async function listSessions(): Promise<KnownSession[]> {
   try {
     const stored = await getSessionKit().getSessions();
-    return stored.map((s) => ({
-      // Serialized sessions carry Antelope types, so never compare raw.
-      actor: String(s.actor),
-      permission: String(s.permission),
-      isDefault: s.default === true,
-    }));
+    return stored
+      .map((s) => ({
+        // Serialized sessions carry Antelope types, so never compare raw.
+        actor: String(s.actor),
+        permission: String(s.permission),
+        isDefault: s.default === true,
+      }))
+      // Storage order is the order they were attached, which is no help to
+      // someone holding dozens of names. Alphabetical is at least a place
+      // to look.
+      .sort((a, b) => a.actor.localeCompare(b.actor) || a.permission.localeCompare(b.permission));
   } catch {
     return [];
   }

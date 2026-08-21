@@ -1371,6 +1371,31 @@ export function __where(): { tool: string; nameStatusFor: string; kind: string }
  * reaches the main Connect card, so a visitor who lands here from a shared
  * link had no way to attach a wallet without going back to the app first.
  */
+/**
+ * How to offer the other accounts, given how many there are.
+ *
+ * A button each reads best while there are one or two. Somebody holding
+ * ten names would get a wall of them wrapping across the bar, so past that
+ * it becomes a list. Same action either way, only the shape changes.
+ */
+const SWITCH_AS_BUTTONS = 2;
+
+function sessionChooser(list: KnownSession[]): string {
+  if (list.length <= SWITCH_AS_BUTTONS) {
+    return list.map((o) => `
+      <button class="lab-ghost lab-wallet-btn" data-lab="session-switch"
+              data-session="${esc(o.actor)}@${esc(o.permission)}" ${state.busy ? 'disabled' : ''}>
+        ${esc(o.actor)}
+      </button>`).join('');
+  }
+  return `
+    <select class="lab-inline lab-wallet-pick" data-lab="session-pick" ${state.busy ? 'disabled' : ''}>
+      <option value="">${list.length} accounts</option>
+      ${list.map((o) => `
+        <option value="${esc(o.actor)}@${esc(o.permission)}">${esc(o.actor)}</option>`).join('')}
+    </select>`;
+}
+
 function walletBar(): string {
   if (state.actor) {
     // Only worth a switch when there is somewhere to switch to. One account
@@ -1383,11 +1408,7 @@ function walletBar(): string {
         ${others.length ? `
           <span class="lab-wallet-switch">
             switch to
-            ${others.map((o) => `
-              <button class="lab-ghost lab-wallet-btn" data-lab="session-switch"
-                      data-session="${esc(o.actor)}@${esc(o.permission)}" ${state.busy ? 'disabled' : ''}>
-                ${esc(o.actor)}
-              </button>`).join('')}
+            ${sessionChooser(others)}
           </span>` : ''}
         <button class="lab-ghost lab-wallet-btn" data-lab="login" ${state.busy ? 'disabled' : ''}>
           Add account
@@ -1405,11 +1426,7 @@ function walletBar(): string {
       ${state.sessions.length ? `
         <span class="lab-wallet-switch">
           already attached
-          ${state.sessions.map((o) => `
-            <button class="lab-ghost lab-wallet-btn" data-lab="session-switch"
-                    data-session="${esc(o.actor)}@${esc(o.permission)}" ${state.busy ? 'disabled' : ''}>
-              ${esc(o.actor)}
-            </button>`).join('')}
+          ${sessionChooser(state.sessions)}
         </span>` : ''}
       <button class="lab-primary lab-wallet-btn" data-lab="login" ${state.busy ? 'disabled' : ''}>
         ${state.busy ? 'Opening your wallet' : 'Connect wallet'}
@@ -3745,6 +3762,14 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     if (textField[kind]) {
       el.addEventListener('input', () => textField[kind]((el as HTMLInputElement).value, idx(el)));
       el.addEventListener('change', () => render());
+      return;
+    }
+
+    if (kind === 'session-pick') {
+      el.addEventListener('change', () => {
+        const [a, perm] = ((el as HTMLSelectElement).value || '').split('@');
+        if (a) void onSwitchAccount(a, perm || 'active');
+      });
       return;
     }
 
