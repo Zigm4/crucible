@@ -302,6 +302,14 @@ interface LabState extends LabForm {
   /** The name `nameStatus` is about, which is not always what is typed. */
   nameStatusFor: string;
   /**
+   * And who it was rendered for. A shared link runs the lookup before the
+   * wallet has finished restoring, so `mine` came out false and the winner
+   * was told "the name is theirs", in the third person, with no way to
+   * claim it. Remembering the actor lets the answer be re-asked once the
+   * wallet is known, instead of waiting for the visitor to click again.
+   */
+  nameStatusActor: string;
+  /**
    * Where this bid sits in the chain-wide order, and when the chain may
    * next close anything at all. Leading a name says nothing on its own:
    * these two are what decide whether it ever settles.
@@ -399,6 +407,7 @@ const state: LabState = {
   search: '',
   nameQuery: '',
   nameStatusFor: '',
+  nameStatusActor: '',
   bidAhead: undefined,
   closeGate: undefined,
   shareCopied: '',
@@ -626,7 +635,14 @@ async function loadDropTokens() {
 async function loadCollections() {
   const session = getCurrentSession();
   const actor = session ? String(session.actor) : '';
+  const changed = actor !== state.actor;
   state.actor = actor;
+  // A verdict rendered before the wallet was known says "theirs" about the
+  // visitor's own name. Ask again now that there is somebody to compare to.
+  if (changed && state.nameStatusFor && state.nameStatusActor !== actor) {
+    state.nameQuery = state.nameStatusFor;
+    void onCheckName();
+  }
   if (!actor) { state.collectionsState = 'idle'; state.collections = []; return; }
   state.collectionsState = 'loading';
   rerender();
@@ -1356,11 +1372,16 @@ export function __claimAuthority(which: 'owner' | 'active') {
 }
 
 /** Reads back where the workbench thinks it is. Test-only. */
-export function __where(): { tool: string; nameStatusFor: string; kind: string } {
+export function __where(): {
+  tool: string; nameStatusFor: string; kind: string; mine: boolean; askedFor: string;
+} {
+  const st = state.nameStatus;
   return {
     tool: state.tool,
     nameStatusFor: state.nameStatusFor,
-    kind: state.nameStatus ? state.nameStatus.kind : 'none',
+    kind: st ? st.kind : 'none',
+    mine: !!(st && (st.kind === 'won' ? st.mine : false)),
+    askedFor: state.nameStatusActor,
   };
 }
 
@@ -2629,15 +2650,22 @@ async function onCheckName() {
   // which reads as a wrong answer rather than as a pending one.
   state.nameStatus = undefined;
   state.nameStatusFor = '';
+  state.nameStatusActor = '';
   state.bidAhead = undefined;
   state.closeGate = undefined;
   rerender();
   try {
-    const found = await readNameStatus(q, state.actor);
+    // Whose question this is, captured BEFORE the await. render() paints on
+    // the next frame, so on a shared link the wallet is still restoring when
+    // this runs and the actor is empty. Recording who it was asked for is
+    // what lets the answer be spotted as stale and re-asked.
+    const askedFor = state.actor;
+    const found = await readNameStatus(q, askedFor);
     // A slower earlier lookup must not overwrite a newer one.
     if (state.nameQuery.trim().toLowerCase() !== q) return;
     state.nameStatus = found;
     state.nameStatusFor = q;
+    state.nameStatusActor = askedFor;
     state.bidAhead = undefined;
     state.closeGate = undefined;
     // The URL now points at this exact auction, ready to be copied.
@@ -2656,6 +2684,9 @@ async function onCheckName() {
         })
         .catch(() => { /* the verdict stands on its own without these */ });
     }
+    // The wallet finished restoring while this was in flight, so the answer
+    // is about nobody. Ask again, now that there is somebody to compare to.
+    if (askedFor !== state.actor) { void onCheckName(); return; }
     // Only reached for a name we won, and only if the fields are untouched.
     if (found.kind === 'won' && found.mine && state.claimAuthFor !== state.actor) {
       const who = state.actor;

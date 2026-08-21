@@ -1003,6 +1003,31 @@ async function main() {
     void other;
   }
 
+  // A shared link starts its lookup before the wallet has finished
+  // restoring, so the answer came back about nobody: the winner was told
+  // "the name is theirs", third person, with no way to claim. Found only by
+  // opening the real page with a real wallet attached.
+  console.log('\n=== PHASE G - a verdict must know who is asking ===');
+  {
+    __setForm({
+      tool: 'names', actor: '', nameQuery: '', nameStatusFor: '', nameStatusActor: '',
+      nameStatus: undefined, claimAuthFor: '', claimOwner: undefined, claimActive: undefined,
+    });
+    globalThis.location.hash = '#/lab/names/rekt';
+    applyLabRoute('names', 'rekt');          // the lookup leaves with no actor
+    __setForm({ actor: 'zigm4.gm' });        // and the wallet lands right after
+    await new Promise((r) => setTimeout(r, 9000));
+    const at = __where();
+    if (at.kind !== 'won') {
+      console.log(`   note: rekt no longer reads as won (${at.kind}), so this phase proved nothing today`);
+      fails.push(`the race check needs rekt to read as won, it reads ${at.kind}`);
+    } else if (!at.mine) {
+      fails.push(`a wallet that arrived during the lookup is still told the name is somebody else's (asked for "${at.askedFor}")`);
+    } else {
+      console.log(`   ok  the answer catches up with the wallet, and says the name is theirs (asked for ${at.askedFor})`);
+    }
+  }
+
   console.log('');
   if (fails.length) {
     console.log(`=== ${fails.length} FAILURE(S) ===`);
