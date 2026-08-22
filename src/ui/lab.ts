@@ -3648,7 +3648,7 @@ function standingsList(): string {
     return `<button class="lab-add" data-lab="name-recheck" data-name="${esc(name)}">Open</button>`;
   };
 
-  return `<div class="lab-rows">
+  return `<div class="lab-rows lab-rows-aligned">
     ${rows.map(({ bid, st }) => `
       <div class="lab-row${st?.kind === 'won' || (st?.kind === 'outbid' && st.refund) ? ' lab-row-mine' : ''}">
         <span class="lab-tag lab-tag-name">${esc(bid.newname)}</span>
