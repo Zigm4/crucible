@@ -411,6 +411,195 @@ export async function readMyBids(actor: string, limit = 100): Promise<BidHistory
   return [];
 }
 
+/**
+ * What a bid needs from you now, which is not what it cost.
+ *
+ * A history line says you bid 5 WAX on a name in March. It does not say
+ * whether that WAX is sitting on the contract waiting to be asked for, or
+ * whether the name is yours and unclaimed, or whether there is nothing to
+ * do. 888 names on this chain are won and never claimed, across 406
+ * wallets, so people plainly do forget. Each bid is in exactly one of
+ * these, and each one has exactly one next step.
+ */
+export type BidStanding =
+  /** Top bid, auction still open. Nothing to do but wait. */
+  | { kind: 'leading'; name: string; wax: number; settlesAt: number }
+  /** Somebody beat you. The WAX is yours and the contract is holding it. */
+  | { kind: 'outbid'; name: string; by: string; wax: number; refund?: PendingRefund }
+  /** Won and unclaimed. The account does not exist until you make it. */
+  | { kind: 'won'; name: string; wax: number }
+  /** Won, claimed, done. The account exists. */
+  | { kind: 'claimed'; name: string }
+  /** Bid on, and the name went to somebody who has since created it. */
+  | { kind: 'lost'; name: string };
+
+/**
+ * Reads where each of these names leaves the bidder.
+ *
+ * One pass over the names, plus one read of the refund rows, rather than
+ * asking the reader to open each name in turn and work it out.
+ */
+export async function readBidStandings(
+  actor: string,
+  names: string[],
+): Promise<BidStanding[]> {
+  const unique = [...new Set(names)];
+  const [statuses, refunds] = await Promise.all([
+    Promise.all(unique.map((n) => readNameStatus(n, actor).catch(() => undefined))),
+    readRefundsFor(actor, unique).catch(() => [] as PendingRefund[]),
+  ]);
+  const owed = new Map(refunds.map((r) => [r.newname, r]));
+  const out: BidStanding[] = [];
+  for (const [i, name] of unique.entries()) {
+    const st = statuses[i];
+    if (!st) continue;
+    if (st.kind === 'auction') {
+      out.push(st.bid.high_bidder === actor
+        ? { kind: 'leading', name, wax: st.bid.high_bid / 1e8, settlesAt: st.settlesAt }
+        : { kind: 'outbid', name, by: st.bid.high_bidder, wax: st.bid.high_bid / 1e8, refund: owed.get(name) });
+      continue;
+    }
+    if (st.kind === 'won') {
+      out.push(st.mine
+        ? { kind: 'won', name, wax: st.bid.high_bid / 1e8 }
+        : { kind: 'outbid', name, by: st.bid.high_bidder, wax: st.bid.high_bid / 1e8, refund: owed.get(name) });
+      continue;
+    }
+    // The row is gone, so somebody created the account. Whether that was
+    // this bidder is the difference between done and lost.
+    if (st.kind === 'taken') {
+      const empty: { owner?: Authority; active?: Authority } = {};
+      const [theirs, ours] = await Promise.all([
+        readAccountAuthorities(name).catch(() => empty),
+        readAccountAuthorities(actor).catch(() => empty),
+      ]);
+      // Sharing a key is what "this is mine" means here: the row that
+      // proved ownership was erased by the very act of claiming it.
+      const oursKeys = (ours.active?.keys ?? []).map((k) => k.key);
+      const shared = (theirs.active?.keys ?? []).some((k) => oursKeys.includes(k.key));
+      out.push(shared ? { kind: 'claimed', name } : { kind: 'lost', name });
+      continue;
+    }
+    // Free again is not a state the chain produces after a bid, so say
+    // nothing rather than invent a story about it.
+  }
+  return out;
+}
+
+/**
+ * Every bid ever placed on one name, oldest first.
+ *
+ * The standing bid says what a name costs. It does not say whether three
+ * people fought over it last week or whether one person named a price in
+ * 2019 and nobody ever answered, and those are different decisions.
+ *
+ * Fetched whole, once, because Hyperion will not filter `bidname` by the
+ * name being bid on: `act.data.newname` matches nothing and a bare
+ * `newname` is ignored, both verified against the live node. So the choice
+ * is a full scan per lookup or a full scan once, and once wins. It is
+ * around 7,400 actions over the chain's whole life, which is eight
+ * requests and a few hundred kilobytes, and every later lookup is free.
+ */
+export interface NameBidEvent {
+  bidder: string;
+  wax: number;
+  when: number;
+}
+
+let historyCache: Map<string, NameBidEvent[]> | undefined;
+let historyPending: Promise<Map<string, NameBidEvent[]>> | undefined;
+
+async function fetchAllBidHistory(): Promise<Map<string, NameBidEvent[]>> {
+  const byName = new Map<string, NameBidEvent[]>();
+  const seen = new Set<string>();
+  for (const host of HYPERION_ENDPOINTS) {
+    byName.clear();
+    seen.clear();
+    let ok = true;
+    for (let skip = 0; skip < 20000; skip += 1000) {
+      let page: { actions?: {
+        timestamp: string; trx_id: string; action_ordinal?: number;
+        act: { data: { bidder: string; newname: string; bid: string } };
+      }[] } | undefined;
+      try {
+        const res = await fetch(
+          `${host}/v2/history/get_actions?filter=eosio%3Abidname&limit=1000&skip=${skip}&sort=desc`,
+        );
+        if (!res.ok) { ok = false; break; }
+        page = await res.json();
+      } catch { ok = false; break; }
+      const acts = page?.actions ?? [];
+      if (!acts.length) break;
+      for (const a of acts) {
+        // Hyperion pages can overlap, and a repeated bid would read as a
+        // contest that never happened.
+        const id = `${a.trx_id}:${a.action_ordinal ?? 0}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const list = byName.get(a.act.data.newname) ?? [];
+        list.push({
+          bidder: a.act.data.bidder,
+          wax: parseFloat(String(a.act.data.bid)),
+          when: Date.parse(a.timestamp + 'Z'),
+        });
+        byName.set(a.act.data.newname, list);
+      }
+    }
+    if (ok && byName.size) break;
+  }
+  for (const list of byName.values()) list.sort((x, y) => x.when - y.when);
+  return byName;
+}
+
+/** One name's bids, oldest first. Empty when the history is unreachable. */
+export async function readNameHistory(name: string): Promise<NameBidEvent[]> {
+  if (!historyCache) {
+    // Share one fetch between callers: opening two names at once should
+    // not scan the chain's whole history twice.
+    historyPending = historyPending ?? fetchAllBidHistory();
+    try {
+      historyCache = await historyPending;
+    } catch {
+      historyPending = undefined;
+      return [];
+    }
+  }
+  return historyCache.get(name) ?? [];
+}
+
+/**
+ * What a name really costs, beyond the bid.
+ *
+ * Winning buys the right to create the account, not the account. Creating
+ * it buys RAM at the going rate and locks WAX into CPU and NET, and both
+ * are discovered at claim time by anyone who was not told. The RAM price
+ * moves with the market, so it is read rather than guessed.
+ */
+export interface NameCost {
+  /** WAX spent for good, at the current market price. */
+  ramWax: number;
+  /** WAX locked, and recoverable by unstaking later. */
+  stakeWax: number;
+}
+
+export async function readNameCost(ramBytes = 4096, stakeWax = 1): Promise<NameCost | undefined> {
+  try {
+    const rows = await getTableRows<{
+      base: { balance: string }; quote: { balance: string };
+    }>({ code: SYSTEM, scope: SYSTEM, table: 'rammarket', limit: 1 });
+    const m = rows[0];
+    if (!m) return undefined;
+    const base = parseFloat(m.base.balance);
+    const quote = parseFloat(m.quote.balance);
+    if (!Number.isFinite(base) || !Number.isFinite(quote) || base <= ramBytes) return undefined;
+    // Bancor, the same curve buyrambytes uses, plus the contract's 0.5 percent.
+    const cost = (quote * ramBytes) / (base - ramBytes);
+    return { ramWax: cost * 1.005, stakeWax };
+  } catch {
+    return undefined;
+  }
+}
+
 // ─── claiming a name you won ────────────────────────────────────────────
 
 /**

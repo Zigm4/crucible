@@ -46,8 +46,10 @@ import {
   buildBidName, buildBidRefund, readRefundsFor, canOutbid,
   buildClaimName, readAccountAuthorities, readBidsAhead, readCloseGate,
   isSimpleAuthority, authorityReach, normalizeKey, isValidKey,
+  readBidStandings, readNameHistory, readNameCost,
   type NameAvailability, type BidHistoryEntry, type NameBid, type PendingRefund,
   type BidQueuePosition, type CloseGate, type Authority,
+  type BidStanding, type NameBidEvent, type NameCost,
 } from '../wax/names';
 import { listBlends, type DiscoveredBlend } from '../nefty/discover';
 import { listUpgrades, type DiscoveredUpgrade } from '../nefty/upgrades';
@@ -323,6 +325,23 @@ interface LabState extends LabForm {
   nameChecking: boolean;
   nameBidAmount: string;
   myBids: BidHistoryEntry[];
+  /**
+   * What each of those bids needs from the bidder now. A history line says
+   * what a bid cost; this says whether WAX is waiting to be collected or a
+   * name is waiting to be created.
+   */
+  standings: BidStanding[];
+  standingsState: LoadState;
+  /** Every bid ever placed on the name on screen, and the cost of winning. */
+  nameHistory?: NameBidEvent[];
+  nameHistoryFor: string;
+  nameCost?: NameCost;
+  /**
+   * Which folded panels are open. A render replaces the whole subtree, so
+   * a native <details> loses its own open attribute the moment anything
+   * else repaints. Remembering it here is what makes it stay open.
+   */
+  openPanels: Record<string, boolean>;
   myBidsState: LoadState;
   refunds: PendingRefund[];
   /** Claiming a name we won: the keys the new account will answer to. */
@@ -421,6 +440,12 @@ const state: LabState = {
   nameChecking: false,
   nameBidAmount: '',
   myBids: [],
+  standings: [],
+  standingsState: 'idle',
+  nameHistory: undefined,
+  nameHistoryFor: '',
+  nameCost: undefined,
+  openPanels: {},
   myBidsState: 'idle',
   refunds: [],
   claimOwner: undefined,
@@ -1529,6 +1554,7 @@ async function onSwitchAccount(actor: string, permission: string) {
     state.collections = [];
     state.collection = '';
     state.myBids = []; state.myBidsState = 'idle';
+    state.standings = []; state.standingsState = 'idle';
     state.refunds = [];
     state.claimOwner = undefined; state.claimActive = undefined;
     state.claimAuthFor = '';
@@ -1586,6 +1612,7 @@ async function onLabLogout() {
   state.claimOwnerPicked = []; state.claimActivePicked = [];
   state.claimExtraOwner = ''; state.claimExtraActive = '';
   state.myBids = []; state.myBidsState = 'idle'; state.refunds = [];
+  state.standings = []; state.standingsState = 'idle';
   // Disconnecting one account does not detach the others.
   await refreshSessions();
   rerender();
@@ -2706,11 +2733,26 @@ async function onCheckName() {
     state.nameStatusActor = askedFor;
     state.bidAhead = undefined;
     state.closeGate = undefined;
+    state.nameCost = undefined;
     // The URL now points at this exact auction, ready to be copied.
     writeLabHash();
     // Leading a name is not the same as being near winning it, so read the
     // two things that actually decide: how many larger bids stand in front
     // of this one, and when the chain may next close anything at all.
+    if (found.kind === 'auction' || found.kind === 'free') {
+      // What winning would really cost, on top of the bid itself.
+      void readNameCost().then((c) => { if (state.nameStatusFor === q) { state.nameCost = c; rerender(); } });
+    }
+    if (found.kind !== 'not_biddable') {
+      // Who has fought over this name, which the standing bid never says.
+      state.nameHistory = undefined;
+      state.nameHistoryFor = q;
+      void readNameHistory(q).then((h) => {
+        if (state.nameStatusFor !== q) return;
+        state.nameHistory = h;
+        rerender();
+      });
+    }
     if (found.kind === 'auction') {
       void Promise.all([readBidsAhead(found.bid), readCloseGate()])
         .then(([ahead, gate]) => {
@@ -2778,6 +2820,17 @@ async function loadMyBids() {
   // is invisible here, which is worth saying rather than hiding.
   state.refunds = await readRefundsFor(state.actor, bids.map((b) => b.newname)).catch(() => []);
   state.myBidsState = 'done';
+  rerender();
+  // What each of those bids now needs. Separate from the history read
+  // because it is one round trip per name, and the list should appear
+  // before the verdicts rather than after them.
+  const who = state.actor;
+  state.standingsState = 'loading';
+  rerender();
+  const standings = await readBidStandings(who, bids.map((b) => b.newname)).catch(() => []);
+  if (state.actor !== who) return;   // a switch landed while this was out
+  state.standings = standings;
+  state.standingsState = 'done';
   rerender();
 }
 
@@ -3241,7 +3294,7 @@ function nameVerdict(): string {
  */
 function howAuctionsSettle(): string {
   return `
-    <details class="lab-explain">
+    <details class="lab-explain" data-lab="panel" data-panel="settle" ${state.openPanels.settle ? 'open' : ''}>
       <summary>How these auctions actually settle</summary>
 
       <h5>Where this happens</h5>
@@ -3411,6 +3464,7 @@ function nameTool(): string {
     </div>
 
     ${nameVerdict()}
+    ${state.nameStatusFor ? nameHistory() : ''}
     ${state.nameStatusFor ? `<p class="lab-sharerow">${shareButton('auction', 'link to this auction')}
       <span>Opens straight on ${esc(state.nameStatusFor)}, already looked up.</span></p>` : ''}
 
@@ -3432,6 +3486,7 @@ function nameTool(): string {
           </button>
         </div>
         ${state.actor ? '' : '<p class="lab-warn">Connect a wallet above to bid.</p>'}
+        ${nameCostNote()}
       </div>
       <div class="lab-callout danger">
         <strong>The WAX leaves your account immediately</strong>, not when the auction ends. If someone
@@ -3473,18 +3528,127 @@ function nameTool(): string {
             </div>` : ''}
           ${state.myBids.length === 0
             ? '<p class="lab-empty">No bid found in the history window. History nodes do not keep everything, so this is not proof you never bid, and a refund on a forgotten name would not show up here either.</p>'
-            : `<div class="lab-rows">
-                 ${state.myBids.map((b) => `
-                   <div class="lab-row">
-                     <span class="lab-tag">${esc(b.newname)}</span>
-                     <span class="lab-row-main">
-                       <strong>${esc(b.bid)}</strong>
-                       <span class="lab-tpl-meta">${esc(b.timestamp.slice(0, 19).replace('T', ' '))}</span>
-                     </span>
-                     <button class="lab-add" data-lab="name-recheck" data-name="${esc(b.newname)}">Check it</button>
-                   </div>`).join('')}
-               </div>`}
+            : standingsList()}
           <button class="lab-ghost" data-lab="name-reload">Refresh</button>`}`;
+}
+
+/**
+ * Who has fought over this name, and when.
+ *
+ * The standing bid is a price. It does not say whether five people pushed
+ * it there last week or whether one person named it in 2019 and nobody
+ * ever answered, and those two are worth different amounts of nerve.
+ */
+function nameHistory(): string {
+  if (state.nameHistoryFor !== state.nameStatusFor) return '';
+  const h = state.nameHistory;
+  if (!h) return '<p class="lab-hint">Reading who has bid on this name.</p>';
+  if (!h.length) {
+    return '<p class="lab-note">No bid on this name in the history nodes, which is not the same as none ever placed.</p>';
+  }
+  const people = new Set(h.map((e) => e.bidder));
+  return `
+    <details class="lab-explain" data-lab="panel" data-panel="history" ${state.openPanels.history ? 'open' : ''}>
+      <summary>${h.length} bid${h.length === 1 ? '' : 's'} from ${people.size} ${people.size === 1 ? 'person' : 'people'}${
+        h.length > 1 ? `, ${h[0].wax} to ${h[h.length - 1].wax} WAX` : ''
+      }</summary>
+      <ul class="lab-list">
+        ${h.map((e) => `<li>
+          <code>${esc(e.bidder)}${e.bidder === state.actor ? ' (you)' : ''}</code>
+          ${e.wax} WAX <span class="lab-note">${new Date(e.when).toISOString().slice(0, 10)}${
+            // "about 2063 day(s) ago" is not a span anybody reads. Past a
+            // few months the date alone says more.
+            Date.now() - e.when < 90 * 86400000 ? `, ${relativeTime(e.when)}` : ''
+          }</span>
+        </li>`).join('')}
+      </ul>
+      ${people.size === 1
+        ? '<p>One bidder, so nobody has contested this. A single offer can stand for years.</p>'
+        : `<p>${people.size} people have wanted this name. A contest at the top keeps restarting the 24 hour clock, and while it does, nothing on the chain settles at all.</p>`}
+    </details>`;
+}
+
+/** What winning actually costs, which the bid alone never says. */
+function nameCostNote(): string {
+  const c = state.nameCost;
+  if (!c) return '';
+  return `<p class="lab-note">
+    Winning is not the whole price. Creating the account afterwards costs about
+    <strong>${c.ramWax.toFixed(2)} WAX</strong> of RAM, spent for good at today's market rate, and locks
+    <strong>${c.stakeWax} WAX</strong> into CPU and NET, which you can unstake later. Budget that on top of your bid.
+  </p>`;
+}
+
+/**
+ * The bids, as what each one needs rather than what it cost.
+ *
+ * The old list was the history: name, amount, date, and a button to go and
+ * work out the rest yourself. With three bids that is tolerable. It is
+ * also why 888 names on this chain sit won and never claimed, and why WAX
+ * sits on the contract unasked for. Every row now names its own next step,
+ * and the rows that need one come first.
+ */
+function standingsList(): string {
+  const order: Record<BidStanding['kind'], number> = {
+    won: 0, outbid: 1, leading: 2, claimed: 3, lost: 4,
+  };
+  const known = new Map(state.standings.map((s) => [s.name, s]));
+  const rows = state.myBids
+    .filter((b, i, all) => all.findIndex((x) => x.newname === b.newname) === i)
+    .map((b) => ({ bid: b, st: known.get(b.newname) }))
+    .sort((a, b) => (a.st ? order[a.st.kind] : 9) - (b.st ? order[b.st.kind] : 9));
+
+  const line = (st: BidStanding | undefined, bid: BidHistoryEntry): string => {
+    if (!st) {
+      return state.standingsState === 'loading'
+        ? `<span class="lab-tpl-meta">${esc(bid.bid)}, reading where it stands</span>`
+        : `<span class="lab-tpl-meta">${esc(bid.bid)} on ${esc(bid.timestamp.slice(0, 10))}</span>`;
+    }
+    switch (st.kind) {
+      case 'won':
+        return `<strong class="lab-ok-text">Won for ${st.wax} WAX, and the account does not exist yet.</strong>
+                <span class="lab-tpl-meta">Only you can create it, and nothing does it for you.</span>`;
+      case 'outbid':
+        return st.refund
+          ? `<strong class="warn">${esc(st.refund.amount)} of yours is sitting on the contract.</strong>
+             <span class="lab-tpl-meta">Outbid by ${esc(st.by)} at ${st.wax} WAX. Nothing returns it on its own.</span>`
+          : `<span class="lab-tpl-meta">Outbid by ${esc(st.by)} at ${st.wax} WAX, and already refunded.</span>`;
+      case 'leading': {
+        // Past the quiet period is not the same as about to settle: the
+        // chain takes one name a day and always the largest, so a small
+        // bid can be eligible for months and still wait. Saying "settles
+        // 39 hours ago" was both wrong tense and wrong fact.
+        const ready = st.settlesAt <= Date.now();
+        return `<strong>Yours at ${st.wax} WAX.</strong>
+                <span class="lab-tpl-meta">${ready
+                  ? 'Quiet long enough, now waiting its turn behind every larger bid on the chain.'
+                  : `Eligible ${relativeTime(st.settlesAt)}, if nobody outbids it first.`}</span>`;
+      }
+      case 'claimed':
+        return `<span class="lab-tpl-meta">Yours. The account exists.</span>`;
+      case 'lost':
+        return `<span class="lab-tpl-meta">Somebody else won it and created the account.</span>`;
+    }
+  };
+
+  const action = (st: BidStanding | undefined, name: string): string => {
+    if (st?.kind === 'won') {
+      return `<button class="lab-primary lab-add" data-lab="name-recheck" data-name="${esc(name)}">Claim it</button>`;
+    }
+    if (st?.kind === 'outbid' && st.refund) {
+      return `<button class="lab-primary lab-add" data-lab="name-refund" data-name="${esc(name)}" ${state.busy ? 'disabled' : ''}>Take the WAX back</button>`;
+    }
+    return `<button class="lab-add" data-lab="name-recheck" data-name="${esc(name)}">Open</button>`;
+  };
+
+  return `<div class="lab-rows">
+    ${rows.map(({ bid, st }) => `
+      <div class="lab-row${st?.kind === 'won' || (st?.kind === 'outbid' && st.refund) ? ' lab-row-mine' : ''}">
+        <span class="lab-tag">${esc(bid.newname)}</span>
+        <span class="lab-row-main">${line(st, bid)}</span>
+        ${action(st, bid.newname)}
+      </div>`).join('')}
+  </div>`;
 }
 
 // ─── page ───────────────────────────────────────────────────────────────
@@ -3868,6 +4032,14 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     if (textField[kind]) {
       el.addEventListener('input', () => textField[kind]((el as HTMLInputElement).value, idx(el)));
       el.addEventListener('change', () => render());
+      return;
+    }
+
+    if (kind === 'panel') {
+      el.addEventListener('toggle', () => {
+        const id = el.dataset.panel ?? '';
+        if (id) state.openPanels[id] = (el as HTMLDetailsElement).open;
+      });
       return;
     }
 

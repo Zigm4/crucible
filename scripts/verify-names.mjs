@@ -16,9 +16,9 @@
  */
 import { Action, APIClient, PublicKey } from '@wharfkit/session';
 import {
-  readNameStatus, readNameBid, readTopBids, minimumNextBid, biddableName, formatWax,
+  readNameStatus, readNameBid, readTopBids, readMyBids, minimumNextBid, biddableName, formatWax,
   buildBidName, buildBidRefund, canOutbid, readRefundsFor,
-  buildClaimName, readAccountAuthorities,
+  buildClaimName, readAccountAuthorities, readBidStandings, readNameHistory, readNameCost,
 } from './.build/names.mjs';
 
 const fails = [];
@@ -238,6 +238,40 @@ try {
   say(true, 'a threshold-3 authority with a delegate and a wait still encodes against the live ABI');
 } catch (e) {
   say(false, `the shaped authority does not encode: ${e.message}`);
+}
+
+console.log('\n=== PHASE E - what a bid needs next, not what it cost ===');
+{
+  // Every state has to be reachable and correctly named, so the row is
+  // built from whatever the chain currently says rather than from a
+  // fixture that goes stale the moment a name is claimed.
+  const mineNames = (await readMyBids('zigm4.gm')).map((b) => b.newname);
+  ok(mineNames.length > 0, 'zigm4.gm must have bid on something for this phase to test anything');
+  const stand = await readBidStandings('zigm4.gm', mineNames);
+  ok(stand.length === new Set(mineNames).size,
+     `every bid must resolve to a standing: ${stand.length} of ${new Set(mineNames).size}`);
+  const kinds = [...new Set(stand.map((s) => s.kind))].sort();
+  console.log(`   ok   ${stand.length} bid(s) resolved: ${stand.map((s) => `${s.name}=${s.kind}`).join(', ')}`);
+  ok(kinds.every((k) => ['leading', 'outbid', 'won', 'claimed', 'lost'].includes(k)),
+     `unknown standing kind among ${kinds.join(', ')}`);
+  // A name whose account exists and whose keys we share is ours, not lost.
+  const claimed = stand.find((s) => s.name === 'rekt');
+  ok(claimed && claimed.kind === 'claimed',
+     `rekt was created by zigm4.gm and must read as claimed, reads ${claimed && claimed.kind}`);
+  console.log('   ok   a name this wallet created reads as claimed, not as lost to somebody else');
+
+  // The history that the standing bid never tells you.
+  const h = await readNameHistory('mrbeast');
+  ok(h.length >= 2, `mrbeast has been bid on more than once and must show it, got ${h.length}`);
+  ok(h.every((e, i) => i === 0 || e.when >= h[i - 1].when), 'history must be oldest first');
+  ok(h.every((e, i) => i === 0 || e.wax > h[i - 1].wax), 'each bid must beat the one before it');
+  console.log(`   ok   mrbeast: ${h.length} bids from ${new Set(h.map((e) => e.bidder)).size} people, ${h[0].wax} to ${h[h.length - 1].wax} WAX, in order`);
+
+  // The cost nobody is told about until they claim.
+  const cost = await readNameCost();
+  ok(cost && cost.ramWax > 0 && cost.ramWax < 100,
+     `RAM for 4096 bytes should be a WAX or two, got ${cost && cost.ramWax}`);
+  console.log(`   ok   claiming costs about ${cost.ramWax.toFixed(2)} WAX of RAM plus ${cost.stakeWax} WAX staked`);
 }
 
 console.log('');
