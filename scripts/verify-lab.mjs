@@ -1016,22 +1016,37 @@ async function main() {
   // opening the real page with a real wallet attached.
   console.log('\n=== PHASE G - a verdict must know who is asking ===');
   {
-    __setForm({
-      tool: 'names', actor: '', nameQuery: '', nameStatusFor: '', nameStatusActor: '',
-      nameStatus: undefined, claimAuthFor: '', claimOwner: undefined, claimActive: undefined,
-    });
-    globalThis.location.hash = '#/lab/names/rekt';
-    applyLabRoute('names', 'rekt');          // the lookup leaves with no actor
-    __setForm({ actor: 'zigm4.gm' });        // and the wallet lands right after
-    await new Promise((r) => setTimeout(r, 9000));
-    const at = __where();
-    if (at.kind !== 'won') {
-      console.log(`   note: rekt no longer reads as won (${at.kind}), so this phase proved nothing today`);
-      fails.push(`the race check needs rekt to read as won, it reads ${at.kind}`);
-    } else if (!at.mine) {
-      fails.push(`a wallet that arrived during the lookup is still told the name is somebody else's (asked for "${at.askedFor}")`);
+    // Not a fixed name. This was hardcoded to "rekt" and then rekt was
+    // claimed, which turned it into an ordinary account and left the phase
+    // asserting against a shape the chain no longer has. Any name that is
+    // won and still unclaimed does the job, and the chain always carries
+    // hundreds of them.
+    const rows = await (await fetch(
+      'https://wax.greymass.com/v1/chain/get_table_rows',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ json: true, code: 'eosio', scope: 'eosio', table: 'namebids',
+          index_position: 2, key_type: 'i64', lower_bound: '0', limit: 40 }) },
+    )).json();
+    const unclaimed = (rows.rows ?? []).find((r) => Number(r.high_bid) < 0);
+    if (!unclaimed) {
+      fails.push('no won-but-unclaimed name on the chain, which cannot be true: the race check has nothing to run against');
     } else {
-      console.log(`   ok  the answer catches up with the wallet, and says the name is theirs (asked for ${at.askedFor})`);
+      __setForm({
+        tool: 'names', actor: '', nameQuery: '', nameStatusFor: '', nameStatusActor: '',
+        nameStatus: undefined, claimAuthFor: '', claimOwner: undefined, claimActive: undefined,
+      });
+      globalThis.location.hash = `#/lab/names/${unclaimed.newname}`;
+      applyLabRoute('names', unclaimed.newname);   // the lookup leaves with no actor
+      __setForm({ actor: unclaimed.high_bidder }); // and the wallet lands right after
+      await new Promise((r) => setTimeout(r, 9000));
+      const at = __where();
+      if (at.kind !== 'won') {
+        fails.push(`${unclaimed.newname} should read as won and reads ${at.kind}, so the race check ran against the wrong shape`);
+      } else if (!at.mine) {
+        fails.push(`a wallet that arrived during the lookup is still told ${unclaimed.newname} is somebody else's (asked for "${at.askedFor}")`);
+      } else {
+        console.log(`   ok  the answer catches up with the wallet on ${unclaimed.newname}, and says the name is theirs`);
+      }
     }
   }
 

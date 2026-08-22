@@ -349,6 +349,12 @@ interface LabState extends LabForm {
   claimExtraActive: string;
   topBids: NameBid[];
   topBidsState: LoadState;
+  /**
+   * How deep into the running order to read. The board is a queue, not a
+   * hall of fame: somebody wanting to know where their own bid sits has to
+   * be able to look past the first ten.
+   */
+  topBidsWanted: number;
 
   picking?: { target: 'ingredient' | 'outcome' | 'mint' | 'requirement' };
   search: string;
@@ -426,6 +432,7 @@ const state: LabState = {
   claimExtraActive: '',
   topBids: [],
   topBidsState: 'idle',
+  topBidsWanted: 10,
   busy: false,
   dryRun: '',
   lastTx: '',
@@ -2749,10 +2756,13 @@ async function onCheckName() {
 }
 
 /** The running order: the chain settles the top one, once it goes quiet. */
+/** Nodes refuse more than this per read, whatever is asked for. */
+const TOP_BIDS_CEILING = 1000;
+
 async function loadTopBids() {
   state.topBidsState = 'loading';
   rerender();
-  state.topBids = await readTopBids(10).catch(() => []);
+  state.topBids = await readTopBids(Math.min(state.topBidsWanted, TOP_BIDS_CEILING)).catch(() => []);
   state.topBidsState = 'done';
   rerender();
 }
@@ -3027,11 +3037,31 @@ function claimRisk(source: Authority | undefined, picked: string[], extra: strin
       cannot check that what you kept is the one your wallet signs with. If it is not, the account
       will be created, the name will be spent, and you will not be able to sign for it from the
       wallet you are using right now.
-      <ul class="lab-list">${dropped.map((k) => `<li><code>${esc(k.key)}</code> left out</li>`).join('')}</ul>
+      <ul class="lab-list">${dropped.map((k) => `<li>${keyChip(k.key)} left out</li>`).join('')}</ul>
       Keep every key unless you know which one your wallet holds.
     </div>`;
   }
   return '';
+}
+
+/**
+ * A public key that fits a phone.
+ *
+ * A WAX key is 53 characters of unbroken base58, which on a narrow screen
+ * either overflows the card or forces the whole layout wider. Cutting the
+ * MIDDLE keeps both ends, which is what a reader compares against the key
+ * their wallet shows them; cutting the end would hide half of that. The
+ * full value stays in the title and in the checkbox, so nothing that
+ * matters is lost, only shown shorter.
+ */
+function shortKey(key: string, head = 14, tail = 12): string {
+  if (key.length <= head + tail + 3) return key;
+  return `${key.slice(0, head)}...${key.slice(-tail)}`;
+}
+
+/** A key rendered so it can be read, compared and still copied whole. */
+function keyChip(key: string): string {
+  return `<code class="lab-key" title="${esc(key)}">${esc(shortKey(key))}</code>`;
 }
 
 /** One permission, as a set of keys the author can narrow. */
@@ -3050,7 +3080,7 @@ function claimKeyPicker(
         <label class="lab-check">
           <input type="checkbox" data-lab="${pickAction}" data-key="${esc(k.key)}"
                  ${picked.includes(k.key) ? 'checked' : ''} />
-          <code>${esc(k.key)}</code>${k.weight === 1 ? '' : ` <span class="lab-note">weight ${k.weight}</span>`}
+          ${keyChip(k.key)}${k.weight === 1 ? '' : ` <span class="lab-note">weight ${k.weight}</span>`}
         </label>`).join('')}
       ${odd ? `<p class="lab-note">
         Threshold ${source.threshold}${source.accounts.length ? `, plus ${source.accounts.map((c) => `<code>${esc(c.actor)}@${esc(c.permission)}</code>`).join(', ')}` : ''}${source.waits.length ? `, plus ${source.waits.length} wait rule(s)` : ''}.
@@ -3302,14 +3332,20 @@ function queueSentence(q: BidQueuePosition): string {
 }
 
 /**
- * The ten highest open auctions on the chain, which is also the order in
- * which they will settle: one name a day, the top one, once its bid has
- * been quiet for 24 hours. A reader who sees their own name at rank 7
- * learns more from that than from any single lookup.
+ * The highest open auctions on the chain, which is also the order in which
+ * they will settle: one name a day, the top one, once its bid has been
+ * quiet for 24 hours. A reader who sees their own name at rank 7 learns
+ * more from that than from any single lookup, and one who does not see it
+ * at all needs to be able to look further down.
  */
 function topBidsBoard(): string {
-  if (state.topBidsState === 'loading') return '<p class="lab-hint">Reading the highest auctions.</p>';
-  if (state.topBids.length === 0) {
+  const loading = state.topBidsState === 'loading';
+  // Only blank the board on the FIRST read. Reading ten more should not
+  // take away the ten already on screen.
+  if (loading && state.topBids.length === 0) {
+    return '<p class="lab-hint">Reading the highest auctions.</p>';
+  }
+  if (!loading && state.topBids.length === 0) {
     return '<p class="lab-empty">No open auction found. Either the chain is quiet or a node is unhappy.</p>';
   }
   const now = Date.now();
@@ -3333,6 +3369,12 @@ function topBidsBoard(): string {
           </div>`;
       }).join('')}
     </div>
+    ${state.topBids.length >= state.topBidsWanted && state.topBidsWanted < TOP_BIDS_CEILING ? `
+      <div class="lab-nav-actions">
+        <button class="lab-ghost" data-lab="top-bids-more" ${loading ? 'disabled' : ''}>
+          ${loading ? 'Reading' : 'Show 10 more'}
+        </button>
+      </div>` : ''}
     <p class="lab-note">
       One name is settled per day, chain-wide: the highest bid whose 24 hours of quiet have
       elapsed. Rank 1 is next in line, and a bid placed anywhere on this board resets that
@@ -3400,7 +3442,9 @@ function nameTool(): string {
     ${state.lastError ? `<p class="lab-warn">${esc(state.lastError)}</p>` : ''}
     ${state.lastTx ? `<p class="lab-ok">Signed. Transaction <a target="_blank" rel="noreferrer" href="https://waxblock.io/transaction/${esc(state.lastTx)}">${esc(state.lastTx)}</a></p>` : ''}
 
-    <h4 class="lab-sub">The ten highest auctions on the chain</h4>
+    <h4 class="lab-sub">The highest auctions on the chain${
+      state.topBids.length > 10 ? `, top ${state.topBids.length}` : ''
+    }</h4>
     ${topBidsBoard()}
 
     <h4 class="lab-sub">Your bids</h4>
@@ -3989,6 +4033,10 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'share-auction': void onCopyLabLink('auction'); return;
         case 'name-check':  void onCheckName(); return;
         case 'name-bid':    void onPlaceBid(); return;
+        case 'top-bids-more':
+          state.topBidsWanted = Math.min(state.topBidsWanted + 10, TOP_BIDS_CEILING);
+          void loadTopBids();
+          return;
         case 'name-reload': void loadMyBids(); return;
         case 'top-reload':  void loadTopBids(); return;
         case 'claim-pick-owner':
