@@ -2710,14 +2710,21 @@ async function onCheckName() {
   if (!q) { state.nameStatus = undefined; state.nameStatusFor = ''; rerender(); return; }
   state.nameChecking = true;
   state.lastError = '';
-  // Drop the old verdict before the new one lands. Keeping it meant the
-  // card showed the PREVIOUS name's auction under the name just typed,
-  // which reads as a wrong answer rather than as a pending one.
-  state.nameStatus = undefined;
-  state.nameStatusFor = '';
-  state.nameStatusActor = '';
-  state.bidAhead = undefined;
-  state.closeGate = undefined;
+  // Drop the old verdict only when the question changed. Keeping ANOTHER
+  // name's answer on screen was the wrong-answer bug this page has already
+  // been burned by, but re-reading the SAME name has no such risk, and
+  // blanking it there does real harm: after signing, the verdict, the bid
+  // form and the claim form all vanish at once, the page collapses to a
+  // fraction of its height, the browser clamps the scroll to the new
+  // maximum, and the reader lands back at the CRUCIBLE header wondering
+  // what sent them home. Nothing sent them anywhere. The page shrank.
+  if (state.nameStatusFor !== q) {
+    state.nameStatus = undefined;
+    state.nameStatusFor = '';
+    state.nameStatusActor = '';
+    state.bidAhead = undefined;
+    state.closeGate = undefined;
+  }
   rerender();
   try {
     // Whose question this is, captured BEFORE the await. render() paints on
@@ -3644,7 +3651,7 @@ function standingsList(): string {
   return `<div class="lab-rows">
     ${rows.map(({ bid, st }) => `
       <div class="lab-row${st?.kind === 'won' || (st?.kind === 'outbid' && st.refund) ? ' lab-row-mine' : ''}">
-        <span class="lab-tag">${esc(bid.newname)}</span>
+        <span class="lab-tag lab-tag-name">${esc(bid.newname)}</span>
         <span class="lab-row-main">${line(st, bid)}</span>
         ${action(st, bid.newname)}
       </div>`).join('')}
