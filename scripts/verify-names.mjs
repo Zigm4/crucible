@@ -18,7 +18,7 @@ import { Action, APIClient, PublicKey } from '@wharfkit/session';
 import {
   readNameStatus, readNameBid, readTopBids, readMyBids, minimumNextBid, biddableName, formatWax,
   buildBidName, buildBidRefund, canOutbid, readRefundsFor,
-  buildClaimName, readAccountAuthorities, readBidStandings, readNameHistory, readNameCost,
+  buildClaimName, readAccountAuthorities, readBidStandings, readNameHistory, readNameCost, readBalances,
 } from './.build/names.mjs';
 
 const fails = [];
@@ -266,6 +266,20 @@ console.log('\n=== PHASE E - what a bid needs next, not what it cost ===');
   ok(h.every((e, i) => i === 0 || e.when >= h[i - 1].when), 'history must be oldest first');
   ok(h.every((e, i) => i === 0 || e.wax > h[i - 1].wax), 'each bid must beat the one before it');
   console.log(`   ok   mrbeast: ${h.length} bids from ${new Set(h.map((e) => e.bidder)).size} people, ${h[0].wax} to ${h[h.length - 1].wax} WAX, in order`);
+
+  // What a rival could actually raise to, which is the only thing their
+  // name on a bid really tells you.
+  const who = [...new Set(h.map((e) => e.bidder))];
+  const bal = await readBalances([...who, 'eosio']);
+  ok(bal.size >= who.length,
+     `every readable bidder must get a balance: ${bal.size} for ${who.length} bidder(s)`);
+  ok([...bal.values()].every((v) => Number.isFinite(v) && v >= 0),
+     `balances must be finite and non-negative: ${[...bal.values()].join(', ')}`);
+  // An account that cannot be read is absent, never reported as broke:
+  // saying "0 WAX" about an unreachable account is a lie with consequences.
+  const missing = await readBalances(['thisisnotreal']);
+  ok(missing.size === 0, 'an unreadable account must be absent from the map, not zero');
+  console.log(`   ok   ${bal.size} balance(s) read, and an unknown account is absent rather than zero`);
 
   // The cost nobody is told about until they claim.
   const cost = await readNameCost();

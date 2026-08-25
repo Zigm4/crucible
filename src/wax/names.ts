@@ -568,6 +568,33 @@ export async function readNameHistory(name: string): Promise<NameBidEvent[]> {
 }
 
 /**
+ * What each of these accounts could bid right now.
+ *
+ * A bid transfers immediately, so the liquid balance is the ceiling on
+ * what somebody can raise to today. It is not the whole story, since WAX
+ * can be unstaked or pulled out of REX, but as a first read it answers the
+ * question a bidder actually has: can the person ahead of me go higher?
+ *
+ * Absent means zero. The chain omits `core_liquid_balance` entirely on an
+ * account holding none, which is not the same as failing to read it, so
+ * unreachable accounts are left out of the map rather than reported as
+ * broke.
+ */
+export async function readBalances(accounts: string[]): Promise<Map<string, number>> {
+  const unique = [...new Set(accounts.filter(Boolean))];
+  const out = new Map<string, number>();
+  await Promise.all(unique.map(async (name) => {
+    try {
+      const acc = await getAccount(name);
+      const raw = (acc as unknown as { core_liquid_balance?: unknown }).core_liquid_balance;
+      const wax = raw === undefined || raw === null ? 0 : parseFloat(String(raw));
+      out.set(name, Number.isFinite(wax) ? wax : 0);
+    } catch { /* unreadable is not the same as empty, so say nothing */ }
+  }));
+  return out;
+}
+
+/**
  * What a name really costs, beyond the bid.
  *
  * Winning buys the right to create the account, not the account. Creating

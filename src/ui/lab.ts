@@ -46,7 +46,7 @@ import {
   buildBidName, buildBidRefund, readRefundsFor, canOutbid,
   buildClaimName, readAccountAuthorities, readBidsAhead, readCloseGate,
   isSimpleAuthority, authorityReach, normalizeKey, isValidKey,
-  readBidStandings, readNameHistory, readNameCost,
+  readBidStandings, readNameHistory, readNameCost, readBalances,
   type NameAvailability, type BidHistoryEntry, type NameBid, type PendingRefund,
   type BidQueuePosition, type CloseGate, type Authority,
   type BidStanding, type NameBidEvent, type NameCost,
@@ -337,6 +337,12 @@ interface LabState extends LabForm {
   nameHistoryFor: string;
   nameCost?: NameCost;
   /**
+   * What each bidder on screen could raise to today. A bid spends on the
+   * spot, so this answers the only question a rival's name really poses:
+   * can they go higher than me?
+   */
+  balances: Record<string, number>;
+  /**
    * Which folded panels are open. A render replaces the whole subtree, so
    * a native <details> loses its own open attribute the moment anything
    * else repaints. Remembering it here is what makes it stay open.
@@ -445,6 +451,7 @@ const state: LabState = {
   nameHistory: undefined,
   nameHistoryFor: '',
   nameCost: undefined,
+  balances: {},
   openPanels: {},
   myBidsState: 'idle',
   refunds: [],
@@ -2754,10 +2761,26 @@ async function onCheckName() {
       // Who has fought over this name, which the standing bid never says.
       state.nameHistory = undefined;
       state.nameHistoryFor = q;
-      void readNameHistory(q).then((h) => {
+      void readNameHistory(q).then(async (h) => {
         if (state.nameStatusFor !== q) return;
         state.nameHistory = h;
         rerender();
+        const who = [...new Set(h.map((e) => e.bidder))];
+        if (!who.length) return;
+        const bal = await readBalances(who).catch(() => new Map<string, number>());
+        if (state.nameStatusFor !== q) return;
+        for (const [k, v] of bal) state.balances[k] = v;
+        rerender();
+      });
+    }
+    if (found.kind === 'auction' || found.kind === 'won') {
+      // The standing bidder first, so the verdict can say whether they are
+      // able to answer a raise without waiting on the whole history.
+      const holder = found.bid.high_bidder;
+      void readBalances([holder]).then((b) => {
+        if (state.nameStatusFor !== q) return;
+        const v = b.get(holder);
+        if (v !== undefined) { state.balances[holder] = v; rerender(); }
       });
     }
     if (found.kind === 'auction') {
@@ -3287,6 +3310,14 @@ function nameVerdict(): string {
             : `${relativeTime(gateAt)}, one day after the last win`
       }</b></div>
       <div><span>To outbid</span><b>${minimumNextBid(b)} WAX minimum</b></div>
+      <div><span>${mine ? 'You hold' : 'They hold'}</span><b>${
+        state.balances[b.high_bidder] === undefined
+          ? 'reading'
+          : `${state.balances[b.high_bidder].toFixed(2)} WAX liquid, so ${
+              state.balances[b.high_bidder] >= minimumNextBid(b)
+                ? 'a raise is within reach'
+                : 'no raise from this account today'}`
+      }</b></div>
     </div>
     ${howAuctionsSettle()}`;
 }
@@ -3539,6 +3570,15 @@ function nameTool(): string {
           <button class="lab-ghost" data-lab="name-reload">Refresh</button>`}`;
 }
 
+/** What an account could bid right now, or nothing if it is unknown. */
+function purse(account: string): string {
+  const wax = state.balances[account];
+  if (wax === undefined) return '';
+  // Rounded, because the point is the order of magnitude, not the dust.
+  const shown = wax >= 1000 ? Math.round(wax).toLocaleString('en-US') : wax.toFixed(2);
+  return `<span class="lab-note">${shown} WAX liquid</span>`;
+}
+
 /**
  * Who has fought over this name, and when.
  *
@@ -3562,7 +3602,7 @@ function nameHistory(): string {
       <ul class="lab-list">
         ${h.map((e) => `<li>
           <code>${esc(e.bidder)}${e.bidder === state.actor ? ' (you)' : ''}</code>
-          ${e.wax} WAX <span class="lab-note">${new Date(e.when).toISOString().slice(0, 10)}${
+          ${e.wax} WAX ${purse(e.bidder)} <span class="lab-note">${new Date(e.when).toISOString().slice(0, 10)}${
             // "about 2063 day(s) ago" is not a span anybody reads. Past a
             // few months the date alone says more.
             Date.now() - e.when < 90 * 86400000 ? `, ${relativeTime(e.when)}` : ''
@@ -3572,6 +3612,11 @@ function nameHistory(): string {
       ${people.size === 1
         ? '<p>One bidder, so nobody has contested this. A single offer can stand for years.</p>'
         : `<p>${people.size} people have wanted this name. A contest at the top keeps restarting the 24 hour clock, and while it does, nothing on the chain settles at all.</p>`}
+      <p class="lab-note">
+        The balance beside each bidder is what that account holds liquid right now, which is
+        the ceiling on what they could raise to today. It is not a promise: WAX can be
+        unstaked, pulled out of REX, or sent in from somewhere else.
+      </p>
     </details>`;
 }
 

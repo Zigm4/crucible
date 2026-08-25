@@ -19,3 +19,8 @@ Thumbs.db
 
 # Claude Code local state
 .claude/
+
+# Etabli local de la collection : jamais commite, jamais construit.
+# tsconfig ne couvre que src/ et vite.config ne liste pas cette page en entree,
+# donc rien ici ne peut atteindre un bundle. Voir tools/actions.ts.
+tools/
