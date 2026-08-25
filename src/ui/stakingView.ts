@@ -37,7 +37,7 @@ export interface StakingState {
   pools: RewardPool[];
   refundDelay?: number;
   /** The unproven pool, counted so the page can show its size honestly. */
-  census: Record<string, { accounts: number; staked: number; rewards: number }>;
+  census: Record<string, { accounts: number; staked: number; rewards: number; partial: boolean }>;
   censusState: 'idle' | 'loading' | 'done';
   /**
    * Whether the background panel is open. A render replaces the subtree,
@@ -86,23 +86,34 @@ export async function readRewardPools(): Promise<RewardPool[]> {
  */
 export async function censusPool(
   scope: string,
-): Promise<{ accounts: number; staked: number; rewards: number }> {
-  let accounts = 0, staked = 0, rewards = 0, next = '0';
+): Promise<{ accounts: number; staked: number; rewards: number; partial: boolean }> {
+  let accounts = 0, staked = 0, rewards = 0;
+  // The empty string, not '0'. This table is keyed by account name, and
+  // '0' is not a character a WAX name can contain, so the node answers a
+  // name-typed query for it with nothing at all. That silently counted the
+  // pool as empty.
+  let bound = '';
+  let partial = true;
   for (let page = 0; page < 12; page++) {
-    const rows = await getTableRows<{ staked: string; rewards: string }>({
-      code: 'stake.nefty', scope, table: 'stakers', lower_bound: next, limit: 1000,
+    const rows = await getTableRows<{ account: string; staked: string; rewards: string }>({
+      code: 'stake.nefty', scope, table: 'stakers', lower_bound: bound, key_type: 'name', limit: 1000,
     });
-    for (const r of rows) {
+    // A page is walked by asking again from the last account seen. The row
+    // is returned twice, so the first of each page after the first is
+    // dropped: counting it again would inflate a number the page prints as
+    // a fact about somebody else's money.
+    const fresh = page === 0 ? rows : rows.slice(1);
+    for (const r of fresh) {
       accounts++;
       staked += parseFloat(String(r.staked)) || 0;
       rewards += parseFloat(String(r.rewards)) || 0;
     }
-    if (rows.length < 1000) break;
-    // getTableRows does not surface next_key, so paging stops at the page
-    // boundary rather than pretending to a total it cannot reach.
-    break;
+    if (rows.length < 1000) { partial = false; break; }
+    const last = rows[rows.length - 1]?.account;
+    if (!last || last === bound) break;   // no progress, stop rather than spin
+    bound = String(last);
   }
-  return { accounts, staked, rewards };
+  return { accounts, staked, rewards, partial };
 }
 
 /** A pool the contract has no reward row for, and nobody has ever claimed. */

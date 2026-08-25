@@ -8154,7 +8154,7 @@ function stakingBackground(): string {
             history, while the other two have hundreds.</li>
         <li>The WAXNEFT token itself is issued by <strong>no contract this page could find</strong>,
             and no account appears to hold any outside the staking contract.</li>
-        ${c ? `<li>It carries <strong>${c.accounts.toLocaleString('en-US')} accounts</strong>,
+        ${c ? `<li>It carries <strong>${c.partial ? 'at least ' : ''}${c.accounts.toLocaleString('en-US')} accounts</strong>,
             <strong>${c.staked.toLocaleString('en-US', { maximumFractionDigits: 4 })} WAXNEFT</strong> staked and
             <strong>${c.rewards.toLocaleString('en-US', { maximumFractionDigits: 4 })}</strong> in rewards on its books.</li>`
           : `<li><button data-stake="census-run" ${st.censusState === 'loading' ? 'disabled' : ''}>
