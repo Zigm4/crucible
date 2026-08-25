@@ -89,6 +89,9 @@ html[data-theme="neutral"] {
   --danger: #dc2b50;
   --ok: #13a065;
   --warn: #c47d05;
+  /* Yours and already created. A hue this palette does not otherwise
+     use, because gold sat right next to --warn and read as the same. */
+  --held: #7c3aed;
   --border: #d7dde6;
   --border-soft: #e7ebf1;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,

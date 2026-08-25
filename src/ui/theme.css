@@ -31,6 +31,9 @@
   --danger: #ff5577;
   --ok: #2efaa6;
   --warn: #ffce5c;
+  /* Yours and already created. A hue this palette does not otherwise
+     use, because gold sat right next to --warn and read as the same. */
+  --held: #c084fc;
   --border: rgba(56, 189, 248, 0.28);
   --border-soft: rgba(56, 189, 248, 0.12);
   font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
