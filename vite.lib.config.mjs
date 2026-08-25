@@ -16,6 +16,7 @@ export default defineConfig({
         lab: 'src/ui/lab.ts',
         collections: 'src/atomic/collections.ts',
         names: 'src/wax/names.ts',
+        staking: 'src/nefty/staking.ts',
       },
       formats: ['es'],
     },

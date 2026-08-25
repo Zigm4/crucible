@@ -249,3 +249,24 @@ export async function atomicFetch<T = unknown>(path: string): Promise<T> {
     }`,
   );
 }
+
+/**
+ * Which scopes a table actually has rows in.
+ *
+ * Some contracts key a table by something opaque: `stake.nefty` scopes its
+ * stakers by a packed extended symbol, which renders as `.....qeoct2oi`.
+ * Hardcoding those means a pool added later is silently missed, so they
+ * get listed instead.
+ */
+export async function getTableByScope(
+  args: { code: string; table: string; limit?: number },
+): Promise<{ scope: string; count: number }[]> {
+  return withFailover(async (client) => {
+    const res = (await client.call({
+      path: '/v1/chain/get_table_by_scope',
+      params: { code: args.code, table: args.table, limit: args.limit ?? 100 },
+    })) as { rows?: { scope: unknown; count: unknown }[] };
+    // Antelope types again: a scope comes back as a Name, not a string.
+    return (res.rows ?? []).map((r) => ({ scope: String(r.scope), count: Number(r.count) }));
+  });
+}

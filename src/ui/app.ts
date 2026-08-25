@@ -199,12 +199,18 @@ import {
   type CatalogGrouping,
 } from './catalog';
 import { renderLabPage, attachLabHandlers, applyLabRoute } from './lab';
+import {
+  emptyStakingState, loadStaking, censusPool, isUnprovenPool, tokenContractFor,
+  buildClaimFor, buildUnstakeFor, buildRefundFor,
+  type StakingState,
+} from './stakingView';
 
 type AppView =
   | 'blends'   // Nefty: blend.nefty
   | 'drops'    // Nefty: neftyblocksd
   | 'packs'    // Nefty: atomicpacksx
   | 'upgrades' // Nefty: up.nefty
+  | 'staking'  // Nefty: stake.nefty
   | 'waxdao-blends' // WaxDAO: waxdaomarket
   | 'blenderizer-blends'; // Blenderizer: blenderizerx
 
@@ -280,6 +286,8 @@ interface FtStatus {
 }
 
 interface AppState {
+  /** stake.nefty: what the contract still holds for the connected wallet. */
+  staking: StakingState;
   blendId: string;
   collection: string;
   blend?: BlendRow;
@@ -705,6 +713,7 @@ interface UpgradeViewState {
 }
 
 const state: AppState = {
+  staking: emptyStakingState(),
   blendId: '',
   collection: '',
   templateLoading: false,
@@ -895,6 +904,9 @@ function tabSlugToView(platform: Platform, slug: string | undefined): AppView {
     case 'upgrade':
     case 'upgrades':
       return 'upgrades';
+    case 'stake':
+    case 'staking':
+      return 'staking';
     case 'blend':
     case 'blends':
     default:
@@ -908,6 +920,7 @@ function viewToTabSlug(view: AppView): string {
     case 'drops':          return 'claim';
     case 'packs':          return 'unpack';
     case 'upgrades':           return 'upgrade';
+    case 'staking':            return 'stake';
     case 'waxdao-blends':      return 'blend';
     case 'blenderizer-blends': return 'blend';
   }
@@ -1334,6 +1347,9 @@ function onSwitchView(v: AppView) {
     state.packAbort = undefined;
   }
   state.view = v;
+  // Arriving on the staking tab is what asks the contract, so a click gets
+  // the same treatment as a pasted link.
+  if (v === 'staking') maybeLoadStaking();
   // Keep platform in sync with view, in case the user clicked a tab
   // that belongs to the OTHER platform (the tabs we render are always
   // platform-scoped, but defensive code is cheap).
@@ -4898,7 +4914,8 @@ function renderTabs(): string {
         ${tab('blends',   'Blend',   'burn NFTs → mint result')}
         ${tab('drops',    'Claim',   'claim a drop: pay (or not) → mint')}
         ${tab('packs',    'Unpack',  'open packs you own')}
-        ${tab('upgrades', 'Upgrade', 'mutate NFTs you own')}`
+        ${tab('upgrades', 'Upgrade', 'mutate NFTs you own')}
+        ${tab('staking',  'Staking', 'get back what stake.nefty still holds')}`
     : state.platform === 'waxdao'
       ? `
         ${tab('waxdao-blends', 'Blend', 'waxdaomarket: burn NFTs → mint result')}`
@@ -7934,6 +7951,8 @@ function performRender() {
           ? renderPacksView()
           : state.view === 'upgrades'
             ? renderUpgradesView()
+            : state.view === 'staking'
+              ? renderStakingView()
             : state.view === 'blenderizer-blends'
               ? renderBlenderizerBlendsView()
               : renderWaxdaoBlendsView());
@@ -8014,7 +8033,232 @@ function attachCatalogHandlers() {
   });
 }
 
+/**
+ * `stake.nefty`, which NeftyBlocks left running when the site went down.
+ *
+ * The point of this view is that the money is reachable. The point of how
+ * it is written is that not all of it is equally reachable: two pools have
+ * a reward row and years of claims behind them, and a third has balances
+ * that nothing on chain has ever paid out. Both facts are on the page.
+ */
+function stakingActor(): string {
+  const session = getCurrentSession();
+  return session ? String(session.actor) : '';
+}
+
+function renderStakingView(): string {
+  const st = state.staking;
+  const actor = stakingActor();
+  if (!actor) {
+    return `<section class="card"><h2>Staking</h2>
+      <p class="hint">Connect a wallet above. This reads what
+      <code>stake.nefty</code> is holding for you, and builds the transactions to get it back.</p>
+      ${stakingBackground()}
+    </section>`;
+  }
+  if (!st.loaded) {
+    return `<section class="card"><h2>Staking</h2>
+      <p class="hint">${st.loading ? 'Reading the contract.' : 'Loading.'}</p></section>`;
+  }
+
+  const real = st.positions.filter((p) => p.staked > 0 || p.refunding > 0 || p.rewards > 0);
+  const delayDays = st.refundDelay ? Math.round(st.refundDelay / 86400) : 3;
+
+  const pool = (p: typeof real[number]) => {
+    const unproven = isUnprovenPool(p, st.pools);
+    const contract = tokenContractFor(p, st.pools);
+    return `
+      <div class="slot ${unproven ? 'ft' : ''}">
+        <div class="row-between">
+          <strong>${escapeHtml(p.stakedSymbol)} pool</strong>
+          ${unproven ? '<span class="tag warn">never paid out</span>' : ''}
+        </div>
+        <p class="status-line">
+          staked <strong>${p.staked.toLocaleString('en-US')} ${escapeHtml(p.stakedSymbol)}</strong>
+          ${p.refunding > 0 ? ` · unstaking ${p.refunding.toLocaleString('en-US')}` : ''}
+          ${p.rewards > 0 ? ` · <strong>${p.rewards.toLocaleString('en-US')} ${escapeHtml(p.rewardsSymbol)}</strong> in rewards` : ' · no rewards accrued'}
+        </p>
+        ${unproven ? `
+          <p class="status-line warn">
+            The contract has no reward pool configured for ${escapeHtml(p.stakedSymbol)}, and no claim or
+            unstake has ever been signed against it in the chain's whole history. The balance above is
+            real and it is yours. Whether the contract will pay it is not established, and this page
+            will not pretend otherwise.
+          </p>` : ''}
+        <div class="row-actions">
+          ${p.rewards > 0
+            ? `<button data-stake="claim" data-scope="${escapeHtml(p.scope)}" ${st.pending ? 'disabled' : ''}>
+                 ${unproven ? `Try claiming ${p.rewards.toLocaleString('en-US')} ${escapeHtml(p.rewardsSymbol)}` : `Claim ${p.rewards.toLocaleString('en-US')} ${escapeHtml(p.rewardsSymbol)}`}
+               </button>` : ''}
+          ${p.staked > 0 && contract
+            ? `<button data-stake="unstake" data-scope="${escapeHtml(p.scope)}" ${st.pending ? 'disabled' : ''}>
+                 Unstake everything
+               </button>`
+            : p.staked > 0
+              ? `<span class="hint">Unstaking needs the contract that issues ${escapeHtml(p.stakedSymbol)}, and the chain
+                 does not name one. Building the transaction would mean inventing it, so this page does not offer it.</span>`
+              : ''}
+        </div>
+      </div>`;
+  };
+
+  const refunds = st.refunds.length ? `
+    <h3>Finished unstakes</h3>
+    <p class="hint">Unstaking moves tokens here and nothing returns them on its own.
+    On this chain, 45 collection refunds have sat unlocked and uncollected since 2022.</p>
+    ${st.refunds.map((r) => `
+      <div class="slot ${r.ready ? '' : 'muted'}">
+        <div class="row-between">
+          <strong>${escapeHtml(r.quantity)}</strong>
+          <span class="hint">${r.ready ? 'ready now' : `unlocks ${new Date(r.unlockTime * 1000).toLocaleString()}`}</span>
+        </div>
+        ${r.ready
+          ? `<button data-stake="refund" data-id="${r.id}" ${st.pending ? 'disabled' : ''}>Take it back</button>`
+          : ''}
+      </div>`).join('')}` : '';
+
+  return `<section class="card">
+    <h2>Staking</h2>
+    ${real.length === 0 && st.refunds.length === 0
+      ? `<p class="hint"><code>${escapeHtml(actor)}</code> has nothing in <code>stake.nefty</code>:
+         no stake, no rewards, no unfinished unstake.</p>`
+      : `<p class="hint">What <code>stake.nefty</code> is holding for <code>${escapeHtml(actor)}</code>.
+         Unstaking takes ${delayDays} days, which lives in the contract and nothing can shorten.</p>
+         ${real.map(pool).join('')}
+         ${refunds}`}
+    ${st.error ? `<p class="status-line err">${escapeHtml(st.error)}</p>` : ''}
+    ${st.lastTrxId ? `<p class="status-line ok">Signed. <a target="_blank" rel="noreferrer"
+       href="https://waxblock.io/transaction/${escapeHtml(st.lastTrxId)}">view it on waxblock</a></p>` : ''}
+    ${stakingBackground()}
+  </section>`;
+}
+
+/** The facts about the contract, for anyone who wants them before signing. */
+function stakingBackground(): string {
+  const st = state.staking;
+  const c = st.census['.1e4gleif1.pb'];
+  return `
+    <details class="about-panel" data-stake="census"${st.backgroundOpen ? ' open' : ''}>
+      <summary>What this contract is, and what is odd about it</summary>
+      <p>NeftyBlocks shut its website down. <code>stake.nefty</code> never stopped: it pays out on
+      demand, and both of its configured reward pools are still enabled.</p>
+      ${st.pools.map((p) => `<p class="status-line">
+        <strong>${escapeHtml(p.stakedSymbol)}</strong> pool: ${escapeHtml(p.totalStaked)} staked,
+        ${escapeHtml(p.rewardsBalance)} in the reward pot, ${p.enabled ? 'enabled' : 'disabled'}.</p>`).join('')}
+      <h4>The third pool</h4>
+      <p>There is a third staking pool, <strong>WAXNEFT</strong>, and it is not like the others:</p>
+      <ul>
+        <li>It has <strong>no row in <code>stakerewards</code></strong>, so the contract has no reward
+            configuration for it at all.</li>
+        <li><strong>No claim and no unstake has ever been signed against it</strong> in the chain's
+            history, while the other two have hundreds.</li>
+        <li>The WAXNEFT token itself is issued by <strong>no contract this page could find</strong>,
+            and no account appears to hold any outside the staking contract.</li>
+        ${c ? `<li>It carries <strong>${c.accounts.toLocaleString('en-US')} accounts</strong>,
+            <strong>${c.staked.toLocaleString('en-US', { maximumFractionDigits: 4 })} WAXNEFT</strong> staked and
+            <strong>${c.rewards.toLocaleString('en-US', { maximumFractionDigits: 4 })}</strong> in rewards on its books.</li>`
+          : `<li><button data-stake="census-run" ${st.censusState === 'loading' ? 'disabled' : ''}>
+              ${st.censusState === 'loading' ? 'Counting' : 'Count what is in it'}</button>
+              <span class="hint">reads the pool row by row, live</span></li>`}
+      </ul>
+      <p>None of that means the balances are fake. It means nobody has ever got anything out, and
+      this page has no evidence that anybody can. If you are in that pool, you can try, and you
+      should know that is what you are doing.</p>
+    </details>`;
+}
+
+/**
+ * Reads the contract for whoever is connected.
+ *
+ * Keyed on the actor rather than on a boolean, because a wallet switch has
+ * to invalidate what is on screen: showing one account's stake under
+ * another's name is the kind of mistake that gets somebody to sign the
+ * wrong thing.
+ */
+function maybeLoadStaking() {
+  const actor = stakingActor();
+  const st = state.staking;
+  if (!actor) { if (st.loaded) { state.staking = emptyStakingState(); render(); } return; }
+  if (st.loading || (st.loaded && st.actor === actor)) return;
+  void loadStaking(st, actor).then(render).catch((e: unknown) => {
+    st.loading = false;
+    st.error = e instanceof Error ? e.message : String(e);
+    render();
+  });
+}
+
+/** Signs one staking action, whichever it is. */
+async function onStakingAction(kind: string, scope: string, refundId: number) {
+  const session = getCurrentSession();
+  const st = state.staking;
+  if (!session) { setStatus('Connect a wallet first.', 'err'); return; }
+  const actor = String(session.actor);
+  const p = st.positions.find((x) => x.scope === scope);
+  let actions;
+  if (kind === 'claim' && p) actions = buildClaimFor(actor, p);
+  else if (kind === 'unstake' && p) {
+    const contract = tokenContractFor(p, st.pools);
+    // Refused rather than guessed: see tokenContractFor.
+    if (!contract) { setStatus(`No contract on chain issues ${p.stakedSymbol}, so this cannot be built.`, 'err'); return; }
+    actions = buildUnstakeFor(actor, p, contract);
+  } else if (kind === 'refund') {
+    const r = st.refunds.find((x) => x.id === refundId);
+    if (!r) return;
+    actions = buildRefundFor(actor, r);
+  } else return;
+
+  st.pending = true; st.error = ''; st.lastTrxId = '';
+  render();
+  try {
+    setStatus('Awaiting wallet signature...', 'info');
+    const result = await session.transact({ actions });
+    const trxId = (result.response as { transaction_id?: string } | undefined)?.transaction_id
+      ?? String(result.resolved?.transaction.id ?? '');
+    st.lastTrxId = trxId;
+    setStatus('Signed.', 'ok', trxId);
+    // The position just changed, so what is on screen is already stale.
+    st.loaded = false;
+    maybeLoadStaking();
+  } catch (err) {
+    st.error = (err as Error).message;
+    setStatus(`Failed: ${st.error}`, 'err');
+  } finally {
+    st.pending = false;
+    render();
+  }
+}
+
 function attachHandlers() {
+  // stake.nefty. Delegated from the card so a repaint does not lose them.
+  rootEl().querySelectorAll<HTMLElement>('[data-stake]').forEach((el) => {
+    const kind = el.dataset.stake!;
+    if (kind === 'census') {
+      // Native toggling is not enough: the next render rebuilds this and
+      // would close it again.
+      el.addEventListener('toggle', () => {
+        state.staking.backgroundOpen = (el as HTMLDetailsElement).open;
+      });
+      return;
+    }
+    if (kind === 'census-run') {
+      el.addEventListener('click', () => {
+        const st = state.staking;
+        if (st.censusState === 'loading') return;
+        st.censusState = 'loading';
+        render();
+        void censusPool('.1e4gleif1.pb').then((c) => {
+          st.census['.1e4gleif1.pb'] = c;
+          st.censusState = 'done';
+          render();
+        }).catch(() => { st.censusState = 'idle'; render(); });
+      });
+      return;
+    }
+    el.addEventListener('click', () => {
+      void onStakingAction(kind, el.dataset.scope ?? '', Number(el.dataset.id ?? 0));
+    });
+  });
+
   const blendInput = document.getElementById('blendId') as HTMLInputElement | null;
   if (blendInput) {
     blendInput.addEventListener('input', (e) => {
@@ -8245,11 +8489,15 @@ function attachHandlers() {
               // can hit Refresh when they want the per-account info.
               if (state.discovered.length > 0) state.discovered = [];
               if (state.drops.length > 0) state.drops = [];
+              // Whatever the staking card was showing belonged to nobody.
+              state.staking = emptyStakingState();
+              if (state.view === 'staking') maybeLoadStaking();
               render();
             })
             .catch((e) => setStatus((e as Error).message, 'err'));
           break;
         case 'logout':
+          state.staking = emptyStakingState();
           logout().then(() => {
             state.blend = undefined;
             state.template = undefined;
@@ -8536,6 +8784,7 @@ export async function mount() {
         if (r.view !== state.view) {
           state.view = r.view;
           mutated = true;
+          if (r.view === 'staking') maybeLoadStaking();
         }
         if (r.id) {
           state.pendingDeepLink = { view: r.view, id: r.id };
@@ -8580,6 +8829,7 @@ export async function mount() {
   if (state.page === 'status') maybeScanStatus();
   // Same for #/catalog/<collection>.
   if (state.page === 'catalog') maybeScanCatalog(parseHashRoute().id);
+  if (state.page === 'app' && state.view === 'staking') maybeLoadStaking();
   // And for #/lab/<tool>/<subject>, so a shared link opens on the right
   // tool with the right thing already looked up.
   if (state.page === 'lab') {
