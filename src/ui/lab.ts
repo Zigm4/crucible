@@ -2509,7 +2509,7 @@ function stepReview(): string {
 
     ${state.dryRun ? `<h4 class="lab-sub">What your wallet would be asked to sign</h4><pre class="lab-pre">${esc(state.dryRun)}</pre>` : ''}
     ${state.lastError ? `<p class="lab-warn">${esc(state.lastError)}</p>` : ''}
-    ${state.lastTx ? `<p class="lab-ok">Created. Transaction <a target="_blank" rel="noreferrer" href="https://waxblock.io/transaction/${esc(state.lastTx)}">${esc(state.lastTx)}</a></p>` : ''}`;
+    ${state.lastTx ? `<p class="lab-ok">Created. ${txLink(state.lastTx)}</p>` : ''}`;
 }
 
 // ─── edit mode: the screen ──────────────────────────────────────────────
@@ -2662,7 +2662,7 @@ function editForm(): string {
       : '<div class="lab-callout">Nothing changed yet.</div>'}
 
     ${state.lastError ? `<p class="lab-warn">${esc(state.lastError)}</p>` : ''}
-    ${state.lastTx ? `<p class="lab-ok">Signed. Transaction <a target="_blank" rel="noreferrer" href="https://waxblock.io/transaction/${esc(state.lastTx)}">${esc(state.lastTx)}</a></p>` : ''}
+    ${state.lastTx ? `<p class="lab-ok">Signed. ${txLink(state.lastTx)}</p>` : ''}
 
     <div class="lab-nav-actions">
       <button class="lab-ghost" data-lab="edit-back">Back to the list</button>
@@ -3169,8 +3169,12 @@ function claimKeyPicker(
         Threshold ${source.threshold}${source.accounts.length ? `, plus ${source.accounts.map((c) => `<code>${esc(c.actor)}@${esc(c.permission)}</code>`).join(', ')}` : ''}${source.waits.length ? `, plus ${source.waits.length} wait rule(s)` : ''}.
         These travel to the new account unchanged.</p>` : ''}
       <input id="${extraId}" type="text" value="${esc(extra)}"
-             placeholder="or a key that is not on your account, for claiming on somebody else's behalf"
-             autocomplete="off" spellcheck="false" />
+             placeholder="another key" autocomplete="off" spellcheck="false" />
+      <p class="lab-note">
+        A placeholder cannot wrap, so the long version of this was simply cut off mid-word. Leave
+        it empty unless you are claiming for somebody else: anything typed here is added to the
+        keys ticked above.
+      </p>
     </div>`;
 }
 
@@ -3533,7 +3537,7 @@ function nameTool(): string {
       </div>` : ''}
 
     ${state.lastError ? `<p class="lab-warn">${esc(state.lastError)}</p>` : ''}
-    ${state.lastTx ? `<p class="lab-ok">Signed. Transaction <a target="_blank" rel="noreferrer" href="https://waxblock.io/transaction/${esc(state.lastTx)}">${esc(state.lastTx)}</a></p>` : ''}
+    ${state.lastTx ? `<p class="lab-ok">Signed. ${txLink(state.lastTx)}</p>` : ''}
 
     <h4 class="lab-sub">The highest auctions on the chain${
       state.topBids.length > 10 ? `, top ${state.topBids.length}` : ''
@@ -3568,6 +3572,21 @@ function nameTool(): string {
             ? '<p class="lab-empty">No bid found in the history window. History nodes do not keep everything, so this is not proof you never bid, and a refund on a forgotten name would not show up here either.</p>'
             : standingsList()}
           <button class="lab-ghost" data-lab="name-reload">Refresh</button>`}`;
+}
+
+/**
+ * A transaction, as a link you can read.
+ *
+ * A WAX transaction id is 64 hexadecimal characters with nothing to break
+ * on, so printing it as the link text pushed every card it landed in past
+ * its own edge. The id is worth keeping reachable and worth nothing on
+ * screen, so it moves into the href and the title.
+ */
+function txLink(id: string): string {
+  if (!id) return '';
+  return `<a class="lab-tx" target="_blank" rel="noreferrer"
+     href="https://waxblock.io/transaction/${esc(id)}"
+     title="${esc(id)}">view it on waxblock</a>`;
 }
 
 /** What an account could bid right now, or nothing if it is unknown. */
@@ -3650,6 +3669,21 @@ function standingsList(): string {
     .map((b) => ({ bid: b, st: known.get(b.newname) }))
     .sort((a, b) => (a.st ? order[a.st.kind] : 9) - (b.st ? order[b.st.kind] : 9));
 
+  // Colour says what to DO, not what happened. Two rows need a signature
+  // and they are the two that stand out; the rest grade from "next in
+  // line" down to "over and done".
+  const topOfChain = state.topBids[0]?.newname ?? '';
+  const tone = (st: BidStanding | undefined): string => {
+    if (!st) return '';
+    switch (st.kind) {
+      case 'won':     return 'tone-claim';                    // act: create it
+      case 'outbid':  return st.refund ? 'tone-owed' : 'tone-over';
+      case 'leading': return st.name === topOfChain ? 'tone-next' : 'tone-queued';
+      case 'claimed': return 'tone-held';                     // yours, done
+      case 'lost':    return 'tone-over';
+    }
+  };
+
   const line = (st: BidStanding | undefined, bid: BidHistoryEntry): string => {
     if (!st) {
       return state.standingsState === 'loading'
@@ -3693,9 +3727,19 @@ function standingsList(): string {
     return `<button class="lab-add" data-lab="name-recheck" data-name="${esc(name)}">Open</button>`;
   };
 
-  return `<div class="lab-rows lab-rows-aligned">
+  const legend = `
+    <p class="lab-legend">
+      <span class="tone-claim">to claim</span>
+      <span class="tone-owed">WAX owed to you</span>
+      <span class="tone-next">next in line</span>
+      <span class="tone-queued">waiting its turn</span>
+      <span class="tone-held">yours</span>
+      <span class="tone-over">over</span>
+    </p>`;
+
+  return `${legend}<div class="lab-rows lab-rows-aligned">
     ${rows.map(({ bid, st }) => `
-      <div class="lab-row${st?.kind === 'won' || (st?.kind === 'outbid' && st.refund) ? ' lab-row-mine' : ''}">
+      <div class="lab-row ${tone(st)}">
         <span class="lab-tag lab-tag-name">${esc(bid.newname)}</span>
         <span class="lab-row-main">${line(st, bid)}</span>
         ${action(st, bid.newname)}

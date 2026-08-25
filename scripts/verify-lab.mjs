@@ -1050,6 +1050,64 @@ async function main() {
     }
   }
 
+  // Colour is an assertion about what to do next, so it is tested like one.
+  // Every state has to reach its own tone, including the two this wallet
+  // does not happen to be in today.
+  console.log('\n=== PHASE H - the colour says what to do ===');
+  {
+    const want = {
+      aaa: ['won, unclaimed', 'tone-claim'],
+      bbb: ['outbid with WAX owed', 'tone-owed'],
+      ccc: ['leading, top of chain', 'tone-next'],
+      ddd: ['leading, queued behind bigger bids', 'tone-queued'],
+      eee: ['claimed, the account exists', 'tone-held'],
+      fff: ['outbid and already refunded', 'tone-over'],
+      ggg: ['lost to somebody else', 'tone-over'],
+    };
+    const standings = [
+      { kind: 'won', name: 'aaa', wax: 121 },
+      { kind: 'outbid', name: 'bbb', by: 'rival', wax: 200, refund: { newname: 'bbb', amount: '146.30 WAX', wax: 146.3 } },
+      { kind: 'leading', name: 'ccc', wax: 366, settlesAt: Date.now() + 3600e3 },
+      { kind: 'leading', name: 'ddd', wax: 5, settlesAt: Date.now() - 3600e3 },
+      { kind: 'claimed', name: 'eee' },
+      { kind: 'outbid', name: 'fff', by: 'rival', wax: 9 },
+      { kind: 'lost', name: 'ggg' },
+    ];
+    __setForm({
+      tool: 'names', actor: 'zigm4.gm', myBidsState: 'done', standingsState: 'done', refunds: [],
+      myBids: standings.map((s) => ({ newname: s.name, bid: '1 WAX', timestamp: '2026-01-01T00:00:00' })),
+      standings, topBids: [{ newname: 'ccc' }], topBidsState: 'done', lastTx: '',
+    });
+    const page = renderLabPage();
+    const part = page.slice(page.indexOf('Your bids'));
+    for (const chunk of part.split('<div class="lab-row ').slice(1)) {
+      const tone = (chunk.match(/^([a-z-]*)"/) || [])[1];
+      const name = (chunk.match(/lab-tag-name">([^<]*)/) || [])[1];
+      if (!name || !want[name]) continue;
+      const [label, expected] = want[name];
+      if (tone !== expected) fails.push(`colour, ${label}: got "${tone}", expected "${expected}"`);
+      else console.log(`   ok  ${label.padEnd(36)} -> ${expected}`);
+    }
+    // A legend, because a colour nobody can read is decoration.
+    for (const t of ['tone-claim', 'tone-owed', 'tone-next', 'tone-queued', 'tone-held', 'tone-over']) {
+      if (!/<p class="lab-legend">[\s\S]*?<\/p>/.test(page) || !page.includes(`<span class="${t}">`)) {
+        fails.push(`the legend does not name ${t}`);
+      }
+    }
+    // A 64 character id has nothing to break on, so it must not be the
+    // link text. It pushed every card it landed in past its own edge.
+    __setForm({ lastTx: 'a'.repeat(64) });
+    const withTx = renderLabPage();
+    if (withTx.includes(`>${'a'.repeat(64)}<`)) {
+      fails.push('a full transaction id is still rendered as the link text, which overflows the card');
+    } else if (!/class="lab-tx"/.test(withTx)) {
+      fails.push('the transaction link disappeared entirely');
+    } else {
+      console.log('   ok  a transaction shows as text, with the id in the href and the title');
+    }
+    __setForm({ lastTx: '' });
+  }
+
   console.log('');
   if (fails.length) {
     console.log(`=== ${fails.length} FAILURE(S) ===`);
