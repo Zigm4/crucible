@@ -1106,6 +1106,37 @@ async function main() {
       console.log('   ok  a transaction shows as text, with the id in the href and the title');
     }
     __setForm({ lastTx: '' });
+
+    // One name, one action. A separate refund panel used to repeat every
+    // owed name a second time, with its own competing button, painted
+    // green while the row painted it red.
+    const owed = [
+      { newname: 'bbb', amount: '146.30000000 WAX', wax: 146.3 },
+      { newname: 'hhh', amount: '12.00000000 WAX', wax: 12 },
+    ];
+    for (const set of [[owed[0]], owed]) {
+      __setForm({
+        tool: 'names', actor: 'zigm4.gm', myBidsState: 'done', standingsState: 'done',
+        refunds: set,
+        myBids: standings.map((x) => ({ newname: x.name, bid: '1 WAX', timestamp: '2026-01-01T00:00:00' })),
+        standings, topBids: [{ newname: 'ccc' }], topBidsState: 'done', lastTx: '',
+      });
+      const page2 = renderLabPage();
+      const mine = page2.slice(page2.indexOf('Your bids'));
+      const buttons = (mine.match(/data-name="bbb"/g) || []).length;
+      if (buttons !== 1) {
+        fails.push(`refunds: bbb offers ${buttons} action buttons with ${set.length} refund(s) pending, expected exactly 1`);
+      }
+      if (/class="lab-callout ok"[\s\S]{0,120}waiting for you/.test(mine)) {
+        fails.push('refunds: the green "waiting for you" panel is back, contradicting the red row for the same name');
+      }
+      // The one thing a row cannot do is sign for several at once, so that
+      // stays, and only when there are several.
+      const hasAll = /data-lab="name-refund-all"/.test(mine);
+      if (set.length > 1 && !hasAll) fails.push('refunds: no single signature offered for several refunds');
+      if (set.length === 1 && hasAll) fails.push('refunds: a "claim all" offered for a single refund, which the row already does');
+    }
+    console.log('   ok  one owed name gives one button, and the batch signature appears only for several');
   }
 
   console.log('');

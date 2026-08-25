@@ -3550,21 +3550,23 @@ function nameTool(): string {
       : state.myBidsState === 'loading'
         ? '<p class="lab-hint">Reading your history.</p>'
         : `
-          ${state.refunds.length ? `
-            <div class="lab-callout ok">
-              <strong>${formatWax(state.refunds.reduce((n, r) => n + r.wax, 0))} waiting for you,
-              across ${state.refunds.length} name(s).</strong>
-              These are bids you were outbid on. The WAX has been yours the whole time, it just sits
-              on the contract until somebody asks for it, and nothing ever asks on your behalf.
-              <ul class="lab-list">
-                ${state.refunds.map((r) => `<li>
-                  <code>${esc(r.newname)}</code> ${esc(r.amount)}
-                  <button class="lab-add" data-lab="name-refund" data-name="${esc(r.newname)}">Claim it</button>
-                </li>`).join('')}
-              </ul>
+          ${/*
+            No separate refund panel any more. Every refund already appears
+            in the list below as its own red row, naming the amount and
+            carrying its own button, so this repeated each one a second
+            time, offered a competing action for the same WAX, and painted
+            it green while the row painted it red. One name, two colours,
+            two buttons. What the panel had that a row cannot is the single
+            signature for several at once, so that is all it keeps, and
+            only when there are several.
+          */ ''}${state.refunds.length > 1 ? `
+            <div class="lab-callout danger">
+              <strong>${formatWax(state.refunds.reduce((n, r) => n + r.wax, 0))} of yours is sitting on the
+              contract, across ${state.refunds.length} names.</strong>
+              Each one is listed below and can be taken back on its own, or all of them together here.
               <div class="lab-nav-actions">
                 <button class="lab-primary" data-lab="name-refund-all" ${state.busy ? 'disabled' : ''}>
-                  ${state.busy ? 'Waiting for your wallet' : `Claim all ${state.refunds.length} in one signature`}
+                  ${state.busy ? 'Waiting for your wallet' : `Take back all ${state.refunds.length} in one signature`}
                 </button>
               </div>
             </div>` : ''}
