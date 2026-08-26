@@ -42,6 +42,16 @@ export interface StakePosition {
   refunding: number;
   rewards: number;
   rewardsSymbol: string;
+  /**
+   * Exactly what the table says, digits and all.
+   *
+   * The numbers above are for arithmetic. These are for the screen: a page
+   * that offers to move 6498.78574115 NEFTY must not print "6,498.786",
+   * which rounds UP and reads as more than the account holds. Anyone
+   * checking against an explorer would see two different figures.
+   */
+  stakedRaw: string;
+  rewardsRaw: string;
 }
 
 /** A finished unstake, waiting for somebody to come and collect it. */
@@ -117,6 +127,8 @@ export async function readStakePositions(actor: string): Promise<StakePosition[]
         refunding: refunding.amount,
         rewards: rewards.amount,
         rewardsSymbol: rewards.symbol,
+        stakedRaw: String(r.staked),
+        rewardsRaw: String(r.rewards),
       } satisfies StakePosition;
     } catch {
       return undefined;

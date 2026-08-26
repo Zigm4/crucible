@@ -161,12 +161,25 @@ async function main() {
             lower_bound: actor, upper_bound: actor, key_type: 'name', limit: 1 }),
         })).json();
         const staked = String((raw.rows ?? [])[0]?.staked ?? '');
+        const rewards = String((raw.rows ?? [])[0]?.rewards ?? '');
         if (!staked) continue;
         // Derived here, from the asset string, with no help from the module.
         const [amount, symbol] = staked.split(' ');
         const dot = amount.indexOf('.');
         const expected = `${dot < 0 ? 0 : amount.length - dot - 1},${symbol}`;
         checked++;
+        // What the screen prints has to be what the table says, digit for
+        // digit. toLocaleString rounded 6498.78574115 up to "6,498.786",
+        // which reads as more than the account holds and does not match
+        // any explorer.
+        if (p.stakedRaw !== staked) {
+          fails.push(`${actor}/${p.scope}: displays "${p.stakedRaw}" but the table says "${staked}"`);
+        }
+        // The reward figure is the one printed on the Claim button, so it
+        // is held to exactly the same rule.
+        if (rewards && p.rewardsRaw !== rewards) {
+          fails.push(`${actor}/${p.scope}: the claim button offers "${p.rewardsRaw}" but the table says "${rewards}"`);
+        }
         if (p.stakedSymbolCode !== expected) {
           fails.push(`${actor}/${p.scope}: reader says "${p.stakedSymbolCode}", the table says "${staked}" so it must be "${expected}"`);
         }

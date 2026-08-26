@@ -8081,9 +8081,9 @@ function renderStakingView(): string {
           ${unproven ? '<span class="tag warn">retired in 2022</span>' : ''}
         </div>
         <p class="status-line">
-          staked <strong>${p.staked.toLocaleString('en-US')} ${escapeHtml(p.stakedSymbol)}</strong>
-          ${p.refunding > 0 ? ` · unstaking ${p.refunding.toLocaleString('en-US')}` : ''}
-          ${p.rewards > 0 ? ` · <strong>${p.rewards.toLocaleString('en-US')} ${escapeHtml(p.rewardsSymbol)}</strong> in rewards` : ' · no rewards accrued'}
+          staked <strong>${escapeHtml(p.stakedRaw)}</strong>
+          ${p.refunding > 0 ? ` · unstaking ${p.refunding}` : ''}
+          ${p.rewards > 0 ? ` · <strong>${escapeHtml(p.rewardsRaw)}</strong> in rewards` : ' · no rewards accrued'}
         </p>
         ${unproven ? `
           <p class="status-line warn">
@@ -8104,7 +8104,7 @@ function renderStakingView(): string {
         <div class="row-actions">
           ${p.rewards > 0
             ? `<button data-stake="claim" data-scope="${escapeHtml(p.scope)}" ${st.pending ? 'disabled' : ''}>
-                 ${unproven ? `Try anyway: ${p.rewards.toLocaleString('en-US')} ${escapeHtml(p.rewardsSymbol)}` : `Claim ${p.rewards.toLocaleString('en-US')} ${escapeHtml(p.rewardsSymbol)}`}
+                 ${unproven ? `Try anyway: ${escapeHtml(p.rewardsRaw)}` : `Claim ${escapeHtml(p.rewardsRaw)}`}
                </button>` : ''}
           ${p.staked > 0 && contract
             ? `<button data-stake="unstake" data-scope="${escapeHtml(p.scope)}" ${st.pending ? 'disabled' : ''}>
