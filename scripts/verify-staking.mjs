@@ -35,7 +35,9 @@ let st;
 try { st = await import('./.build/staking.mjs'); }
 catch { console.error('Missing scripts/.build/staking.mjs - run `npm run build:verify`.'); process.exit(1); }
 const { buildClaimRewards, buildUnstake, buildClaimRefund,
-        readStakePositions, readStakeRefunds, readStakeScopes, readRefundDelay } = st;
+        buildUnstakeCollection, buildClaimCollectionRefund,
+        readStakePositions, readStakeRefunds, readStakeScopes, readRefundDelay,
+        readCollectionStakes, readCollectionRefunds } = st;
 
 const HYPERION = ['https://wax.eosphere.io', 'https://api.waxsweden.org'];
 const fails = [];
@@ -66,6 +68,13 @@ async function main() {
     ['stake.nefty:claim', 'claim', (d, actor) => buildClaimRewards(actor, d.token_symbol)],
     ['stake.nefty:unstake', 'unstake', (d, actor) => buildUnstake(actor, d.to_refund.quantity, d.to_refund.contract)],
     ['stake.nefty:claimtokuser', 'claimtokuser', (d, actor) => buildClaimRefund(actor, Number(d.refund_id))],
+    // The collection side. A different table, a different action, and the
+    // only stake on these contracts that still buys a capability, so it
+    // gets the same byte-for-byte treatment as the rest.
+    ['stake.nefty:unstakecoll', 'unstakecoll',
+      (d, actor) => buildUnstakeCollection(actor, d.collection, d.to_refund.quantity, d.to_refund.contract)],
+    ['stake.nefty:claimtokcoll', 'claimtokcoll',
+      (d, actor) => buildClaimCollectionRefund(actor, Number(d.refund_id))],
   ];
   for (const [filter, name, build] of cases) {
     const acts = (await history(filter)).filter((x) => x.act.name === name);
@@ -389,6 +398,122 @@ async function main() {
       say(cen.accounts > cen.withStake,
           `rows and holders are reported separately: ${cen.accounts} rows, ${cen.withStake} with a stake, ${cen.withRewards} with rewards`);
     }
+  }
+
+  console.log('\n=== PHASE F - collection staking, which is a different table ===');
+  {
+    const raw = async (table, extra = {}) => (await client.v1.chain.get_table_rows({
+      json: true, code: 'stake.nefty', scope: 'stake.nefty', table, limit: 1000, ...extra,
+    }));
+
+    // Page collstaking independently of the module. The node caps a page at
+    // 1000 however large a limit is asked for, and this table is over that,
+    // so a single call would silently see two thirds of it.
+    const all = [];
+    for (let lb = '', page = 0; page < 8; page++) {
+      const r = await raw('collstaking', { key_type: 'name', lower_bound: lb || undefined });
+      all.push(...(lb ? r.rows.slice(1) : r.rows));
+      if (!r.more) break;
+      lb = String(r.rows[r.rows.length - 1].collection_name);
+    }
+    say(all.length > 1000, `collstaking paged past the node's 1000-row ceiling: ${all.length} rows`);
+
+    // Every row must name an author, or a wallet could never be matched to
+    // its own collections. `author` is a binary extension in the ABI, so
+    // this is not guaranteed by the schema.
+    const authored = all.filter((r) => r.author);
+    say(authored.length === all.length,
+        `every collstaking row names an author (${authored.length}/${all.length})`);
+
+    // And every collection refund must resolve to one, or the page would
+    // hold money it can never attribute to anybody.
+    const refunds = (await raw('colrefund')).rows;
+    const authorOf = new Map(all.map((r) => [String(r.collection_name), String(r.author ?? '')]));
+    const orphan = refunds.filter((r) => !authorOf.get(String(r.collection_name)));
+    say(orphan.length === 0,
+        `all ${refunds.length} collection refunds resolve to an author (${orphan.length} orphaned)`);
+
+    // Pick a real author with the most collections and check the reader
+    // against the rows we paged ourselves.
+    const byAuthor = new Map();
+    for (const r of all) {
+      const a = String(r.author ?? '');
+      if (a) byAuthor.set(a, [...(byAuthor.get(a) ?? []), r]);
+    }
+    // Pick an author whose collections actually hold something, or the
+    // amount and tier comparisons below compare nothing to nothing and
+    // pass without ever running.
+    const holds = (r) => {
+      const s0 = (r.stakings ?? [])[0]?.quantity ?? '0';
+      const r0 = (r.refundings ?? [])[0]?.quantity ?? '0';
+      return /[1-9]/.test(s0.split(' ')[0].replace('.', '')) || /[1-9]/.test(r0.split(' ')[0].replace('.', ''));
+    };
+    const ranked = [...byAuthor.entries()]
+      .map(([a, rs]) => [a, rs, rs.filter(holds).length])
+      .filter(([, , n]) => n > 0)
+      .sort((x, y) => y[2] - x[2]);
+    if (!ranked.length) fails.push('no author holds anything, so the collection reader was never really exercised');
+    const [who, mine] = ranked[0] ?? ['zzzzzzzzzzzz', []];
+    const read = await readCollectionStakes(who);
+    const live = mine.filter((r) => {
+      const st0 = (r.stakings ?? [])[0]?.quantity ?? '0';
+      const rf0 = (r.refundings ?? [])[0]?.quantity ?? '0';
+      return /[1-9]/.test(st0.split(' ')[0].replace('.', '')) || /[1-9]/.test(rf0.split(' ')[0].replace('.', ''));
+    });
+    say(read.length === live.length,
+        `${who} authors ${mine.length} collection(s), ${live.length} with something on them, reader returned ${read.length}`);
+    for (const c of read) {
+      const row = mine.find((r) => String(r.collection_name) === c.collection);
+      const expected = String((row?.stakings ?? [])[0]?.quantity ?? '');
+      if (c.stakedRaw !== expected) {
+        fails.push(`${c.collection}: displays "${c.stakedRaw}" but collstaking says "${expected}"`);
+      }
+      if (c.level !== String(row?.stakinglevel ?? '')) {
+        fails.push(`${c.collection}: reader says tier "${c.level}", the row says "${row?.stakinglevel}"`);
+      }
+    }
+    say(read.every((c) => c.author === who), 'every position the reader returns belongs to the wallet that asked');
+
+    // A wallet with no collections gets nothing, rather than everybody's.
+    const none = await readCollectionStakes('zzzzzzzzzzzz');
+    say(none.length === 0, 'a wallet that authors no collection reads none, rather than the whole table');
+
+    // The tier is not stale: the contract recomputes it, so no row may
+    // claim a level its own balance no longer reaches. If this ever fails,
+    // the page must stop presenting the tier as current.
+    const tiers = (await client.v1.chain.get_table_rows({
+      json: true, code: 'stake.nefty', scope: 'collections', table: 'stakinglevel', limit: 20,
+    })).rows;
+    const floor = new Map(tiers.map((t) => [String(t.stakingname),
+      BigInt(String(t.thresholds[0].quantity).split(' ')[0].replace('.', ''))]));
+    const stale = all.filter((r) => {
+      const need = floor.get(String(r.stakinglevel));
+      if (need === undefined) return false;
+      const held = BigInt(String((r.stakings ?? [])[0]?.quantity ?? '0 X').split(' ')[0].replace('.', ''));
+      return held < need;
+    });
+    say(stale.length === 0,
+        `no collection claims a tier its balance no longer reaches (${stale.length} of ${all.length} stale)`);
+
+    // The refund readiness has to follow the clock, not a guess.
+    const readyRows = refunds.filter((r) => Number(r.unlock_time) <= Date.now() / 1000);
+    const someone = refunds.length
+      ? String(authorOf.get(String(refunds[0].collection_name)))
+      : '';
+    if (someone) {
+      const rr = await readCollectionRefunds(someone);
+      say(rr.every((r) => r.ready === (r.unlockTime <= Date.now() / 1000)),
+          `refund readiness follows the clock (${rr.length} row(s) for ${someone})`);
+      say(rr.every((r) => r.id >= 0 && r.contract && r.collection),
+          'every collection refund carries the id, contract and collection claimtokcoll needs');
+    }
+    // Reported, not asserted. Every collection refund happens to be unlocked
+    // today, which is why so much is sitting forgotten, but somebody
+    // unstaking a collection this afternoon would create a locked one. That
+    // is normal use, not a regression, so it must not turn this suite red.
+    // The rule the page actually depends on is the per-row clock above.
+    console.log(`   info ${readyRows.length}/${refunds.length} collection refunds are past their unlock time`
+      + `, holding ${refunds.reduce((n, r) => n + Number(String(r.refunding.quantity).split(' ')[0]), 0).toFixed(8)} NEFTY`);
   }
 
   console.log('');

@@ -25,9 +25,13 @@
  */
 import {
   readStakePositions, readStakeRefunds, readRefundDelay,
+  readCollectionStakes, readCollectionRefunds,
   buildClaimRewards, buildUnstake, buildClaimRefund,
+  buildUnstakeCollection, buildClaimCollectionRefund,
   type StakePosition, type StakeRefund,
+  type CollectionStake, type CollectionRefund,
 } from '../nefty/staking';
+import { levelGrants, UPGRADE_FEATURE } from '../nefty/upgradeGate';
 import { getTableRows } from '../chain/rpc';
 
 /** Pools with a row in `stakerewards`, read rather than assumed. */
@@ -105,6 +109,17 @@ export interface StakingState {
   actor: string;
   positions: StakePosition[];
   refunds: StakeRefund[];
+  /**
+   * Collection staking, which is a different table, a different action and
+   * a different set of consequences from a wallet's own stake. Unstaking a
+   * collection drops its tier, and at level.3 that is the one thing on
+   * these contracts a stake still buys: `up.nefty` stops accepting
+   * single-ingredient upgrade recipes from it.
+   */
+  collections: CollectionStake[];
+  collectionRefunds: CollectionRefund[];
+  /** Tiers that grant up.nefty's feature, read rather than hardcoded. */
+  tierGrantsUpgrade: Record<string, boolean>;
   pools: RewardPool[];
   refundDelay?: number;
   /** The unproven pool, counted so the page can show its size honestly. */
@@ -124,6 +139,7 @@ export interface StakingState {
 export function emptyStakingState(): StakingState {
   return {
     loaded: false, loading: false, actor: '', positions: [], refunds: [],
+    collections: [], collectionRefunds: [], tierGrantsUpgrade: {},
     pools: [], census: {}, censusState: 'idle', backgroundOpen: false,
     pending: false, lastTrxId: '', error: '',
   };
@@ -290,20 +306,59 @@ export async function loadStaking(state: StakingState, actor: string): Promise<v
   state.loaded = false;
   state.positions = [];
   state.refunds = [];
+  state.collections = [];
+  state.collectionRefunds = [];
   state.error = '';
-  const [positions, refunds, pools, delay] = await Promise.all([
+  const [positions, refunds, pools, delay, collections, collectionRefunds] = await Promise.all([
     readStakePositions(actor),
     readStakeRefunds(actor),
     readRewardPools(),
     readRefundDelay(),
+    readCollectionStakes(actor),
+    readCollectionRefunds(actor),
   ]);
   if (state.actor !== actor) return;   // a wallet switch landed meanwhile
   state.positions = positions;
   state.refunds = refunds;
   state.pools = pools;
   state.refundDelay = delay;
+  state.collections = collections;
+  state.collectionRefunds = collectionRefunds;
+  // Only the tiers this wallet actually holds, so a wallet with no
+  // collections pays for no extra reads.
+  const tiers: Record<string, boolean> = {};
+  for (const level of new Set(collections.map((c) => c.level))) {
+    if (!level || level === 'level.zero') { tiers[level] = false; continue; }
+    tiers[level] = await levelGrants(level, UPGRADE_FEATURE);
+  }
+  if (state.actor !== actor) return;
+  state.tierGrantsUpgrade = tiers;
   state.loaded = true;
   state.loading = false;
+}
+
+/**
+ * Whether unstaking this collection would cost it the one capability a
+ * NEFTY stake still buys anywhere on these contracts.
+ *
+ * Read from the tier table rather than compared against the string
+ * 'level.3', because `upsertstklvl` has rewritten those rows 12 times and
+ * could again. A hardcoded tier name would go stale in silence.
+ */
+export function collectionLosesUpgradeRight(
+  c: CollectionStake, tiers: Record<string, boolean>,
+): boolean {
+  return Boolean(tiers[c.level]);
+}
+
+export function buildCollectionUnstakeFor(c: CollectionStake, amount?: number) {
+  const decimals = c.stakedSymbolCode.split(',')[0] ?? '0';
+  const qty = (amount ?? c.staked).toFixed(Number(decimals));
+  return [buildUnstakeCollection(c.author, c.collection, `${qty} ${c.stakedSymbol}`, c.tokenContract)];
+}
+
+export function buildCollectionRefundFor(actor: string, r: CollectionRefund) {
+  return [buildClaimCollectionRefund(actor, r.id)];
 }
 
 /** What THIS pool makes an unstake wait, or nothing when it is not known. */

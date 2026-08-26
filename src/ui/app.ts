@@ -202,6 +202,7 @@ import { renderLabPage, attachLabHandlers, applyLabRoute } from './lab';
 import {
   emptyStakingState, loadStaking, censusPool, isUnprovenPool, tokenContractFor, refundDelayFor,
   buildClaimFor, buildUnstakeFor, buildRefundFor, poolShortfall,
+  buildCollectionUnstakeFor, buildCollectionRefundFor, collectionLosesUpgradeRight,
   type StakingState,
 } from './stakingView';
 import type { StakePosition } from '../nefty/staking';
@@ -8149,8 +8150,8 @@ function renderStakingView(): string {
   const refunds = st.refunds.length ? `
     <h3>Finished unstakes</h3>
     <p class="hint">Unstaking moves tokens here and nothing returns them on its own: the
-    second transaction is yours to send. People do forget. The contract is currently holding
-    45 collection refunds that are all past their unlock time, the oldest since September 2022.</p>
+    second transaction is yours to send, and people do forget. There are balances on this
+    contract that have been sitting collectable since 2022.</p>
     ${st.refunds.map((r) => `
       <div class="slot ${r.ready ? '' : 'muted'}">
         <div class="row-between">
@@ -8162,17 +8163,75 @@ function renderStakingView(): string {
           : ''}
       </div>`).join('')}` : '';
 
+  // Collections are a separate table, a separate action and a separate set
+  // of consequences. They are rendered apart from the wallet's own pools so
+  // nobody unstakes a collection thinking they are moving their own tokens.
+  const collections = st.collections.length ? `
+    <h3>Collections you staked for</h3>
+    <p class="hint">This is not your own stake. It belongs to the collection, it is
+    unstaked with a different action, and it is the one place on these contracts where a
+    NEFTY stake still changes what the chain lets you do.</p>
+    ${st.collections.map((c) => {
+      const loses = collectionLosesUpgradeRight(c, st.tierGrantsUpgrade);
+      return `
+      <div class="slot">
+        <div class="row-between">
+          <strong>${escapeHtml(c.collection)}</strong>
+          <span class="tag ${loses ? 'ok' : ''}">${escapeHtml(c.level || 'no tier')}</span>
+        </div>
+        <p class="status-line">
+          staked <strong>${escapeHtml(c.stakedRaw || '0')}</strong>
+          ${c.refunding > 0 ? ` · unstaking <strong>${escapeHtml(c.refundingRaw)}</strong>` : ''}
+        </p>
+        ${loses ? `
+          <p class="status-line warn">
+            Unstaking drops this collection's tier, and <code>${escapeHtml(c.level)}</code> is what lets
+            <code>up.nefty</code> accept an upgrade recipe with a <strong>single ingredient</strong>.
+            Below it, every new recipe needs at least two. Recipes that already exist keep working, and
+            so does their use cap. Nothing you have made stops running.
+          </p>` : ''}
+        ${c.staked > 0 && c.tokenContract ? `
+          <div class="row-actions">
+            <button data-stake="unstakecoll" data-collection="${escapeHtml(c.collection)}" ${st.pending ? 'disabled' : ''}>
+              Unstake ${escapeHtml(c.stakedRaw)}
+            </button>
+          </div>` : ''}
+      </div>`;
+    }).join('')}` : '';
+
+  const collectionRefunds = st.collectionRefunds.length ? `
+    <h3>Finished collection unstakes</h3>
+    <p class="hint">Nothing returns these on its own: the second transaction is yours to
+    send. Each row below says whether it is ready.</p>
+    ${st.collectionRefunds.map((r) => `
+      <div class="slot ${r.ready ? '' : 'muted'}">
+        <div class="row-between">
+          <strong>${escapeHtml(r.quantity)}</strong>
+          <span class="hint">${escapeHtml(r.collection)} · ${r.ready
+            ? 'ready now'
+            : `unlocks ${new Date(r.unlockTime * 1000).toLocaleString()}`}</span>
+        </div>
+        ${r.ready
+          ? `<button data-stake="refundcoll" data-id="${r.id}" ${st.pending ? 'disabled' : ''}>Take it back</button>`
+          : ''}
+      </div>`).join('')}` : '';
+
+  const nothingAtAll = real.length === 0 && st.refunds.length === 0
+    && st.collections.length === 0 && st.collectionRefunds.length === 0;
+
   return `<section class="card">
     <h2>Staking</h2>
-    ${real.length === 0 && st.refunds.length === 0
+    ${nothingAtAll
       ? `<p class="hint"><code>${escapeHtml(actor)}</code> has nothing in <code>stake.nefty</code>:
-         no stake, no rewards, no unfinished unstake.</p>`
+         no stake, no rewards, no unfinished unstake, and no collection staked under this wallet.</p>`
       : `<p class="hint">What <code>stake.nefty</code> is holding for <code>${escapeHtml(actor)}</code>.
          How long an unstake waits is set per pool, and each card below says which.</p>
          ${stakingAccrualNotice()}
          ${real.map(pool).join('')}
          ${refunds}
-         ${stakingOrderNotice(real)}`}
+         ${stakingOrderNotice(real)}
+         ${collections}
+         ${collectionRefunds}`}
     ${st.error ? `<p class="status-line err">${escapeHtml(st.error)}</p>` : ''}
     ${st.lastTrxId ? `<p class="status-line ok">Signed. <a target="_blank" rel="noreferrer"
        href="https://waxblock.io/transaction/${escapeHtml(st.lastTrxId)}">view it on waxblock</a></p>` : ''}
@@ -8340,7 +8399,7 @@ function maybeLoadStaking() {
 }
 
 /** Signs one staking action, whichever it is. */
-async function onStakingAction(kind: string, scope: string, refundId: number) {
+async function onStakingAction(kind: string, scope: string, refundId: number, collection = '') {
   const session = getCurrentSession();
   const st = state.staking;
   if (!session) { setStatus('Connect a wallet first.', 'err'); return; }
@@ -8366,6 +8425,22 @@ async function onStakingAction(kind: string, scope: string, refundId: number) {
     const r = st.refunds.find((x) => x.id === refundId);
     if (!r) return;
     actions = buildRefundFor(actor, r);
+  } else if (kind === 'unstakecoll') {
+    const c = st.collections.find((x) => x.collection === collection);
+    // The contract names the author in the data as well as in the
+    // authorization, and every one of the 908 real calls carries the same
+    // account in both. Signing one author's collection from another
+    // wallet would be rejected on chain; refusing here is clearer.
+    if (!c || !c.tokenContract) return;
+    if (c.author !== actor) {
+      setStatus(`${collection} was staked by ${c.author}, not by this wallet.`, 'err');
+      return;
+    }
+    actions = buildCollectionUnstakeFor(c);
+  } else if (kind === 'refundcoll') {
+    const r = st.collectionRefunds.find((x) => x.id === refundId);
+    if (!r) return;
+    actions = buildCollectionRefundFor(actor, r);
   } else return;
 
   st.pending = true; st.error = ''; st.lastTrxId = '';
@@ -8416,7 +8491,8 @@ function attachHandlers() {
       return;
     }
     el.addEventListener('click', () => {
-      void onStakingAction(kind, el.dataset.scope ?? '', Number(el.dataset.id ?? 0));
+      void onStakingAction(kind, el.dataset.scope ?? '', Number(el.dataset.id ?? 0),
+        el.dataset.collection ?? '');
     });
   });
 
