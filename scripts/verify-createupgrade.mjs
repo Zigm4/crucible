@@ -426,5 +426,92 @@ if (vBad.size) {
   failures += 1;
 }
 
+// ─── the staking gate: how many ingredients up.nefty will accept ─────────
+//
+// The only place a collection's NEFTY stake still changes what the chain
+// allows. Everything here is derived from live tables independently of the
+// module, then compared against it.
+log('\n=== the up.nefty staking gate ===');
+{
+  const gateMod = await import('./.build/upgradeGate.mjs');
+  const rpc = async (ep, body) => {
+    const r = await fetch(`https://wax.greymass.com/v1/chain/${ep}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    return r.json();
+  };
+
+  // Derived here, from the raw tables, with no help from the module.
+  const cfg = (await rpc('get_table_rows',
+    { json: true, code: 'up.nefty', scope: 'up.nefty', table: 'config', limit: 1 })).rows[0];
+  const fee = String(cfg?.fixed_fee?.quantity ?? '');
+  const feeArmed = /[1-9]/.test(fee.split(' ')[0].replace('.', ''));
+  log(`   up.nefty fixed_fee = "${fee}" -> the rule is ${feeArmed ? 'ARMED' : 'inert'}`);
+
+  const tiers = (await rpc('get_table_rows',
+    { json: true, code: 'stake.nefty', scope: 'collections', table: 'stakinglevel', limit: 20 })).rows;
+  const grants = new Set(tiers
+    .filter((t) => (t.enabled_features ?? []).some((f) => f.feature === 'early.access' && f.feature_value?.[1] === 1))
+    .map((t) => String(t.stakingname)));
+  log(`   tiers granting early.access: ${[...grants].join(', ') || '(none)'}`);
+  if (grants.size === 0) { log('   ✗ no tier grants early.access, so the module can never say 1'); failures += 1; }
+
+  // Real collections spanning every case: a level.3 one, a level.zero one,
+  // and one that has never staked at all.
+  const coll = [];
+  let lb = '';
+  for (let page = 0; page < 3 && coll.length < 2000; page++) {
+    const r = await rpc('get_table_rows', {
+      json: true, code: 'stake.nefty', scope: 'stake.nefty', table: 'collstaking',
+      limit: 1000, key_type: 'name', lower_bound: lb,
+    });
+    coll.push(...(lb ? r.rows.slice(1) : r.rows));
+    if (!r.more || !r.rows.length) break;
+    lb = String(r.rows[r.rows.length - 1].collection_name);
+  }
+  const pick = (lvl) => coll.find((c) => String(c.stakinglevel) === lvl)?.collection_name;
+  const cases = [
+    ['level.3', pick('level.3')],
+    ['level.zero', pick('level.zero')],
+    ['(never staked)', 'zzzzzzzzzzzz'],
+  ].filter(([, c]) => c);
+
+  for (const [label, name] of cases) {
+    const gate = await gateMod.readUpgradeGate(String(name));
+    const expectedLevel = String(coll.find((c) => c.collection_name === name)?.stakinglevel ?? '');
+    const expectedEarly = grants.has(expectedLevel);
+    const expectedMin = feeArmed && !expectedEarly ? 2 : 1;
+    const ok = gate.known && gate.level === expectedLevel
+      && gate.earlyAccess === expectedEarly && gate.minIngredients === expectedMin;
+    log(`   ${ok ? 'ok  ' : '✗   '} ${label} ${name}: level="${gate.level}" early=${gate.earlyAccess} min=${gate.minIngredients} (expected "${expectedLevel}" / ${expectedEarly} / ${expectedMin})`);
+    if (!ok) failures += 1;
+
+    // The sentence has to appear exactly when the recipe would be rejected,
+    // and never otherwise. A false warning on a good recipe is its own bug.
+    const tooFew = gateMod.upgradeGateProblem(gate, gate.minIngredients - 1);
+    const enough = gateMod.upgradeGateProblem(gate, gate.minIngredients);
+    if (gate.minIngredients > 1 && !tooFew) { log(`   ✗ ${name}: a 1-ingredient recipe would abort and we say nothing`); failures += 1; }
+    if (enough) { log(`   ✗ ${name}: warned about a recipe the chain accepts`); failures += 1; }
+  }
+
+  // A failed read must stay silent rather than invent a warning.
+  const dead = await gateMod.readUpgradeGate('collection..x', 'no.such.acct');
+  if (dead.known || gateMod.upgradeGateProblem(dead, 1)) {
+    log('   ✗ an unreadable collection produced a warning instead of silence'); failures += 1;
+  } else {
+    log('   ok   an unreadable collection stays silent rather than guessing');
+  }
+
+  // And the empirical half: Lama's own collections are the reason this
+  // exists. underpunks55 and shadowsquads sit at level.3 and 37 of their 38
+  // upgrades carry a single ingredient, which is legal only at that tier.
+  const lamaLvl = await gateMod.readCollectionLevel('underpunks55');
+  const lamaGate = await gateMod.readUpgradeGate('underpunks55');
+  log(`   underpunks55 is ${lamaLvl}, so up.nefty accepts ${lamaGate.minIngredients} ingredient(s) from it today`);
+  if (lamaGate.known && lamaGate.minIngredients !== (grants.has(lamaLvl) ? 1 : 2)) {
+    log('   ✗ the gate disagrees with the tier table for underpunks55'); failures += 1;
+  }
+}
+
 log(`\n=== ${failures === 0 ? 'ALL CREATEUPGRADE CHECKS PASS' : `${failures} FAILURE(S)`} ===`);
 process.exit(failures === 0 ? 0 : 1);

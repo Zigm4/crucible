@@ -88,6 +88,9 @@ import {
   type NewUpgradeResult,
 } from '../nefty/createUpgrade';
 import {
+  readUpgradeGate, upgradeGateProblem, type UpgradeGate,
+} from '../nefty/upgradeGate';
+import {
   buildCreateDrop,
   buildDropDisplayData,
   formatListing,
@@ -298,6 +301,12 @@ interface LabState extends LabForm {
    * will be unrunnable by anyone.
    */
   contractAuthorized?: boolean;
+  /**
+   * What `up.nefty` will accept from this collection. Undefined until read,
+   * and `known: false` when the read failed, so a dead endpoint never turns
+   * into a warning about somebody's perfectly good recipe.
+   */
+  upgradeGate?: UpgradeGate;
   // ── the name-auction tool ──
   nameQuery: string;
   nameStatus?: NameAvailability;
@@ -793,6 +802,7 @@ async function loadCollectionData() {
     // Checked here rather than at review time: an author who learns this
     // on the last screen has already done all the work.
     void refreshCreateAuth(collection);
+    void refreshUpgradeGate(collection);
     if (!state.schemaName && state.schemas.length) state.schemaName = state.schemas[0].schema_name;
     state.loadedFor = collection;
     state.dataState = 'done';
@@ -989,6 +999,23 @@ async function refreshCreateAuth(collection: string) {
     state.contractAuthorized = ok;
     rerender();
   }
+}
+
+/**
+ * How many ingredients up.nefty will take from this collection.
+ *
+ * Read at the same moment as the authorization check, and for the same
+ * reason: an author who learns on the review screen that their recipe is a
+ * guaranteed abort has already built the whole thing.
+ */
+async function refreshUpgradeGate(collection: string) {
+  state.upgradeGate = undefined;
+  if (state.kind !== 'upgrade') return;
+  const gate = await readUpgradeGate(collection);
+  // Only paint when the answer still belongs to what is on screen.
+  if (state.collection.trim() !== collection) return;
+  state.upgradeGate = gate;
+  rerender();
 }
 
 // ─── the sentence ───────────────────────────────────────────────────────
@@ -1324,6 +1351,13 @@ function taggedProblems(): Problem[] {
       }
     }
     for (const t of wholeRecipe(() => validateNewUpgrade(upgradeArgs()))) at(3, t);
+    // Filed under Rules like the other whole-recipe checks: it judges the
+    // assembled ingredient list against what the chain will accept, not any
+    // single field. Silent when the gate could not be read.
+    if (state.upgradeGate) {
+      const gated = upgradeGateProblem(state.upgradeGate, state.ingredients.length);
+      if (gated) at(3, gated);
+    }
   }
 
   const start = toUnix(state.startTime);

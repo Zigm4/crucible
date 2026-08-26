@@ -13,6 +13,7 @@ export default defineConfig({
       entry: {
         createBlend: 'src/nefty/createBlend.ts',
         createUpgrade: 'src/nefty/createUpgrade.ts',
+        upgradeGate: 'src/nefty/upgradeGate.ts',
         lab: 'src/ui/lab.ts',
         collections: 'src/atomic/collections.ts',
         names: 'src/wax/names.ts',
