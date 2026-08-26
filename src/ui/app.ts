@@ -201,9 +201,10 @@ import {
 import { renderLabPage, attachLabHandlers, applyLabRoute } from './lab';
 import {
   emptyStakingState, loadStaking, censusPool, isUnprovenPool, tokenContractFor, refundDelayFor,
-  buildClaimFor, buildUnstakeFor, buildRefundFor,
+  buildClaimFor, buildUnstakeFor, buildRefundFor, poolShortfall,
   type StakingState,
 } from './stakingView';
+import type { StakePosition } from '../nefty/staking';
 
 type AppView =
   | 'blends'   // Nefty: blend.nefty
@@ -8074,6 +8075,14 @@ function renderStakingView(): string {
   const pool = (p: typeof real[number]) => {
     const unproven = isUnprovenPool(p, st.pools);
     const contract = tokenContractFor(p, st.pools);
+    const row = st.pools.find((x) => x.stakedSymbol === p.stakedSymbol);
+    // Only shown where it means what it looks like. poolShortfall returns
+    // nothing when the reward token is also staked here, because then the
+    // balance backs principal first.
+    const s = row ? poolShortfall(row) : undefined;
+    const shortfall = s && row
+      ? { owed: row.rewardsBalance, held: row.heldBalance, coverage: s.coverage, short: s.short, symbol: s.symbol }
+      : undefined;
     return `
       <div class="slot ${unproven ? 'ft' : ''}">
         <div class="row-between">
@@ -8086,11 +8095,18 @@ function renderStakingView(): string {
           ${p.rewards > 0 ? ` · <strong>${escapeHtml(p.rewardsRaw)}</strong> in rewards` : ' · no rewards accrued'}
         </p>
         ${unproven ? `
+          <p class="status-line err">
+            <strong>Nothing here can be recovered, and that is certain, not likely.</strong>
+            Both <code>unstake</code> and <code>claim</code> look the pool up by its symbol code and
+            abort with <code>assertion failure with message: The reward pool does not exist</code>
+            before anything moves. You would pay CPU and NET and receive nothing.
+          </p>
           <p class="status-line warn">
-            This pool was retired. On 4 October 2022 its operator disabled it, enabled the NEFWAX pool
-            in its place, and deleted its reward row from the contract. The balance above is a leftover
-            of that migration: the row still says it is yours, and the contract no longer has anything
-            configured to pay it with.
+            On 4 October 2022 the operator disabled this pool, enabled NEFWAX in its place, and
+            deleted its reward row. Thirteen minutes before that, <code>migrateliq</code> sold the
+            whole pool, 1886694.70475663 WAXNEFT, for 1078609.89611885 WAX and 3868439.32944163 NEFTY,
+            paid to the contract. Unstaking worked normally right up to that morning. The rows were
+            simply never cleared, so yours still says it is yours.
           </p>` : ''}
         ${(() => {
           const d = refundDelayFor(p, st.pools);
@@ -8101,28 +8117,40 @@ function renderStakingView(): string {
             : `<p class="status-line">Unstaking this pool takes <strong>${Math.round(d / 86400)} days</strong>.
                The tokens move to a refund row and you have to come back and collect them.</p>`;
         })()}
+        ${!unproven && p.rewards > 0 && shortfall ? `
+          <p class="status-line warn">
+            This pot is short. The contract owes <strong>${escapeHtml(shortfall.owed)}</strong> and holds
+            <strong>${escapeHtml(shortfall.held)}</strong>, so it covers ${shortfall.coverage}% of what it
+            promises. There is no pro rata: it pays whoever asks first, until it is empty.
+            <strong>Claim before you unstake.</strong>
+          </p>` : ''}
         <div class="row-actions">
-          ${p.rewards > 0
+          ${p.rewards > 0 && !unproven
             ? `<button data-stake="claim" data-scope="${escapeHtml(p.scope)}" ${st.pending ? 'disabled' : ''}>
-                 ${unproven ? `Try anyway: ${escapeHtml(p.rewardsRaw)}` : `Claim ${escapeHtml(p.rewardsRaw)}`}
+                 Claim ${escapeHtml(p.rewardsRaw)}
                </button>` : ''}
-          ${p.staked > 0 && contract
+          ${p.staked > 0 && contract && !unproven
             ? `<button data-stake="unstake" data-scope="${escapeHtml(p.scope)}" ${st.pending ? 'disabled' : ''}>
                  Unstake everything
                </button>`
-            : p.staked > 0
-              ? `<span class="hint">Unstaking is not offered here. ${escapeHtml(p.stakedSymbol)} is issued by
-                 <code>alcorammswap</code>, its total supply is 0.00000000, and <code>stake.nefty</code> holds none of it,
-                 so there is nothing a refund could be filled with. The transaction would build, and then fail.</span>`
-              : ''}
+            : ''}
+          ${unproven
+            ? `<span class="hint">No button is offered, because every action on this pool is a
+               guaranteed failure. The reward row was deleted from <code>stakerewards</code> in 2022 and
+               the lookup that reads it is a hard assert, so the contract stops there. Separately, and
+               independently, ${escapeHtml(p.stakedSymbol)} now has a total supply of 0.00000000 and
+               <code>stake.nefty</code> holds no balance row for it at all, so there would be nothing to
+               send back even if the contract let the transaction through.</span>`
+            : ''}
         </div>
       </div>`;
   };
 
   const refunds = st.refunds.length ? `
     <h3>Finished unstakes</h3>
-    <p class="hint">Unstaking moves tokens here and nothing returns them on its own.
-    On this chain, 45 collection refunds have sat unlocked and uncollected since 2022.</p>
+    <p class="hint">Unstaking moves tokens here and nothing returns them on its own: the
+    second transaction is yours to send. People do forget. The contract is currently holding
+    45 collection refunds that are all past their unlock time, the oldest since September 2022.</p>
     ${st.refunds.map((r) => `
       <div class="slot ${r.ready ? '' : 'muted'}">
         <div class="row-between">
@@ -8141,13 +8169,65 @@ function renderStakingView(): string {
          no stake, no rewards, no unfinished unstake.</p>`
       : `<p class="hint">What <code>stake.nefty</code> is holding for <code>${escapeHtml(actor)}</code>.
          How long an unstake waits is set per pool, and each card below says which.</p>
+         ${stakingAccrualNotice()}
          ${real.map(pool).join('')}
-         ${refunds}`}
+         ${refunds}
+         ${stakingOrderNotice(real)}`}
     ${st.error ? `<p class="status-line err">${escapeHtml(st.error)}</p>` : ''}
     ${st.lastTrxId ? `<p class="status-line ok">Signed. <a target="_blank" rel="noreferrer"
        href="https://waxblock.io/transaction/${escapeHtml(st.lastTrxId)}">view it on waxblock</a></p>` : ''}
     ${stakingBackground()}
   </section>`;
+}
+
+/**
+ * Whether anything is still accruing, read from the contract rather than
+ * asserted.
+ *
+ * `next_reward_time` is the boundary of the NEXT cycle, pushed forward by
+ * every `fill`. It is not the time of the last one: both pools read
+ * 2026-04-28T11:00:00 UTC, which is 3,400 seconds after the last `fill`
+ * ever signed, at 10:03:20. So a value in the past means a cycle came due
+ * and nobody ran it, which is the honest thing to print. Measured
+ * independently: across every row write in both pools since that block,
+ * not one rewards figure has gone up.
+ */
+function stakingAccrualNotice(): string {
+  const st = state.staking;
+  const times = st.pools.map((p) => p.nextRewardTime).filter((t) => t > 0);
+  if (!times.length) return '';
+  const last = Math.max(...times);
+  const days = Math.floor((Date.now() / 1000 - last) / 86400);
+  // One period of slack: the pools run hourly, so a few minutes past due
+  // is normal operation, not a stoppage.
+  if (days < 1) return '';
+  return `<p class="status-line warn">
+    <strong>Nothing is accruing.</strong> A reward cycle came due
+    ${new Date(last * 1000).toLocaleString()}, ${days} days ago, and nobody ran it. Nor any since.
+    Leaving tokens staked earns 0.00000000 per day, in both pools. Rewards are credited by the <code>fill</code> action, which
+    only a key NeftyBlocks controls can sign, so no user can restart it. The balances below are what
+    you were owed when it stopped, and they are still payable.
+  </p>`;
+}
+
+/**
+ * What to do first, when the three actions are not equally urgent.
+ *
+ * Only the WAX side is a race, and only when this account is actually in
+ * it, so the advice is built from the positions on screen rather than
+ * printed at everyone.
+ */
+function stakingOrderNotice(real: StakePosition[]): string {
+  const st = state.staking;
+  const racing = real.some((p) => {
+    if (p.rewards <= 0 || isUnprovenPool(p, st.pools)) return false;
+    const row = st.pools.find((x) => x.stakedSymbol === p.stakedSymbol);
+    return Boolean(row && poolShortfall(row));
+  });
+  if (!racing) return '';
+  return `<p class="hint"><strong>Order matters here.</strong> Claim the rewards first: that pot is
+    short and pays first come, first served. Unstaking is not a race, the principal is fully backed,
+    and on this pool it takes three days and a second transaction.</p>`;
 }
 
 /** The facts about the contract, for anyone who wants them before signing. */
@@ -8157,33 +8237,85 @@ function stakingBackground(): string {
   return `
     <details class="about-panel" data-stake="census"${st.backgroundOpen ? ' open' : ''}>
       <summary>What this contract is, and what is odd about it</summary>
-      <p>NeftyBlocks shut its website down. <code>stake.nefty</code> never stopped: it pays out on
-      demand, and both of its configured reward pools are still enabled.</p>
-      ${st.pools.map((p) => `<p class="status-line">
+      <p>NeftyBlocks shut its website down. <code>stake.nefty</code> never stopped: it still pays out
+      on demand, and both of its reward pools are still flagged enabled. Enabled is not the same as
+      paying. No reward cycle has run since the last <code>fill</code>, so the balances it holds are
+      frozen at what they were then.</p>
+
+      ${st.pools.map((p) => {
+        const s = poolShortfall(p);
+        return `<p class="status-line">
         <strong>${escapeHtml(p.stakedSymbol)}</strong> pool: ${escapeHtml(p.totalStaked)} staked,
-        ${escapeHtml(p.rewardsBalance)} in the reward pot, ${p.enabled ? 'enabled' : 'disabled'}.</p>`).join('')}
+        ${escapeHtml(p.rewardsBalance)} in the reward pot on the contract's own books${
+          p.heldBalance
+            ? `, and <strong>${escapeHtml(p.heldBalance)}</strong> actually held`
+            : ''}.${
+          s ? ` <strong class="warn">Short by ${escapeHtml(s.short)} ${escapeHtml(s.symbol)}, so the pot
+                covers ${s.coverage}% of what it promises.</strong>`
+            : p.rewardTokenIsStaked
+              ? ` That balance also backs staked principal, so it is not a measure of the reward pot on its own.`
+              : ''}</p>`;
+      }).join('')}
+      <p class="hint">Those staked totals are the contract's own counters, and they cover collection
+      staking as well as individual wallets. Collections stake NEFTY, so the NEFTY figure is larger
+      than the sum of the per wallet rows and should not be read as a total of what people like you
+      have in it.</p>
+
+      <h4>Where the missing WAX went</h4>
+      <p>The WAX pot did not drift. It matched the contract's books to the satoshi until
+      3 May 2023, then over the next three months 2,291 hourly orders spent stakers' WAX on
+      <code>swap.taco</code> buying NEFTY, and forwarded that NEFTY to the operator account
+      <code>nefty</code> with the memo <code>Buyback NEFTY from swap.taco</code>. The pot's declared
+      balance was never debited for it. The gap has been frozen ever since, and no WAX has come in
+      since the last reward cycle. Nothing has been observed since 7 August 2023, though the code
+      that did it is still in the deployed binary.</p>
+      <p>What this means if you are owed WAX: every individual claim still works today, because the
+      largest single entitlement is far smaller than what is on hand. There is no pro rata mechanism.
+      The pot pays whoever asks first, and the contract's own guard checks its books rather than its
+      balance, so the last claimants get a reverted transaction and no explanation.</p>
+
+      <h4>The NEFTY side, which is different</h4>
+      <p>Staked principal is fully backed. Everything staked, refunding, and waiting for collections
+      adds up to less than the NEFTY the contract holds, so unstaking NEFTY or NEFWAX is safe and is
+      not a race. It is the NEFTY <em>rewards</em> that are promised beyond what is free, by a much
+      smaller margin than on the WAX side.</p>
+
       <h4>The third pool</h4>
       <p>There is a third staking pool, <strong>WAXNEFT</strong>. It was not abandoned, it was
       <strong>retired on 4 October 2022</strong>, and the chain records the whole morning:</p>
       <ul>
         <li><code>disable({ code: "WAXNEFT" })</code> at 08:08:56.</li>
+        <li><code>migrateliq</code> at 08:12:14 sells the entire pool, 1886694.70475663 WAXNEFT, for
+            1078609.89611885 WAX and 3868439.32944163 NEFTY, paid to <code>stake.nefty</code>. That
+            figure matches the sum of the pool's rows to the last of eight decimals.</li>
         <li><code>enable({ code: "NEFWAX" })</code> at 08:37:41, the pool that replaced it.</li>
         <li><code>delrewards({ code: "WAXNEFT" })</code> at 11:19:53. This is the only time
             <code>delrewards</code> has ever been called on this contract.</li>
         <li>So its missing row in <code>stakerewards</code> is a <strong>deletion, not an absence</strong>.
             The rows in the staking table were simply never cleared.</li>
+        <li>Unstaking this pool worked normally until that morning: there are roughly 3,400 outgoing
+            WAXNEFT transfers with the memo <code>Unstake</code>. Nobody was trapped by surprise.
+            Since 08:08:15 that day, not one row in the pool has been written.</li>
         <li>The token is issued by <code>alcorammswap</code>. Its total supply is
-            <strong>0.00000000</strong>, and <code>stake.nefty</code> holds none of it.</li>
-        ${c ? `<li>It carries <strong>${c.partial ? 'at least ' : ''}${c.accounts.toLocaleString('en-US')} accounts</strong>,
-            <strong>${c.staked.toLocaleString('en-US', { maximumFractionDigits: 4 })} WAXNEFT</strong> staked and
-            <strong>${c.rewards.toLocaleString('en-US', { maximumFractionDigits: 4 })}</strong> in rewards on its books.</li>`
+            <strong>0.00000000</strong>, and <code>stake.nefty</code> holds no balance row for it at all.</li>
+        ${c ? `<li>Counted live: <strong>${c.partial ? 'at least ' : ''}${c.accounts.toLocaleString('en-US')} rows</strong>,
+            of which ${c.withStake.toLocaleString('en-US')} still show a stake and
+            ${c.withRewards.toLocaleString('en-US')} still show rewards. They add up to
+            <strong>${escapeHtml(c.staked)} ${escapeHtml(c.stakedSymbol)}</strong> staked and
+            <strong>${escapeHtml(c.rewards)} ${escapeHtml(c.rewardsSymbol)}</strong> in rewards.</li>`
           : `<li><button data-stake="census-run" ${st.censusState === 'loading' ? 'disabled' : ''}>
               ${st.censusState === 'loading' ? 'Counting' : 'Count what is in it'}</button>
               <span class="hint">reads the pool row by row, live</span></li>`}
       </ul>
       <p>None of that means the row against your name is fake. It means the pool it belongs to was
-      closed nearly four years ago and the tokens it counted no longer exist. If you are in it, you
-      can still send the claim, and you should know it is very likely to fail rather than pay.</p>
+      closed nearly four years ago, and both <code>unstake</code> and <code>claim</code> find the
+      deleted reward row missing and abort with
+      <code>The reward pool does not exist</code> before anything moves. This page offers you no
+      button for it, because there is no version of pressing it that pays.</p>
+      <p class="hint">One caveat we owe you: all of this describes the code deployed right now.
+      <code>stake.nefty</code> still has a live deploy key and its permissions were rewritten in
+      October 2025, so the contract can be replaced and the reward machinery could be restarted by
+      whoever holds those keys. What cannot be undone is the WAXNEFT token itself.</p>
     </details>`;
 }
 

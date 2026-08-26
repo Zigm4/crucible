@@ -1,9 +1,18 @@
 /**
  * `stake.nefty`, the staking NeftyBlocks left running.
  *
- * neftyblocks.com returns a 404. The contract did not. It pays out on
- * demand today, and it still holds 27.7M NEFTY and 129,034 WAX for people
- * who have no front end to reach it with. This is that front end.
+ * neftyblocks.com returns a 404. The contract did not. It still pays out
+ * on demand, and this is the front end for that.
+ *
+ * Two things it would be easy, and wrong, to say. The NEFTY it holds does
+ * cover every staked principal, so unstaking is safe. The WAX it holds
+ * does NOT cover what it owes: the pot is roughly three quarters of the
+ * promises against it, the gap opened in 2023 when the contract spent
+ * stakers' WAX buying NEFTY for the operator, and nothing has topped it up
+ * since. It pays first come, first served. The page has to say so.
+ *
+ * The second thing: both pools read `enabled`, and neither has credited
+ * anything since the last `fill`. Enabled is not paying.
  *
  * Three pools, and they are not equal. Two have a reward pool configured
  * and a long history of claims. The third, WAXNEFT, was RETIRED: on
@@ -36,8 +45,58 @@ export interface RewardPool {
   /** The contract that issues the staked token, needed to build an unstake. */
   tokenContract: string;
   totalStaked: string;
+  /**
+   * What the pool's books SAY is in the reward pot. Not what the contract
+   * holds: see heldBalance. On 2026-08-26 the WAX pool declared
+   * 168737.51253157 WAX against 129034.92982131 WAX actually on hand.
+   */
   rewardsBalance: string;
+  /**
+   * Total staked as the contract counts it, which INCLUDES collection
+   * staking. The 24298265.08831688 NEFTY on this row is user rows
+   * (17425530.89643307) plus collstaking (6872732.19188381). Printing it
+   * beside a per-user table overstates the user pool by about 6.87M.
+   */
+  totalStakedIncludesCollections: true;
+  /** The contract that issues the REWARD token, needed to read the real balance. */
+  rewardsContract: string;
+  /**
+   * What `stake.nefty` actually holds of the reward token, read live from
+   * that token's `accounts` table. Empty when it could not be read.
+   */
+  heldBalance: string;
+  /**
+   * True when the reward token is also staked in this contract. Then
+   * heldBalance backs principal FIRST and is not a solvency measure for
+   * the reward pot. NEFTY is such a token; WAX is not.
+   */
+  rewardTokenIsStaked: boolean;
+  /**
+   * `next_reward_time`. The contract sets this forward on every `fill`, so
+   * it is also a live timestamp of the last reward cycle it ran. When it
+   * sits in the past, nothing is accruing.
+   */
+  nextRewardTime: number;
   enabled: boolean;
+}
+
+/**
+ * A pool added up row by row.
+ *
+ * `accounts` is every row, which is not the same as every holder: 600 of
+ * the retired pool's 1,825 rows have a zero stake. Both numbers are here
+ * so the page can say which it means.
+ */
+export interface PoolCensus {
+  accounts: number;
+  withStake: number;
+  withRewards: number;
+  /** Exact decimal strings, summed as integers. Never rounded. */
+  staked: string;
+  rewards: string;
+  stakedSymbol: string;
+  rewardsSymbol: string;
+  partial: boolean;
 }
 
 export interface StakingState {
@@ -49,7 +108,7 @@ export interface StakingState {
   pools: RewardPool[];
   refundDelay?: number;
   /** The unproven pool, counted so the page can show its size honestly. */
-  census: Record<string, { accounts: number; staked: number; rewards: number; partial: boolean }>;
+  census: Record<string, PoolCensus>;
   censusState: 'idle' | 'loading' | 'done';
   /**
    * Whether the background panel is open. A render replaces the subtree,
@@ -70,24 +129,99 @@ export function emptyStakingState(): StakingState {
   };
 }
 
+/**
+ * What `stake.nefty` really holds of one token.
+ *
+ * Read from the token contract's own `accounts` table rather than trusted
+ * from `stakerewards`. The two disagree: the WAX pool's books claim
+ * 168737.51253157 WAX and the contract holds 129034.92982131. A page that
+ * prints only the books advertises a pot 39702 WAX larger than exists.
+ */
+export async function readHeldBalance(contract: string, symbol: string): Promise<string> {
+  if (!contract || !symbol) return '';
+  try {
+    const rows = await getTableRows<{ balance: string }>({
+      code: contract, scope: 'stake.nefty', table: 'accounts', limit: 50,
+    });
+    const hit = rows.find((r) => String(r.balance).split(' ')[1] === symbol);
+    return hit ? String(hit.balance) : '';
+  } catch {
+    return '';
+  }
+}
+
 /** Which pools the contract actually pays, straight from `stakerewards`. */
 export async function readRewardPools(): Promise<RewardPool[]> {
   try {
     const rows = await getTableRows<{
       total_staked: string; rewards_balance: string; enabled: number | boolean;
-      token_contract: string; refund_delay: number | string;
+      token_contract: string; rewards_contract: string;
+      refund_delay: number | string; next_reward_time: number | string;
     }>({ code: 'stake.nefty', scope: 'stake.nefty', table: 'stakerewards', limit: 20 });
-    return rows.map((r) => ({
-      stakedSymbol: String(r.total_staked).split(' ')[1] ?? '',
-      tokenContract: String(r.token_contract ?? ''),
-      refundDelay: Number(r.refund_delay ?? 0),
-      totalStaked: String(r.total_staked),
-      rewardsBalance: String(r.rewards_balance),
-      enabled: Boolean(r.enabled),
+
+    const staked = new Set(rows.map((r) => String(r.total_staked).split(' ')[1] ?? ''));
+
+    return await Promise.all(rows.map(async (r) => {
+      const rewardsContract = String(r.rewards_contract ?? '');
+      const rewardSymbol = String(r.rewards_balance).split(' ')[1] ?? '';
+      return {
+        stakedSymbol: String(r.total_staked).split(' ')[1] ?? '',
+        tokenContract: String(r.token_contract ?? ''),
+        rewardsContract,
+        refundDelay: Number(r.refund_delay ?? 0),
+        totalStaked: String(r.total_staked),
+        totalStakedIncludesCollections: true as const,
+        rewardsBalance: String(r.rewards_balance),
+        heldBalance: await readHeldBalance(rewardsContract, rewardSymbol),
+        // NEFTY is staked here as well as paid out, so its balance backs
+        // principal before it backs any reward. WAX is not staked, so for
+        // the WAX pot the held balance IS the whole story.
+        rewardTokenIsStaked: staked.has(rewardSymbol),
+        nextRewardTime: Number(r.next_reward_time ?? 0),
+        enabled: Boolean(r.enabled),
+      };
     }));
   } catch {
     return [];
   }
+}
+
+/** An asset string split into a signed integer of minor units and its scale. */
+function minorUnits(asset: string): { units: bigint; decimals: number; symbol: string } {
+  const [amount = '0', symbol = ''] = String(asset).split(' ');
+  const dot = amount.indexOf('.');
+  const decimals = dot < 0 ? 0 : amount.length - dot - 1;
+  return { units: BigInt(amount.replace('.', '')), decimals, symbol };
+}
+
+/** Minor units back to the exact decimal string the chain would print. */
+function formatUnits(units: bigint, decimals: number): string {
+  const neg = units < 0n;
+  const digits = (neg ? -units : units).toString().padStart(decimals + 1, '0');
+  const whole = digits.slice(0, digits.length - decimals);
+  const frac = decimals ? `.${digits.slice(digits.length - decimals)}` : '';
+  return `${neg ? '-' : ''}${whole}${frac}`;
+}
+
+/**
+ * How much of `owed` the contract can actually pay, or nothing when the
+ * question does not apply.
+ *
+ * Returns nothing when the reward token is also staked here, because then
+ * the held balance backs principal first and comparing it to the reward
+ * pot would call an insolvent pool solvent.
+ */
+export function poolShortfall(p: RewardPool): { short: string; coverage: number; symbol: string } | undefined {
+  if (!p.heldBalance || !p.rewardsBalance || p.rewardTokenIsStaked) return undefined;
+  const owed = minorUnits(p.rewardsBalance);
+  const held = minorUnits(p.heldBalance);
+  if (owed.symbol !== held.symbol || owed.units <= 0n) return undefined;
+  if (held.units >= owed.units) return undefined;
+  return {
+    short: formatUnits(owed.units - held.units, owed.decimals),
+    coverage: Number((held.units * 10000n) / owed.units) / 100,
+    symbol: owed.symbol,
+  };
 }
 
 /**
@@ -97,10 +231,13 @@ export async function readRewardPools(): Promise<RewardPool[]> {
  * configured ones `stakerewards` already says. For the third, the only way
  * to know what is sitting there is to add it up.
  */
-export async function censusPool(
-  scope: string,
-): Promise<{ accounts: number; staked: number; rewards: number; partial: boolean }> {
-  let accounts = 0, staked = 0, rewards = 0;
+export async function censusPool(scope: string): Promise<PoolCensus> {
+  let accounts = 0, withStake = 0, withRewards = 0;
+  // Summed as integer minor units, never as floats. Adding 1,825 values of
+  // 8 decimals with `+=` on a double loses the low digits, and this total
+  // is printed as a fact about other people's money.
+  let stakedUnits = 0n, rewardsUnits = 0n;
+  let stakedDec = 0, rewardsDec = 0, stakedSym = '', rewardsSym = '';
   // The empty string, not '0'. This table is keyed by account name, and
   // '0' is not a character a WAX name can contain, so the node answers a
   // name-typed query for it with nothing at all. That silently counted the
@@ -118,15 +255,25 @@ export async function censusPool(
     const fresh = page === 0 ? rows : rows.slice(1);
     for (const r of fresh) {
       accounts++;
-      staked += parseFloat(String(r.staked)) || 0;
-      rewards += parseFloat(String(r.rewards)) || 0;
+      const st = minorUnits(String(r.staked));
+      const rw = minorUnits(String(r.rewards));
+      stakedUnits += st.units; rewardsUnits += rw.units;
+      if (st.units > 0n) withStake++;
+      if (rw.units > 0n) withRewards++;
+      stakedDec = st.decimals; stakedSym = st.symbol;
+      rewardsDec = rw.decimals; rewardsSym = rw.symbol;
     }
     if (rows.length < 1000) { partial = false; break; }
     const last = rows[rows.length - 1]?.account;
     if (!last || last === bound) break;   // no progress, stop rather than spin
     bound = String(last);
   }
-  return { accounts, staked, rewards, partial };
+  return {
+    accounts, withStake, withRewards, partial,
+    staked: formatUnits(stakedUnits, stakedDec),
+    rewards: formatUnits(rewardsUnits, rewardsDec),
+    stakedSymbol: stakedSym, rewardsSymbol: rewardsSym,
+  };
 }
 
 /** A pool the contract has no reward row for, and nobody has ever claimed. */

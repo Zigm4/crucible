@@ -210,7 +210,8 @@ async function main() {
     catch { fails.push('scripts/.build/stakingView.mjs missing, so the view layer was not checked at all'); }
     if (view) {
       const { emptyStakingState, loadStaking, readRewardPools, refundDelayFor,
-              isUnprovenPool, tokenContractFor, buildUnstakeFor } = view;
+              isUnprovenPool, tokenContractFor, buildUnstakeFor,
+              poolShortfall, readHeldBalance, censusPool } = view;
 
       // A reload for a DIFFERENT account must not leave the previous one on
       // screen. renderStakingView gates on `loaded`, so anything still true
@@ -250,6 +251,143 @@ async function main() {
         { stakedSymbol: 'NEFTY', stakedSymbolCode: '8,NEFTY', staked: 6498.79123456 }, 'token.nefty');
       const q = built[0]?.data?.to_refund?.quantity;
       say(q === '6498.79123456 NEFTY', `an unstake carries full precision: ${q}`);
+
+      // -------- what the contract HOLDS, against what its books claim -----
+      // The page used to print rewards_balance as "the reward pot". For WAX
+      // that advertises about 39,702 WAX more than exists. These checks
+      // exist so nobody quietly reverts to the books.
+      for (const p of pools) {
+        const sym = p.rewardsBalance.split(' ')[1];
+        const raw = await client.v1.chain.get_currency_balance(p.rewardsContract, 'stake.nefty', sym);
+        const expected = raw.length ? String(raw[0]) : '';
+        if (p.heldBalance !== expected) {
+          fails.push(`${p.stakedSymbol} pool: heldBalance says "${p.heldBalance}", the chain says "${expected}"`);
+        }
+      }
+      say(pools.every((p) => p.heldBalance),
+          `each pool carries the real balance: ${pools.map((p) => `${p.stakedSymbol}->${p.heldBalance}`).join(', ')}`);
+
+      // The WAX pot is short and must be reported short. If this ever stops
+      // failing it means either the pot was refilled (good, and the page
+      // will say so on its own) or the comparison broke (bad).
+      const waxPool = pools.find((p) => p.rewardsBalance.endsWith(' WAX'));
+      const short = waxPool ? poolShortfall(waxPool) : undefined;
+      say(Boolean(short),
+          short
+            ? `the WAX pot is reported short by ${short.short} ${short.symbol}, covering ${short.coverage}%`
+            : 'the WAX pot is NOT reported short, which needs a human to look at it');
+
+      // And the NEFTY-paying pool must NOT be reported short, because its
+      // balance backs staked principal first. Calling that a shortfall, or
+      // calling it solvent, would both be wrong; the honest answer is to
+      // decline the comparison.
+      const neftyPaying = pools.find((p) => p.rewardsBalance.endsWith(' NEFTY'));
+      say(neftyPaying && neftyPaying.rewardTokenIsStaked && poolShortfall(neftyPaying) === undefined,
+          'the pool that pays a token it also stakes declines the solvency comparison rather than guessing');
+
+      // Nothing has accrued since the last fill. next_reward_time is the
+      // contract's own clock, and the notice on the page is derived from it.
+      const behind = pools.map((p) => Math.floor(Date.now() / 1000 - p.nextRewardTime));
+      say(behind.every((b) => b > 86400),
+          `every pool's reward clock is in the past: ${pools.map((p, i) => `${p.stakedSymbol}=${Math.floor(behind[i] / 86400)}d`).join(', ')}`);
+
+      // next_reward_time is the boundary of the NEXT cycle, not the moment
+      // of the last fill. The page said "the last reward cycle ran at" and
+      // printed a time 3,400 seconds after the last fill actually was. If
+      // this stops holding, the sentence on the page has to change with it.
+      const boundary = pools.every((p) => p.nextRewardTime % 3600 === 0);
+      say(boundary,
+          `the reward clock is a period boundary, so it is a due time and not a run time: ${pools.map((p) => new Date(p.nextRewardTime * 1000).toISOString()).join(', ')}`);
+      const lastFill = Date.parse('2026-04-28T10:03:20Z') / 1000;
+      say(pools.every((p) => p.nextRewardTime > lastFill),
+          'the clock sits after the last fill ever signed, which is why it reads as a cycle that came due and never ran');
+
+      // The NEFTY pool's total_staked counts collection staking too, which
+      // is why the page must not print it as "what wallets have in it".
+      // Checked rather than asserted: header minus user rows has to be the
+      // collstaking sum, or the sentence on the page is wrong.
+      {
+        let userUnits = 0n;
+        for (let lb = '', page = 0; page < 20; page++) {
+          const r = await client.v1.chain.get_table_rows({
+            json: true, code: 'stake.nefty', scope: '.....qeoct2oi', table: 'stakers',
+            limit: 1000, key_type: 'name', lower_bound: lb || undefined,
+          });
+          for (const x of (lb ? r.rows.slice(1) : r.rows)) {
+            userUnits += BigInt(String(x.staked).split(' ')[0].replace('.', ''));
+          }
+          if (!r.more) break;
+          lb = String(r.rows[r.rows.length - 1].account);
+        }
+        let collUnits = 0n;
+        for (let lb = '', page = 0; page < 10; page++) {
+          const r = await client.v1.chain.get_table_rows({
+            json: true, code: 'stake.nefty', scope: 'stake.nefty', table: 'collstaking',
+            limit: 1000, key_type: 'name', lower_bound: lb || undefined,
+          });
+          for (const x of (lb ? r.rows.slice(1) : r.rows)) {
+            for (const q of x.stakings ?? []) collUnits += BigInt(String(q.quantity).split(' ')[0].replace('.', ''));
+          }
+          if (!r.more) break;
+          lb = String(r.rows[r.rows.length - 1].collection_name);
+        }
+        const neftyPool = pools.find((p) => p.stakedSymbol === 'NEFTY');
+        const headerUnits = BigInt(String(neftyPool.totalStaked).split(' ')[0].replace('.', ''));
+        const fmt = (u) => `${u / 100000000n}.${String(u % 100000000n).padStart(8, '0')}`;
+        say(headerUnits > userUnits && collUnits > 0n,
+            `the NEFTY header counts collections too: header ${fmt(headerUnits)}, wallets ${fmt(userUnits)}, collections ${fmt(collUnits)}`);
+        // Collections stake NEFTY and nothing else, which is why the note is
+        // written about the NEFTY figure alone.
+        const nefwaxPool = pools.find((p) => p.stakedSymbol === 'NEFWAX');
+        const nwHeader = BigInt(String(nefwaxPool.totalStaked).split(' ')[0].replace('.', ''));
+        let nwUsers = 0n;
+        for (let lb = '', page = 0; page < 10; page++) {
+          const r = await client.v1.chain.get_table_rows({
+            json: true, code: 'stake.nefty', scope: '...5kkerct2oi', table: 'stakers',
+            limit: 1000, key_type: 'name', lower_bound: lb || undefined,
+          });
+          for (const x of (lb ? r.rows.slice(1) : r.rows)) {
+            nwUsers += BigInt(String(x.staked).split(' ')[0].replace('.', ''));
+          }
+          if (!r.more) break;
+          lb = String(r.rows[r.rows.length - 1].account);
+        }
+        // Within a rounding hair, NEFWAX has no collection side at all.
+        const gap = nwHeader > nwUsers ? nwHeader - nwUsers : nwUsers - nwHeader;
+        say(gap < 10000n,
+            `NEFWAX has no collection side, so its header matches the wallet rows (gap ${gap} minor units)`);
+      }
+
+      // -------- the census, summed as integers -----------------------------
+      // parseFloat + += over 1,825 assets of 8 decimals loses the low
+      // digits, and this total is printed as a fact about other people's
+      // money. Verified against an independent sum of the same rows.
+      const cen = await censusPool('.1e4gleif1.pb');
+      let units = 0n, rows = 0, withStake = 0;
+      for (let lb = '', page = 0; page < 12; page++) {
+        const r = await client.v1.chain.get_table_rows({
+          json: true, code: 'stake.nefty', scope: '.1e4gleif1.pb', table: 'stakers',
+          limit: 1000, key_type: 'name', lower_bound: lb || undefined,
+        });
+        const fresh = lb ? r.rows.slice(1) : r.rows;
+        for (const x of fresh) {
+          rows++;
+          const u = BigInt(String(x.staked).split(' ')[0].replace('.', ''));
+          units += u;
+          if (u > 0n) withStake++;
+        }
+        if (!r.more) break;
+        lb = String(r.rows[r.rows.length - 1].account);
+      }
+      const exact = `${units / 100000000n}.${String(units % 100000000n).padStart(8, '0')}`;
+      say(cen.staked === exact && cen.accounts === rows && cen.withStake === withStake,
+          `the census sums exactly: ${cen.accounts} rows (${cen.withStake} with a stake), ${cen.staked} ${cen.stakedSymbol}`);
+      if (cen.staked !== exact) {
+        fails.push(`census says "${cen.staked}", an independent integer sum of the same rows says "${exact}"`);
+      }
+      // The row count is not the holder count, and the page says both.
+      say(cen.accounts > cen.withStake,
+          `rows and holders are reported separately: ${cen.accounts} rows, ${cen.withStake} with a stake, ${cen.withRewards} with rewards`);
     }
   }
 
