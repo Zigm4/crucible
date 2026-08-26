@@ -17,6 +17,7 @@ export default defineConfig({
         collections: 'src/atomic/collections.ts',
         names: 'src/wax/names.ts',
         staking: 'src/nefty/staking.ts',
+        stakingView: 'src/ui/stakingView.ts',
       },
       formats: ['es'],
     },

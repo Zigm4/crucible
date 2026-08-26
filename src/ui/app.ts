@@ -200,7 +200,7 @@ import {
 } from './catalog';
 import { renderLabPage, attachLabHandlers, applyLabRoute } from './lab';
 import {
-  emptyStakingState, loadStaking, censusPool, isUnprovenPool, tokenContractFor,
+  emptyStakingState, loadStaking, censusPool, isUnprovenPool, tokenContractFor, refundDelayFor,
   buildClaimFor, buildUnstakeFor, buildRefundFor,
   type StakingState,
 } from './stakingView';
@@ -8056,13 +8056,20 @@ function renderStakingView(): string {
       ${stakingBackground()}
     </section>`;
   }
-  if (!st.loaded) {
+  // What is loaded belongs to st.actor, and the card is titled with the
+  // LIVE session. If those drift, the page would put one account's
+  // balances and refund ids under another account's name, with every
+  // button live. An account can be switched from the lab bar without this
+  // view ever seeing a view change, so the check is here rather than only
+  // on the paths that happen to reload.
+  if (!st.loaded || st.actor !== actor) {
+    if (!st.loading) maybeLoadStaking();
     return `<section class="card"><h2>Staking</h2>
-      <p class="hint">${st.loading ? 'Reading the contract.' : 'Loading.'}</p></section>`;
+      <p class="hint">Reading what <code>${escapeHtml(actor)}</code> has in
+      <code>stake.nefty</code>.</p></section>`;
   }
 
   const real = st.positions.filter((p) => p.staked > 0 || p.refunding > 0 || p.rewards > 0);
-  const delayDays = st.refundDelay ? Math.round(st.refundDelay / 86400) : 3;
 
   const pool = (p: typeof real[number]) => {
     const unproven = isUnprovenPool(p, st.pools);
@@ -8071,7 +8078,7 @@ function renderStakingView(): string {
       <div class="slot ${unproven ? 'ft' : ''}">
         <div class="row-between">
           <strong>${escapeHtml(p.stakedSymbol)} pool</strong>
-          ${unproven ? '<span class="tag warn">never paid out</span>' : ''}
+          ${unproven ? '<span class="tag warn">retired in 2022</span>' : ''}
         </div>
         <p class="status-line">
           staked <strong>${p.staked.toLocaleString('en-US')} ${escapeHtml(p.stakedSymbol)}</strong>
@@ -8080,23 +8087,33 @@ function renderStakingView(): string {
         </p>
         ${unproven ? `
           <p class="status-line warn">
-            The contract has no reward pool configured for ${escapeHtml(p.stakedSymbol)}, and no claim or
-            unstake has ever been signed against it in the chain's whole history. The balance above is
-            real and it is yours. Whether the contract will pay it is not established, and this page
-            will not pretend otherwise.
+            This pool was retired. On 4 October 2022 its operator disabled it, enabled the NEFWAX pool
+            in its place, and deleted its reward row from the contract. The balance above is a leftover
+            of that migration: the row still says it is yours, and the contract no longer has anything
+            configured to pay it with.
           </p>` : ''}
+        ${(() => {
+          const d = refundDelayFor(p, st.pools);
+          if (d === undefined) return '';
+          return d === 0
+            ? `<p class="status-line">Unstaking this pool returns the tokens <strong>in the same
+               transaction</strong>. There is no waiting period and no refund row to come back for.</p>`
+            : `<p class="status-line">Unstaking this pool takes <strong>${Math.round(d / 86400)} days</strong>.
+               The tokens move to a refund row and you have to come back and collect them.</p>`;
+        })()}
         <div class="row-actions">
           ${p.rewards > 0
             ? `<button data-stake="claim" data-scope="${escapeHtml(p.scope)}" ${st.pending ? 'disabled' : ''}>
-                 ${unproven ? `Try claiming ${p.rewards.toLocaleString('en-US')} ${escapeHtml(p.rewardsSymbol)}` : `Claim ${p.rewards.toLocaleString('en-US')} ${escapeHtml(p.rewardsSymbol)}`}
+                 ${unproven ? `Try anyway: ${p.rewards.toLocaleString('en-US')} ${escapeHtml(p.rewardsSymbol)}` : `Claim ${p.rewards.toLocaleString('en-US')} ${escapeHtml(p.rewardsSymbol)}`}
                </button>` : ''}
           ${p.staked > 0 && contract
             ? `<button data-stake="unstake" data-scope="${escapeHtml(p.scope)}" ${st.pending ? 'disabled' : ''}>
                  Unstake everything
                </button>`
             : p.staked > 0
-              ? `<span class="hint">Unstaking needs the contract that issues ${escapeHtml(p.stakedSymbol)}, and the chain
-                 does not name one. Building the transaction would mean inventing it, so this page does not offer it.</span>`
+              ? `<span class="hint">Unstaking is not offered here. ${escapeHtml(p.stakedSymbol)} is issued by
+                 <code>alcorammswap</code>, its total supply is 0.00000000, and <code>stake.nefty</code> holds none of it,
+                 so there is nothing a refund could be filled with. The transaction would build, and then fail.</span>`
               : ''}
         </div>
       </div>`;
@@ -8123,7 +8140,7 @@ function renderStakingView(): string {
       ? `<p class="hint"><code>${escapeHtml(actor)}</code> has nothing in <code>stake.nefty</code>:
          no stake, no rewards, no unfinished unstake.</p>`
       : `<p class="hint">What <code>stake.nefty</code> is holding for <code>${escapeHtml(actor)}</code>.
-         Unstaking takes ${delayDays} days, which lives in the contract and nothing can shorten.</p>
+         How long an unstake waits is set per pool, and each card below says which.</p>
          ${real.map(pool).join('')}
          ${refunds}`}
     ${st.error ? `<p class="status-line err">${escapeHtml(st.error)}</p>` : ''}
@@ -8146,14 +8163,17 @@ function stakingBackground(): string {
         <strong>${escapeHtml(p.stakedSymbol)}</strong> pool: ${escapeHtml(p.totalStaked)} staked,
         ${escapeHtml(p.rewardsBalance)} in the reward pot, ${p.enabled ? 'enabled' : 'disabled'}.</p>`).join('')}
       <h4>The third pool</h4>
-      <p>There is a third staking pool, <strong>WAXNEFT</strong>, and it is not like the others:</p>
+      <p>There is a third staking pool, <strong>WAXNEFT</strong>. It was not abandoned, it was
+      <strong>retired on 4 October 2022</strong>, and the chain records the whole morning:</p>
       <ul>
-        <li>It has <strong>no row in <code>stakerewards</code></strong>, so the contract has no reward
-            configuration for it at all.</li>
-        <li><strong>No claim and no unstake has ever been signed against it</strong> in the chain's
-            history, while the other two have hundreds.</li>
-        <li>The WAXNEFT token itself is issued by <strong>no contract this page could find</strong>,
-            and no account appears to hold any outside the staking contract.</li>
+        <li><code>disable({ code: "WAXNEFT" })</code> at 08:08:56.</li>
+        <li><code>enable({ code: "NEFWAX" })</code> at 08:37:41, the pool that replaced it.</li>
+        <li><code>delrewards({ code: "WAXNEFT" })</code> at 11:19:53. This is the only time
+            <code>delrewards</code> has ever been called on this contract.</li>
+        <li>So its missing row in <code>stakerewards</code> is a <strong>deletion, not an absence</strong>.
+            The rows in the staking table were simply never cleared.</li>
+        <li>The token is issued by <code>alcorammswap</code>. Its total supply is
+            <strong>0.00000000</strong>, and <code>stake.nefty</code> holds none of it.</li>
         ${c ? `<li>It carries <strong>${c.partial ? 'at least ' : ''}${c.accounts.toLocaleString('en-US')} accounts</strong>,
             <strong>${c.staked.toLocaleString('en-US', { maximumFractionDigits: 4 })} WAXNEFT</strong> staked and
             <strong>${c.rewards.toLocaleString('en-US', { maximumFractionDigits: 4 })}</strong> in rewards on its books.</li>`
@@ -8161,9 +8181,9 @@ function stakingBackground(): string {
               ${st.censusState === 'loading' ? 'Counting' : 'Count what is in it'}</button>
               <span class="hint">reads the pool row by row, live</span></li>`}
       </ul>
-      <p>None of that means the balances are fake. It means nobody has ever got anything out, and
-      this page has no evidence that anybody can. If you are in that pool, you can try, and you
-      should know that is what you are doing.</p>
+      <p>None of that means the row against your name is fake. It means the pool it belongs to was
+      closed nearly four years ago and the tokens it counted no longer exist. If you are in it, you
+      can still send the claim, and you should know it is very likely to fail rather than pay.</p>
     </details>`;
 }
 
@@ -8193,6 +8213,15 @@ async function onStakingAction(kind: string, scope: string, refundId: number) {
   const st = state.staking;
   if (!session) { setStatus('Connect a wallet first.', 'err'); return; }
   const actor = String(session.actor);
+  // The loaded position belongs to st.actor. Signing one account's amount
+  // from another account's wallet is the failure this whole guard exists
+  // for, so it is checked at the last moment too, not only at render.
+  if (st.actor !== actor) {
+    setStatus('The wallet changed since this was read. Reloading before anything is signed.', 'warn');
+    st.loaded = false;
+    maybeLoadStaking();
+    return;
+  }
   const p = st.positions.find((x) => x.scope === scope);
   let actions;
   if (kind === 'claim' && p) actions = buildClaimFor(actor, p);

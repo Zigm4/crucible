@@ -17,6 +17,10 @@
  *             actually feed them in the page. A symbol read with the wrong
  *             precision is a claim the contract refuses, and the replay
  *             alone cannot see it.
+ *   PHASE E - the view layer, which nothing covered at all. A reload that
+ *             leaves the previous account's balances on screen, or a delay
+ *             stated for the wrong pool, is a wrong transaction offered to
+ *             somebody who trusted the page.
  *   PHASE C - the shape of the answer. A refund that is not ready must not
  *             read as ready, and a pool with nothing in it must not appear
  *             as an opportunity.
@@ -135,55 +139,104 @@ async function main() {
   const nobody = await readStakePositions('thisisnotreal');
   say(Array.isArray(nobody) && nobody.length === 0, 'an unreadable account returns nothing rather than failing');
 
-  console.log('\n=== PHASE D - a claim built from a POSITION, not from history ===');
+  console.log('\n=== PHASE D - the symbol the reader derives, checked independently ===');
   {
-    // What the page will really do: read a position, then build from it.
-    // Anything the reader gets wrong about the symbol shows up here and
-    // nowhere else.
+    // The first version of this phase looked the historical claim up BY
+    // the very field it was testing, then compared bytes against it. Those
+    // are equal by construction: change the precision and it simply found
+    // a different claim that happened to use the wrong value, of which
+    // history has four. It printed ok while every NEFTY claim was being
+    // built as "4,NEFTY". The expectation has to come from somewhere the
+    // module under test cannot influence, so it comes from the raw table.
     const claims = (await history('stake.nefty:claim')).filter((x) => x.act.name === 'claim');
-    const symbolFor = new Map();     // pool symbol code -> a real signed claim
-    for (const x of claims) symbolFor.set(String(x.act.data.token_symbol), x);
+    const actors = [...new Set(claims.map((x) => String((x.act.authorization ?? [])[0]?.actor)))].filter(Boolean);
 
-    let done = 0;
-    const unproven = new Set();
-    for (const actor of [...new Set(claims.map((x) => String((x.act.authorization ?? [])[0]?.actor)))].slice(0, 8)) {
+    let checked = 0;
+    for (const actor of actors.slice(0, 10)) {
       const positions = await readStakePositions(actor);
       for (const p of positions) {
-        const real = symbolFor.get(p.stakedSymbolCode);
-        if (!real) {
-          // Not automatically a defect. stake.nefty carries a third pool,
-          // WAXNEFT, with 1,825 accounts and 115,507 NEFTY of rewards on
-          // the books but NO row in stakerewards and no claim or unstake
-          // ever recorded against it. The balances are real; whether the
-          // contract will pay them is not established, and the page has to
-          // say so rather than offer it as routine.
-          unproven.add(p.stakedSymbolCode);
-          continue;
+        const raw = await (await fetch('https://wax.greymass.com/v1/chain/get_table_rows', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ json: true, code: 'stake.nefty', scope: p.scope, table: 'stakers',
+            lower_bound: actor, upper_bound: actor, key_type: 'name', limit: 1 }),
+        })).json();
+        const staked = String((raw.rows ?? [])[0]?.staked ?? '');
+        if (!staked) continue;
+        // Derived here, from the asset string, with no help from the module.
+        const [amount, symbol] = staked.split(' ');
+        const dot = amount.indexOf('.');
+        const expected = `${dot < 0 ? 0 : amount.length - dot - 1},${symbol}`;
+        checked++;
+        if (p.stakedSymbolCode !== expected) {
+          fails.push(`${actor}/${p.scope}: reader says "${p.stakedSymbolCode}", the table says "${staked}" so it must be "${expected}"`);
         }
-        // Same actor, so the bytes must match a claim the chain accepted.
-        const mine = bytes(buildClaimRewards(String((real.act.authorization ?? [])[0]?.actor), p.stakedSymbolCode));
-        const theirs = bytes(real.act);
-        if (mine !== theirs) {
-          fails.push(`a claim built from a read position does not match the signed one for ${p.stakedSymbolCode}`);
-        } else done++;
       }
-      if (done >= 3) break;
+      if (checked >= 4) break;
     }
-    say(done >= 1, `${done} claim(s) built from a live position match a real signed claim`);
-    // Pools nobody has ever claimed from are reported, never hidden and
-    // never asserted as working.
-    for (const sym of unproven) {
-      console.log(`   note: pool ${sym} has balances but no claim has ever been signed against it`);
-    }
+    say(checked >= 2, `${checked} symbol code(s) derived from the raw asset string and matched`);
+
+    // And separately: the symbol the reader produces has to be one the
+    // contract actually pays, which is what stakerewards lists.
     const configured = (await client.v1.chain.get_table_rows({
       json: true, code: 'stake.nefty', scope: 'stake.nefty', table: 'stakerewards', limit: 10,
     })).rows.map((r) => String(r.total_staked).split(' ')[1]);
     say(configured.length >= 2, `${configured.length} reward pool(s) configured on chain: ${configured.join(', ')}`);
-    for (const sym of unproven) {
-      const bare = sym.split(',')[1];
-      if (configured.includes(bare)) {
-        fails.push(`${bare} has a configured reward pool yet no claim has ever been built for it, which our reader should have matched`);
-      }
+
+    // The per-pool refund delay, which is NOT the global config value.
+    const delays = (await client.v1.chain.get_table_rows({
+      json: true, code: 'stake.nefty', scope: 'stake.nefty', table: 'stakerewards', limit: 10,
+    })).rows.map((r) => [String(r.total_staked).split(' ')[1], Number(r.refund_delay)]);
+    const differing = new Set(delays.map(([, d]) => d)).size > 1;
+    say(differing, `refund delays differ between pools, so no single number describes them: ${delays.map(([s, d]) => `${s}=${d}`).join(', ')}`);
+  }
+
+  console.log('\n=== PHASE E - the view layer ===');
+  {
+    let view;
+    try { view = await import('./.build/stakingView.mjs'); }
+    catch { fails.push('scripts/.build/stakingView.mjs missing, so the view layer was not checked at all'); }
+    if (view) {
+      const { emptyStakingState, loadStaking, readRewardPools, refundDelayFor,
+              isUnprovenPool, tokenContractFor, buildUnstakeFor } = view;
+
+      // A reload for a DIFFERENT account must not leave the previous one on
+      // screen. renderStakingView gates on `loaded`, so anything still true
+      // there is drawn, with live buttons, under the new account's name.
+      const st = emptyStakingState();
+      st.loaded = true;
+      st.actor = 'aaa';
+      st.positions = [{ scope: 'x', stakedSymbol: 'NEFTY', stakedSymbolCode: '8,NEFTY', staked: 999, refunding: 0, rewards: 5, rewardsSymbol: 'WAX' }];
+      st.refunds = [{ id: 1, quantity: '1.0 NEFTY', amount: 1, symbol: 'NEFTY', contract: 'token.nefty', unlockTime: 1, ready: true }];
+      const inFlight = loadStaking(st, 'bbb');
+      say(st.loaded === false && st.positions.length === 0 && st.refunds.length === 0,
+          `a reload for another account clears what was on screen (loaded=${st.loaded}, ${st.positions.length} position(s) left)`);
+      await inFlight;
+
+      // The delay is per pool, and stating one number for all of them tells
+      // 4,031 NEFWAX stakers to expect a wait that does not exist.
+      const pools = await readRewardPools();
+      const byPool = pools.map((p) => [p.stakedSymbol, p.refundDelay]);
+      say(pools.length >= 2 && new Set(pools.map((p) => p.refundDelay)).size > 1,
+          `pools carry their own refund delay: ${byPool.map(([s, d]) => `${s}=${d}`).join(', ')}`);
+      const nefty = { stakedSymbol: 'NEFTY' };
+      const nefwax = { stakedSymbol: 'NEFWAX' };
+      say(refundDelayFor(nefty, pools) === 259200, `NEFTY waits ${refundDelayFor(nefty, pools)}`);
+      say(refundDelayFor(nefwax, pools) === 0, `NEFWAX waits ${refundDelayFor(nefwax, pools)}, so it returns in the same transaction`);
+
+      // A retired pool has no row, and must be flagged rather than shown as
+      // ordinary. A live one must NOT be flagged.
+      say(isUnprovenPool({ stakedSymbol: 'WAXNEFT' }, pools) === true, 'the retired pool is flagged');
+      say(isUnprovenPool(nefty, pools) === false, 'a live pool is not flagged');
+      say(tokenContractFor(nefty, pools) === 'token.nefty', `NEFTY resolves to ${tokenContractFor(nefty, pools)}`);
+      say(tokenContractFor({ stakedSymbol: 'WAXNEFT' }, pools) === '',
+          'the retired pool resolves to no contract, so no unstake can be built for it');
+
+      // The quantity string must carry the token's own precision, or the
+      // contract refuses it.
+      const built = buildUnstakeFor('zigm4.gm',
+        { stakedSymbol: 'NEFTY', stakedSymbolCode: '8,NEFTY', staked: 6498.79123456 }, 'token.nefty');
+      const q = built[0]?.data?.to_refund?.quantity;
+      say(q === '6498.79123456 NEFTY', `an unstake carries full precision: ${q}`);
     }
   }
 

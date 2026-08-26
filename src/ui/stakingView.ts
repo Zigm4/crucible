@@ -6,10 +6,13 @@
  * who have no front end to reach it with. This is that front end.
  *
  * Three pools, and they are not equal. Two have a reward pool configured
- * and a long history of claims. The third has balances, has 1,244 accounts
- * with rewards on its books, and has never had a single claim or unstake
- * signed against it in the chain's entire history. That difference is not
- * something to smooth over, so this file goes out of its way to show it.
+ * and a long history of claims. The third, WAXNEFT, was RETIRED: on
+ * 2022-10-04 its operator called disable, enabled NEFWAX in its place, and
+ * then delrewards, the only time that action has ever been used here. The
+ * staking rows were never cleared, so 1,825 accounts still carry balances
+ * for a pool that no longer has anything to pay them with. That is a
+ * different story from "never configured", and the page tells the real
+ * one.
  */
 import {
   readStakePositions, readStakeRefunds, readRefundDelay,
@@ -21,6 +24,15 @@ import { getTableRows } from '../chain/rpc';
 /** Pools with a row in `stakerewards`, read rather than assumed. */
 export interface RewardPool {
   stakedSymbol: string;
+  /**
+   * Seconds this pool makes an unstake wait. NOT the same across pools:
+   * NEFTY is 259200 and NEFWAX is 0, so a NEFWAX unstake returns the
+   * tokens in the same transaction and never creates a refund row. Telling
+   * its 4,031 stakers to expect a 3 day wait would have them either not
+   * unstake at all, or unstake and go looking for a row that will never
+   * exist.
+   */
+  refundDelay: number;
   /** The contract that issues the staked token, needed to build an unstake. */
   tokenContract: string;
   totalStaked: string;
@@ -63,11 +75,12 @@ export async function readRewardPools(): Promise<RewardPool[]> {
   try {
     const rows = await getTableRows<{
       total_staked: string; rewards_balance: string; enabled: number | boolean;
-      token_contract: string;
+      token_contract: string; refund_delay: number | string;
     }>({ code: 'stake.nefty', scope: 'stake.nefty', table: 'stakerewards', limit: 20 });
     return rows.map((r) => ({
       stakedSymbol: String(r.total_staked).split(' ')[1] ?? '',
       tokenContract: String(r.token_contract ?? ''),
+      refundDelay: Number(r.refund_delay ?? 0),
       totalStaked: String(r.total_staked),
       rewardsBalance: String(r.rewards_balance),
       enabled: Boolean(r.enabled),
@@ -124,6 +137,12 @@ export function isUnprovenPool(p: StakePosition, pools: RewardPool[]): boolean {
 export async function loadStaking(state: StakingState, actor: string): Promise<void> {
   state.loading = true;
   state.actor = actor;
+  // Cleared, not left standing. Without this the previous account's pools
+  // stay on screen with live buttons under the new account's name for the
+  // whole round trip, which can be several seconds across a dead endpoint.
+  state.loaded = false;
+  state.positions = [];
+  state.refunds = [];
   state.error = '';
   const [positions, refunds, pools, delay] = await Promise.all([
     readStakePositions(actor),
@@ -140,6 +159,12 @@ export async function loadStaking(state: StakingState, actor: string): Promise<v
   state.loading = false;
 }
 
+/** What THIS pool makes an unstake wait, or nothing when it is not known. */
+export function refundDelayFor(p: StakePosition, pools: RewardPool[]): number | undefined {
+  const found = pools.find((x) => x.stakedSymbol === p.stakedSymbol);
+  return found ? found.refundDelay : undefined;
+}
+
 export function buildClaimFor(actor: string, p: StakePosition) {
   return [buildClaimRewards(actor, p.stakedSymbolCode)];
 }
@@ -147,9 +172,12 @@ export function buildClaimFor(actor: string, p: StakePosition) {
 /**
  * The contract that issues a staked token, or nothing.
  *
- * `unstake` needs it and there is no honest guess: WAXNEFT is issued by
- * nobody the chain will name, so a page that invented a contract for it
- * would be asking a wallet to sign a lie.
+ * Read from `stakerewards`, which is also why WAXNEFT comes back empty:
+ * its row was deleted in 2022. That is the honest reason to withhold an
+ * unstake, and it is not the same as the token having no issuer. It does
+ * have one, `alcorammswap`, discovered only after this said otherwise.
+ * Its supply is 0.00000000 and stake.nefty holds none, so the refund could
+ * never be filled anyway.
  */
 export function tokenContractFor(p: StakePosition, pools: RewardPool[]): string {
   return pools.find((x) => x.stakedSymbol === p.stakedSymbol)?.tokenContract ?? '';
