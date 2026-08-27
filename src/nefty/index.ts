@@ -44,7 +44,7 @@ export {
   parsePoolDisplayData,
   type BlendRow,
 } from './blend';
-export { listBlends, clearDiscoverCache, type DiscoveredBlend } from './discover';
+export { listBlends, clearDiscoverCache, releaseChainWalk, type DiscoveredBlend } from './discover';
 export { buildBlendActions, executeBlend, type PlanArgs } from './execute';
 
 /** Random blends: sign, wait for the ORNG oracle, then claim. */

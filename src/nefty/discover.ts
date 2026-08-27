@@ -177,8 +177,18 @@ export async function listBlends(
   return { blends, source };
 }
 
-export function clearDiscoverCache() {
-  cache.clear();
+export function clearDiscoverCache(collection?: string) {
+  // The shared walk goes too: "search again" has to mean the chain is
+  // asked again, not that the same five minute old walk is re-filtered.
+  chainWalk = undefined;
+  // One collection when asked. "Search again" on a single NFT used to
+  // empty this for every collection, so retrying one failed read threw
+  // away every good read the page had made and the next tab re-walked
+  // the chain for nothing.
+  if (!collection) { cache.clear(); return; }
+  for (const key of [...cache.keys()]) {
+    if (key.startsWith(`${collection}::`)) cache.delete(key);
+  }
 }
 
 // ─── indexer path ──────────────────────────────────────────────────────── //
@@ -213,49 +223,154 @@ async function fetchFromIndexer(
 
 // ─── on-chain fallback path ────────────────────────────────────────────── //
 
+/**
+ * The whole blends table, grouped by collection, walked once.
+ *
+ * This scan reads EVERY blend on the contract and then keeps the ones
+ * whose collection matches. It always did; the collection filter is
+ * client side because the table is keyed by blend_id and nothing else.
+ * What it did not do was remember the rest of the walk, so listing a
+ * second collection walked all 45,000 blends again for the sake of a
+ * different filter. A page that pre-reads eight collections did it eight
+ * times: measured at roughly 45 MiB and 30 requests each, so 350 MiB and
+ * 240 requests to say something the first walk already knew.
+ *
+ * One walk, shared. The second collection is free, and the eighth is too.
+ */
+/**
+ * Held only as long as it is useful, because it is big.
+ *
+ * The grouped rows are every blend on WAX: measured at 97 MiB of heap.
+ * That is a fine thing to have for the half minute in which a page reads
+ * eight collections and a fine thing to be holding on a phone ten minutes
+ * later. So it is released as soon as the reader that asked for it says it
+ * is done, and expires on its own shortly after in case nobody says.
+ */
+const WALK_TTL_MS = 90_000;
+
+/**
+ * Everyone currently waiting on the walk, so they all see it move.
+ *
+ * The callback used to be captured when the walk started. Anyone who
+ * joined a walk already in flight got no events at all until it finished,
+ * which on the Recipes tab meant a progress bar pinned at 0% and a button
+ * reading "Falling back to on-chain scan" for the whole scan. The warm
+ * pass starts most walks and passes no callback, so that was the normal
+ * case rather than the rare one.
+ */
+const walkWatchers = new Set<ProgressCb>();
+
+let chainWalk: { at: number; rows: Promise<Map<string, RawBlend[]>> } | undefined;
+let chainWalkTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Drops the shared walk. The per-collection results stay cached, so this
+ * costs nothing already read; it only means the next unread collection
+ * pays for its own walk.
+ */
+export function releaseChainWalk(): void {
+  // Not while somebody is still watching it. The lab's warm pass calls
+  // this when its own workers finish, and the Recipes tab can be part way
+  // through the same walk: dropping the memo there would make its next
+  // read start a second walk of the whole table.
+  if (walkWatchers.size > 0) return;
+  chainWalk = undefined;
+  if (chainWalkTimer) { clearTimeout(chainWalkTimer); chainWalkTimer = undefined; }
+}
+
+function walkAllBlends(onProgress?: ProgressCb): Promise<Map<string, RawBlend[]>> {
+  if (chainWalk && Date.now() - chainWalk.at < WALK_TTL_MS) {
+    if (onProgress) {
+      walkWatchers.add(onProgress);
+      void chainWalk.rows.finally(() => walkWatchers.delete(onProgress));
+    }
+    return chainWalk.rows;
+  }
+  if (onProgress) walkWatchers.add(onProgress);
+  const tell = (p: DiscoveryProgress) => {
+    for (const w of walkWatchers) w(p);
+  };
+  // Declared before the body so the body can check it is still the walk
+  // the module is holding, rather than one a retry has replaced.
+  let current: { at: number; rows: Promise<Map<string, RawBlend[]>> } | undefined;
+  const rows = (async (): Promise<Map<string, RawBlend[]>> => {
+    tell({ source: 'on_chain', progress: 0.02, message: 'Probing chain head…' });
+    const tail = await getTableRows<RawBlend>({
+      code: 'blend.nefty',
+      scope: 'blend.nefty',
+      table: 'blends',
+      limit: 1,
+      reverse: true,
+    });
+    const headFromProbe = tail.length ? BigInt(String(tail[0].blend_id ?? 0)) + 1n : 0n;
+    const headId = headFromProbe > 1000n ? headFromProbe : 80_000n;
+
+    const ranges: { from: bigint; to: bigint }[] = [];
+    for (let from = 0n; from < headId && ranges.length < CHAIN_MAX_CHUNKS; from += CHAIN_CHUNK_SIZE) {
+      ranges.push({ from, to: from + CHAIN_CHUNK_SIZE });
+    }
+
+    let done = 0;
+    const total = ranges.length;
+    const byCollection = new Map<string, RawBlend[]>();
+
+    await Promise.all(
+      ranges.map(async (range) => {
+        try {
+          for (const r of await scanRange(range.from, range.to)) {
+            const c = String(r.collection_name ?? '');
+            if (!c) continue;
+            const bucket = byCollection.get(c);
+            if (bucket) bucket.push(r);
+            else byCollection.set(c, [r]);
+          }
+        } finally {
+          done++;
+          tell({
+            source: 'on_chain',
+            progress: 0.05 + 0.9 * (done / total),
+            message: `Scanning chain: ${done}/${total} ranges`,
+          });
+        }
+      }),
+    );
+    // Stamped on completion rather than on start. A walk that takes half a
+    // minute was otherwise a third of the way to expiry before its first
+    // reader could touch it.
+    //
+    // And evicted by a timer, not by the next caller. Checking the age on
+    // the way in means the map is only dropped when somebody asks for
+    // another one, so a person who lists one collection and then reads
+    // the page holds every blend on WAX, 63 MiB of it, for as long as the
+    // tab is open. The lab's warm pass releases it sooner; this is for
+    // everybody who never goes there.
+    if (current && chainWalk === current) {
+      chainWalk.at = Date.now();
+      if (chainWalkTimer) clearTimeout(chainWalkTimer);
+      chainWalkTimer = setTimeout(() => {
+        if (current && chainWalk === current) releaseChainWalk();
+      }, WALK_TTL_MS);
+      // Node keeps the process alive for a pending timer; a five minute
+      // script should not wait on this one.
+      (chainWalkTimer as unknown as { unref?: () => void }).unref?.();
+    }
+    return byCollection;
+  })();
+  current = { at: Date.now(), rows };
+  chainWalk = current;
+  // A walk that failed must not be the answer for the next five minutes,
+  // and must not clear a healthy walk that replaced it in the meantime.
+  void rows.catch(() => { if (current && chainWalk === current) releaseChainWalk(); })
+    .finally(() => { if (onProgress) walkWatchers.delete(onProgress); });
+  return rows;
+}
+
 async function fetchFromChain(
   collection: string,
   opts: { includeInactive: boolean; onProgress?: ProgressCb },
 ): Promise<DiscoveredBlend[]> {
-  opts.onProgress?.({ source: 'on_chain', progress: 0.02, message: 'Probing chain head…' });
-  const tail = await getTableRows<RawBlend>({
-    code: 'blend.nefty',
-    scope: 'blend.nefty',
-    table: 'blends',
-    limit: 1,
-    reverse: true,
-  });
-  const headFromProbe = tail.length ? BigInt(String(tail[0].blend_id ?? 0)) + 1n : 0n;
-  const headId = headFromProbe > 1000n ? headFromProbe : 80_000n;
-
-  const ranges: { from: bigint; to: bigint }[] = [];
-  for (let from = 0n; from < headId && ranges.length < CHAIN_MAX_CHUNKS; from += CHAIN_CHUNK_SIZE) {
-    ranges.push({ from, to: from + CHAIN_CHUNK_SIZE });
-  }
-
-  let done = 0;
-  const total = ranges.length;
-  const filtered: RawBlend[] = [];
-
-  await Promise.all(
-    ranges.map(async (range) => {
-      try {
-        const rows = await scanRange(range.from, range.to);
-        for (const r of rows) {
-          if (r.collection_name === collection) filtered.push(r);
-        }
-      } finally {
-        done++;
-        opts.onProgress?.({
-          source: 'on_chain',
-          progress: 0.05 + 0.9 * (done / total),
-          message: `Scanning chain: ${done}/${total} ranges (${filtered.length} match so far)`,
-        });
-      }
-    }),
-  );
-
-  const out = shapeAndFilter(filtered, opts.includeInactive);
+  const byCollection = await walkAllBlends(opts.onProgress);
+  const out = shapeAndFilter(byCollection.get(collection) ?? [], opts.includeInactive);
   opts.onProgress?.({
     source: 'on_chain',
     progress: 1,

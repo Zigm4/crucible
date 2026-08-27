@@ -120,6 +120,23 @@ export interface InventoryState {
   tokensFor: string;
   /** Free text over ticker and issuer, for wallets holding dozens. */
   tokensQ: string;
+  /**
+   * Per collection: can a recipe take an NFT from it, and which ones.
+   *
+   * Filled in the background once the inventory is on screen, because the
+   * first look at a collection costs about half a minute while the
+   * NeftyBlocks indexer is down and blends have to be walked on chain.
+   * Doing it before anybody clicks turns that into nothing at all.
+   */
+  matchers: Record<string, import('./bridge').Matcher | 'loading' | 'failed'>;
+  /** Which wallet the matchers belong to, so they cannot outlive it. */
+  matchersFor: string;
+  /** Show only NFTs a recipe will take. */
+  usableOnly: boolean;
+  /** How many collections this wallet holds, read or not. */
+  collectionsHeld: number;
+  /** NFTs in collections past the read limit, never tested for a use. */
+  assetsUnread: number;
   /** Empty balances are hidden by default; this shows them. */
   tokensShowEmpty: boolean;
 }
@@ -133,6 +150,8 @@ export function emptyInventoryState(): InventoryState {
     uses: undefined, usesState: 'idle',
     tokensOpen: false, tokens: undefined, tokensState: 'idle', tokensFor: '',
     tokensQ: '', tokensShowEmpty: false,
+    matchers: {}, matchersFor: '', usableOnly: false,
+    collectionsHeld: 0, assetsUnread: 0,
   };
 }
 
@@ -257,11 +276,28 @@ export function facetValue(a: AtomicAsset, key: string): string {
  * does not collapse its own list to a single row. Standard faceted search
  * behaviour, and without it the second click in a facet is impossible.
  */
+/** True once at least one collection's recipes have been read. */
+export function knowsAnyRecipes(st: InventoryState): boolean {
+  return Object.values(st.matchers).some((m) => typeof m === 'object');
+}
+
+/** True when the collection's recipes are known AND one of them takes this. */
+export function isUsable(a: AtomicAsset, st: InventoryState): boolean {
+  const m = st.matchers[a.collection?.collection_name ?? ''];
+  return typeof m === 'object' && m.takes(a);
+}
+
 export function applyFilter(
   assets: AtomicAsset[], st: InventoryState, skipKey?: string,
 ): AtomicAsset[] {
   const terms = st.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
   return assets.filter((a) => {
+    // Applied first because it is the cheapest and the most selective,
+    // and only once something is actually known. Somebody opening a
+    // shared link with this on arrives before any collection has been
+    // read, and hiding everything because nothing is known yet would
+    // show them an empty inventory and no reason for it.
+    if (st.usableOnly && knowsAnyRecipes(st) && !isUsable(a, st)) return false;
     if (terms.length) {
       const hay = haystack(a);
       // Every word must appear somewhere. Typing more always narrows.
@@ -407,6 +443,10 @@ export function toggleFacet(
 }
 
 export function clearFilters(st: InventoryState): void {
+  // It is a filter like any other, and it was the one filter Reset could
+  // not undo. With the toggle hidden while nothing was read yet, that was
+  // an empty inventory with no way out of it.
+  st.usableOnly = false;
   st.q = '';
   st.include = {};
   st.exclude = {};
@@ -417,7 +457,9 @@ export function clearFilters(st: InventoryState): void {
 export function activeFilterCount(st: InventoryState): number {
   const n = (r: Record<string, string[]>) =>
     Object.values(r).reduce((s, v) => s + v.length, 0);
-  return (st.q.trim() ? 1 : 0) + n(st.include) + n(st.exclude);
+  // The usable toggle counts too, so "clear N filters" appears for it and
+  // an inventory narrowed by it never looks unfiltered.
+  return (st.q.trim() ? 1 : 0) + n(st.include) + n(st.exclude) + (st.usableOnly ? 1 : 0);
 }
 
 /**
@@ -458,6 +500,10 @@ export function encodeInventoryView(st: InventoryState): string {
   if (st.sortKey !== 'received') parts.push(`sort=${enc(st.sortKey)}`);
   if (!st.sortDesc) parts.push('asc=1');
   if (st.cardSize !== 96) parts.push(`size=${st.cardSize}`);
+  // In the link like every other view control. The page's promise is that
+  // a filtered inventory is something you can send somebody, and this is
+  // a filter.
+  if (st.usableOnly) parts.push('usable=1');
   // What is being looked at travels too: "look at this one" is the most
   // obvious reason to send somebody an inventory link.
   if (st.openAsset) parts.push(`asset=${enc(st.openAsset)}`);
@@ -477,6 +523,7 @@ export function decodeInventoryView(text: string, st: InventoryState): void {
     if (key === 'sort') { st.sortKey = decodeURIComponent(raw) || 'received'; continue; }
     if (key === 'asc') { st.sortDesc = raw !== '1'; continue; }
     if (key === 'size') { st.cardSize = clampCardSize(raw); continue; }
+    if (key === 'usable') { st.usableOnly = raw === '1'; continue; }
     if (key === 'asset') { st.openAsset = decodeURIComponent(raw); continue; }
     if (key === 'tpl') { st.openTemplate = decodeURIComponent(raw); continue; }
     for (const v of raw.split(',')) {

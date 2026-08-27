@@ -24,8 +24,22 @@ export const WAX_RPC_ENDPOINTS = [
   'https://wax.eu.eosamsterdam.net',
 ];
 
+/**
+ * AtomicAssets API hosts, in the order they are tried.
+ *
+ * `aa.wax.atomichub.io` used to lead this list and no longer resolves at
+ * all: the name is NXDOMAIN. It cost nothing per call, but it was the
+ * first thing every read tried, and it is gone rather than slow.
+ *
+ * Note the two remaining hosts are not interchangeable. Every host here
+ * serves `/atomicassets/v1/*`, but only NeftyBlocks' own host serves
+ * `/neftyblocks/v1/blends`, and that host has been answering 522 (its
+ * origin is down) for as long as this was being written. Blend discovery
+ * therefore falls back to the on-chain scan, which is slow but always
+ * true. `atomicIndexerDown` below exists so that fallback is paid once
+ * per session instead of once per collection.
+ */
 export const ATOMIC_API_ENDPOINTS = [
-  'https://aa.wax.atomichub.io',
   'https://wax.api.atomicassets.io',
   'https://aa-wax-public1.neftyblocks.com',
 ];
@@ -222,7 +236,53 @@ export async function getLastAction(account: string): Promise<LastAction | null>
  * Try each atomicassets API host until one answers OK.
  * Returns the parsed JSON body of `path` (a path starting with /).
  */
+/**
+ * Routes that only one host serves, and how long ago every host failed on
+ * one of them.
+ *
+ * Without this, a page that lists blends for six collections pays the
+ * full ten second timeout against a dead host six times over, having
+ * already learned the answer the first time. The note is deliberately
+ * short lived: an indexer that comes back should be used again, and
+ * nothing here is worth a stale cache.
+ */
+const INDEXER_DOWN_MS = 90_000;
+const indexerDownAt = new Map<string, number>();
+
+/**
+ * Which routes this note is allowed to cover.
+ *
+ * Deliberately a short list rather than a prefix of any path. Keying on
+ * the first two segments put every `/atomicassets/v1/...` read in one
+ * bucket, so a single missing template (a 404, which is an answer, not an
+ * outage) blanked asset listing, template reads and collection reads for
+ * ninety seconds. The note exists for exactly one problem: a route that
+ * NO host serves, which today is the NeftyBlocks blends route, and which
+ * costs a full timeout to rediscover per collection.
+ */
+const NOTEWORTHY_ROUTES = ['/neftyblocks/v1/blends'];
+
+/** The route this path belongs to, or '' when the note does not apply. */
+function routeKey(path: string): string {
+  const bare = path.split('?')[0];
+  return NOTEWORTHY_ROUTES.find((r) => bare.startsWith(r)) ?? '';
+}
+
+/** True when every host failed this route recently. */
+export function atomicIndexerDown(path: string): boolean {
+  const key = routeKey(path);
+  if (!key) return false;
+  const at = indexerDownAt.get(key);
+  return at !== undefined && Date.now() - at < INDEXER_DOWN_MS;
+}
+
 export async function atomicFetch<T = unknown>(path: string): Promise<T> {
+  // Fail immediately rather than re-timing-out against hosts that were
+  // all unreachable moments ago. The caller's fallback runs sooner and
+  // the person waiting sees the answer sooner.
+  if (atomicIndexerDown(path)) {
+    throw new Error(`No AtomicAssets host answered ${routeKey(path)} recently`);
+  }
   let lastErr: unknown;
   for (const base of ATOMIC_API_ENDPOINTS) {
     const ctrl = new AbortController();
@@ -236,6 +296,8 @@ export async function atomicFetch<T = unknown>(path: string): Promise<T> {
         throw new Error(`AtomicAssets API: ${body.message ?? 'unknown error'}`);
       }
       // atomicassets convention: { success: true, data: ..., query_time: ... }
+      const okKey = routeKey(path);
+      if (okKey) indexerDownAt.delete(okKey);
       return (body.data ?? body) as T;
     } catch (err) {
       lastErr = ctrl.signal.aborted ? new Error(`${base} timed out after ${ATOMIC_TIMEOUT_MS}ms`) : err;
@@ -243,11 +305,20 @@ export async function atomicFetch<T = unknown>(path: string): Promise<T> {
       clearTimeout(timer);
     }
   }
+  // Every host refused the same route, so the next caller should not
+  // spend the same ten seconds discovering it again.
+  const key = routeKey(path);
+  if (key) indexerDownAt.set(key, Date.now());
   throw new Error(
     `All AtomicAssets endpoints failed. Last error: ${
       lastErr instanceof Error ? lastErr.message : String(lastErr)
     }`,
   );
+}
+
+/** Forgets the outage note, so a retry really does try again. */
+export function clearAtomicIndexerDown(): void {
+  indexerDownAt.clear();
 }
 
 /**

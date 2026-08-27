@@ -316,6 +316,299 @@ async function main() {
     say(!threw, 'every storage call is survivable when storage is not there');
   }
 
+  console.log('\n=== PHASE Q - what the second review caught ===');
+  {
+    const b = await import('./.build/bridge.mjs');
+    const fs = await import('node:fs/promises');
+    const srcOf = (f) => fs.readFile(new URL(`../src/${f}`, import.meta.url), 'utf8');
+    const labSrc = await srcOf('ui/lab.ts');
+    const invSrc = await srcOf('ui/inventory.ts');
+
+    // The scan reads the WHOLE blends table and filters client side. Doing
+    // that per collection meant eight identical 45 MiB walks on one page
+    // load. One walk, shared, is the difference between preloading and a
+    // quarter of a gigabyte.
+    const discoverSrc = await srcOf('nefty/discover.ts');
+    say(/walkAllBlends/.test(discoverSrc) && /Map<string, RawBlend\[\]>/.test(discoverSrc),
+        'the blends table is walked once and grouped by collection');
+    say(!/for \(const c of order\) warmCollection/.test(labSrc),
+        'and the loop that started all eight collections at once is gone, so the throttle throttles');
+
+    let t = Date.now();
+    await b.usableIndex('underpunks55', '');
+    const first = Date.now() - t;
+    t = Date.now();
+    await b.usableIndex('cigalepixeld', '');
+    const second = Date.now() - t;
+    say(second < first,
+        `a second collection costs ${second}ms against the first collection's ${first}ms`);
+
+    // An attribute rule names a collection, and it is not always the one
+    // the blend lives in. Dropping it marked NFTs no recipe can take.
+    const m = await b.usableIndex('landboxgames', '');
+    const foreign = {
+      asset_id: '1', template: { template_id: '1' },
+      collection: { collection_name: 'landboxgames' },
+      schema: { schema_name: 'monsters' }, data: { rarity: 'Common' },
+    };
+    say(!m.takes(foreign),
+        'an attribute rule that names another collection does not mark this one');
+    const bridgeSrc = await srcOf('ui/bridge.ts');
+    say(/rule\.collection && rule\.collection !== coll/.test(bridgeSrc),
+        'because the rule carries the collection it named');
+
+    // The count covered eight collections and was printed as a fact about
+    // the wallet.
+    say(/assetsUnread/.test(labSrc) && /assetsUnread/.test(invSrc),
+        'the NFTs in collections past the read limit are counted');
+    say(/not checked: only your/.test(labSrc),
+        'and the screen says how much of the wallet was actually read');
+    say(/inv\.assetsUnread > 0 \?/.test(labSrc),
+        'and an unread collection is named on screen rather than counted as having no recipes');
+
+    // The toggle could strand the page: empty grid, no control, no Reset.
+    const invMod = await import('./.build/inventory.mjs');
+    const st = invMod.emptyInventoryState();
+    st.usableOnly = true;
+    say(invMod.activeFilterCount(st) === 1, 'the toggle counts as a filter, so "clear 1 filter" appears');
+    invMod.clearFilters(st);
+    say(st.usableOnly === false, 'and Reset turns it off');
+    say(/usableKnown \|\| inv\.usableOnly/.test(labSrc),
+        'and the button is rendered whenever it is on, so it can always be turned off');
+
+    // Search again used to delete every mark in the collection for good.
+    say(/state\.inv\.matchers\[c\] = 'loading'/.test(labSrc)
+        && /void usableIndex\(c, state\.actor\)/.test(labSrc),
+        'Search again rebuilds the collection\'s marks instead of erasing them');
+
+    // The wait screen asserted an outage it had not checked.
+    say(/indexerIsDown\(\)/.test(labSrc) && /export function indexerIsDown/.test(bridgeSrc),
+        'the indexer is only called down when it actually is');
+    const rpcSrc = await srcOf('chain/rpc.ts');
+    say(/NOTEWORTHY_ROUTES/.test(rpcSrc),
+        'and the outage note covers one route, not every atomicassets read');
+
+    const chunks2 = (await fs.readdir(new URL('./.build', import.meta.url)))
+      .filter((f) => f.startsWith('rpc-'));
+    const rpc2 = await import(`./.build/${chunks2[0]}`);
+    const down = Object.values(rpc2).find(
+      (v) => typeof v === 'function' && String(v).startsWith('function atomicIndexerDown'));
+    say(down && down('/atomicassets/v1/templates/foo/1') === false,
+        'a missing template can never blank the asset reads');
+
+    // The memo outlived the freshness of what it held.
+    say(/WARM_TTL_MS/.test(bridgeSrc),
+        'the per-collection memo expires, so an ended blend stops being offered');
+
+    // One walk instead of eight is the right trade only if the thing it
+    // keeps does not sit in a phone's memory afterwards. Every blend on
+    // WAX is tens of megabytes.
+    const disc = await import('./.build/discover.mjs');
+    say(typeof disc.releaseChainWalk === 'function',
+        'the shared walk can be released once the collections that wanted it are read');
+    say(/releaseChainWalk\(\)/.test(labSrc) && /Promise\.all\(running\)/.test(labSrc),
+        'and the warm pass releases it when its workers finish');
+    if (global.gc) {
+      // A fresh walk, so what is measured is the walk and not whatever an
+      // earlier phase happened to leave on the heap. The difference is
+      // the honest figure here: absolute heap drifts, freed memory does
+      // not.
+      // Both layers: the bridge memoises the four listings per collection
+      // on top of the lister's own cache, so clearing one alone would
+      // hand back the memo and never walk.
+      b.forgetCollection('cigalepixeld', '');
+      disc.clearDiscoverCache();
+      global.gc(); global.gc();
+      const held0 = process.memoryUsage().heapUsed;
+      await b.usableIndex('cigalepixeld', '');
+      global.gc();
+      const held = process.memoryUsage().heapUsed;
+      disc.releaseChainWalk();
+      global.gc(); global.gc();
+      const freed = (held - process.memoryUsage().heapUsed) / 1048576;
+      say(freed > 10,
+          `releasing the walk frees ${freed.toFixed(1)} MiB (it grew the heap by ${((held - held0) / 1048576).toFixed(1)} MiB)`);
+      const t2 = Date.now();
+      const again = await b.usableIndex('cigalepixeld', '');
+      say(Date.now() - t2 < 100 && again.recipes >= 0,
+          'and the collection already read stays instant afterwards');
+    } else {
+      say(true, 'memory release measured only under --expose-gc, skipped here');
+    }
+    say(/WALK_TTL_MS/.test(discoverSrc),
+        'and it expires on its own if nobody releases it');
+
+    // Refresh means the NFTs changed, so what they are good for changed.
+    say(/if \(kind === 'inv-reload'\) state\.inv\.matchersFor = '';/.test(labSrc),
+        'Refresh re-reads the recipes instead of trusting the previous pass');
+
+    // --- what the second review caught ---
+
+    // The TTL was checked on the way IN, so nothing dropped the map unless
+    // somebody asked for another walk. Anyone who listed one collection and
+    // then read the page held every blend on WAX for the life of the tab.
+    say(/chainWalkTimer = setTimeout/.test(discoverSrc),
+        'the shared walk is evicted by a timer, not by the next caller happening to arrive');
+    say(/\.unref\?\.\(\)/.test(discoverSrc),
+        'and that timer does not hold a script open');
+
+    // Progress belonged to whoever started the walk. Everyone who joined
+    // one already running watched a bar frozen at zero, which is the
+    // normal case: the warm pass starts most walks and passes no callback.
+    say(/walkWatchers/.test(discoverSrc),
+        'every waiter is told how the walk is going, not only the one that started it');
+    {
+      const disc2 = await import('./.build/discover.mjs');
+      b.forgetCollection('northshireup', '');
+      disc2.clearDiscoverCache();
+      const starter = [];
+      const joiner = [];
+      const p1 = disc2.listBlends({ collection: 'northshireup', includeInactive: false,
+        onProgress: (x) => starter.push(x) });
+      await new Promise((r) => setTimeout(r, 300));
+      const p2 = disc2.listBlends({ collection: 'cigalepixeld', includeInactive: false,
+        onProgress: (x) => joiner.push(x) });
+      await Promise.all([p1, p2]);
+      const moved = joiner.filter((x) => x.progress > 0 && x.progress < 1).length;
+      say(moved > 0,
+          `a caller that joins a walk in flight sees it move (${moved} progress events, was 0)`);
+      say(starter.length > 0, 'and the one that started it still does');
+    }
+
+    // A saved view is a set of filters, not a different wallet.
+    say(/const matchers = state\.inv\.matchers;/.test(labSrc)
+        && /state\.inv\.matchers = matchers;/.test(labSrc),
+        'loading a saved view keeps the marks it did not ask to lose');
+    const viewCase = labSrc.split("case 'inv-load-view'")[1]?.split('case ')[0] ?? '';
+    say(/warmInventoryRecipes\(\)/.test(viewCase),
+        'and starts the read if there was none, so a view saved with the toggle on is not stranded');
+
+    // The count can only ever be a floor: one collection each, NeftyBlocks
+    // only, and a blend can live elsewhere and still take your NFT.
+    say(/At least \$\{usableCount/.test(labSrc) && !/usableFloor \? 'At least '/.test(labSrc),
+        'the usable count is always stated as a floor, never as a total');
+    say(/of the \$\{inv\.assets\.length/.test(labSrc),
+        'and it says what it is a count OF, so a filter cannot make it read as impossible');
+    say(/own collection are searched, so this is a floor/.test(labSrc),
+        'and the screen says why');
+  }
+
+  console.log('\n=== PHASE P - the wait, and what is worth clicking ===');
+  {
+    const b = await import('./.build/bridge.mjs');
+    const fs = await import('node:fs/promises');
+    const srcOf = (f) => fs.readFile(new URL(`../src/${f}`, import.meta.url), 'utf8');
+
+    // The reason "What can I do with this?" took half a minute: the first
+    // AtomicAssets host in the list stopped existing (NXDOMAIN), the only
+    // host that serves /neftyblocks/v1/blends has been answering 522, and
+    // every collection paid the ten second timeout again before falling
+    // back to the on-chain walk.
+    const rpcSrc = await srcOf('chain/rpc.ts');
+    // The list itself, not the file: the comment above it names the dead
+    // host precisely so nobody puts it back.
+    const list = rpcSrc.split('export const ATOMIC_API_ENDPOINTS = [')[1]?.split(']')[0] ?? '';
+    say(list.length > 0 && !list.includes('aa.wax.atomichub.io'),
+        'the endpoint that no longer resolves is out of the list');
+    say(/atomicIndexerDown/.test(rpcSrc),
+        'and a route every host refused is not re-tried for a while');
+
+    const chunks = (await fs.readdir(new URL('./.build', import.meta.url)))
+      .filter((f) => f.startsWith('rpc-'));
+    const rpc = await import(`./.build/${chunks[0]}`);
+    const atomic = Object.values(rpc).find(
+      (v) => typeof v === 'function' && String(v).startsWith('async function atomicFetch'));
+    const dead = '/neftyblocks/v1/blends?collection_name=underpunks55&limit=1';
+    // An earlier phase may already have learned this route is down, and
+    // then "the first attempt" would be measured as a cache hit.
+    const forget = Object.values(rpc).find(
+      (v) => typeof v === 'function' && String(v).startsWith('function clearAtomicIndexerDown'));
+    forget?.();
+    let t0 = Date.now();
+    await atomic(dead).catch(() => {});
+    const first = Date.now() - t0;
+    t0 = Date.now();
+    await atomic(dead).catch(() => {});
+    const second = Date.now() - t0;
+    say(second < 200 && second < first,
+        `a dead route costs ${first}ms once, then ${second}ms, instead of ${first}ms per collection`);
+    const live = Date.now();
+    const rows = await atomic('/atomicassets/v1/assets?limit=1').catch(() => undefined);
+    say(Array.isArray(rows), `and a route that works is untouched by that (${Date.now() - live}ms)`);
+
+    // Warming: the click should read an answer, not start a scan.
+    t0 = Date.now();
+    const index = await b.usableIndex('underpunks55', '');
+    const cold = Date.now() - t0;
+    say(index.recipes > 0, `a collection reduces to a matcher (${index.recipes} live recipes, ${cold}ms cold)`);
+    const shroom = {
+      asset_id: '1', template: { template_id: '280421' },
+      collection: { collection_name: 'underpunks55' }, schema: { schema_name: 'up.shrooms' }, data: {},
+    };
+    say(index.takes(shroom), 'and it marks an NFT a blend takes by schema, not only by template');
+    say(!index.takes({ asset_id: '2', template: { template_id: '999999999' },
+      collection: { collection_name: 'underpunks55' }, schema: { schema_name: 'nope' }, data: {} }),
+        'and leaves an unrelated NFT unmarked');
+
+    // The matcher must never disagree with the real answer in the
+    // direction that matters: a mark it puts on has to be defensible.
+    const real = await b.whatUsesThis(shroom, '');
+    say(real.uses.length > 0 && index.takes(shroom),
+        'a marked NFT really does have a use when asked properly');
+
+    t0 = Date.now();
+    await b.whatUsesThis(shroom, '');
+    const warm = Date.now() - t0;
+    say(warm < 100, `once read, the question is answered in ${warm}ms instead of ${cold}ms`);
+
+    // Honesty about a failed source, which is what the browser sandbox
+    // produced by resetting the chain connections: a mark is a fact, an
+    // absence is not.
+    say(typeof index.partial === 'boolean',
+        'the matcher says whether every source answered');
+    const labSrc = await srcOf('ui/lab.ts');
+    say(/At least /.test(labSrc) && /there may be more/.test(labSrc),
+        'and the count is reported as a floor when one did not');
+
+    // Retry, which is what the panel offered no way to do.
+    say(/data-lab="inv-uses-again"/.test(labSrc), 'a failed search can be run again');
+    say(/forgetCollection/.test(labSrc),
+        'and the retry drops the cached failure rather than replaying it');
+    const bridgeSrc = await srcOf('ui/bridge.ts');
+    say(/clearAtomicIndexerDown/.test(bridgeSrc),
+        'including the note that says the indexer is down');
+
+    // The mark itself.
+    const cssSrc = await srcOf('ui/components.css');
+    say(/\.inv-all-usable \.inv-spark \{ display: none; \}/.test(cssSrc),
+        'the mark disappears when the filter makes it true of everything');
+    say(/isUsable\(a, inv\)/.test(labSrc), 'and the grid and the list both carry it');
+
+    // The toggle travels in the link like every other view control, and
+    // arriving with it on before anything is read must not show an empty
+    // inventory with no reason given.
+    const invMod = await import('./.build/inventory.mjs');
+    const st = invMod.emptyInventoryState();
+    st.usableOnly = true;
+    say(invMod.encodeInventoryView(st).includes('usable=1'), 'the toggle is written into the link');
+    const back = invMod.emptyInventoryState();
+    invMod.decodeInventoryView('usable=1', back);
+    say(back.usableOnly === true, 'and read back out of it');
+    const assets = [
+      { asset_id: '1', collection: { collection_name: 'underpunks55' }, schema: { schema_name: 'x' }, data: {} },
+      { asset_id: '2', collection: { collection_name: 'other' }, schema: { schema_name: 'y' }, data: {} },
+    ];
+    say(invMod.applyFilter(assets, back).length === 2,
+        'with nothing read yet it hides nothing, rather than emptying the page');
+    back.matchers = { underpunks55: { recipes: 1, partial: false, takes: (a) => a.asset_id === '1' } };
+    back.matchersFor = 'someone';
+    say(invMod.applyFilter(assets, back).length === 1,
+        'and once a collection is read it filters for real');
+    say(invMod.knowsAnyRecipes(invMod.emptyInventoryState()) === false
+        && invMod.knowsAnyRecipes(back) === true,
+        'the difference between the two is a function, not a guess');
+  }
+
   console.log('\n=== PHASE O - each thing the review caught, pinned ===');
   {
     const w = await import('./.build/wallet.mjs');

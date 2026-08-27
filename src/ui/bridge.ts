@@ -24,8 +24,9 @@
  * says that is what it looked at rather than implying it looked further.
  */
 import type { AtomicAsset } from '../atomic/assets';
-import { listBlends } from '../nefty/discover';
-import { listUpgrades } from '../nefty/upgrades';
+import { listBlends, clearDiscoverCache } from '../nefty/discover';
+import { listUpgrades, clearUpgradesCache } from '../nefty/upgrades';
+import { clearAtomicIndexerDown, atomicIndexerDown } from '../chain/rpc';
 import { listPackDesigns } from '../nefty/packs';
 import { listNeftyPackDesigns } from '../nefty/neftyPacks';
 import {
@@ -101,18 +102,220 @@ function reasonFor(a: AtomicAsset, ing: IngredientVariant): string {
  * The screen says which ones did not answer rather than presenting a
  * short list as a complete one.
  */
+/**
+ * The four listings for one collection, kept for as long as the page is
+ * open.
+ *
+ * Each lister has a cache of its own, so this is not about avoiding
+ * repeat reads. It is about being able to START the reads before anybody
+ * asks: the first look at a collection costs about thirty seconds while
+ * the NeftyBlocks indexer is down and blends have to be walked on chain,
+ * and thirty seconds after a click is a broken feature where thirty
+ * seconds before one is invisible.
+ */
+const warmed = new Map<string, { at: number; sources: Promise<Sources> }>();
+
+/**
+ * Same five minutes the listers themselves use. Without it this memo
+ * outlived their freshness: a blend that ended at noon was still being
+ * offered at one o'clock, with a link into the runner.
+ */
+const WARM_TTL_MS = 5 * 60_000;
+
+interface Sources {
+  blends: PromiseSettledResult<Awaited<ReturnType<typeof listBlends>>>;
+  upgrades: PromiseSettledResult<Awaited<ReturnType<typeof listUpgrades>>>;
+  packs: PromiseSettledResult<Awaited<ReturnType<typeof listPackDesigns>>>;
+  neftyPacks: PromiseSettledResult<Awaited<ReturnType<typeof listNeftyPackDesigns>>>;
+}
+
+function readSources(collection: string, actor: string): Promise<Sources> {
+  const key = `${collection}::${actor}`;
+  const hit = warmed.get(key);
+  if (hit && Date.now() - hit.at < WARM_TTL_MS) return hit.sources;
+  const p = (async (): Promise<Sources> => {
+    const [blends, upgrades, packs, neftyPacks] = await Promise.allSettled([
+      listBlends({ collection, includeInactive: false, actor }),
+      listUpgrades({ collection, includeInactive: false }),
+      listPackDesigns(collection),
+      listNeftyPackDesigns(collection),
+    ]);
+    return { blends, upgrades, packs, neftyPacks };
+  })();
+  warmed.set(key, { at: Date.now(), sources: p });
+  // A reading that failed everywhere should not be the answer for the
+  // next five minutes either.
+  void p.then((r) => {
+    const allFailed = Object.values(r).every((x) => x.status === 'rejected');
+    if (allFailed) warmed.delete(key);
+  }, () => warmed.delete(key));
+  return p;
+}
+
+/**
+ * Starts reading a collection's recipes without waiting for the answer.
+ *
+ * Called for the collections a wallet actually holds as soon as its
+ * inventory is on screen, so that clicking an NFT reads a result rather
+ * than starting a scan.
+ */
+export function warmCollection(collection: string, actor = ''): void {
+  if (!collection) return;
+  void readSources(collection, actor).catch(() => {});
+}
+
+/** True when this collection's recipes are already in hand. */
+export function isWarm(collection: string, actor = ''): boolean {
+  return settled.has(`${collection}::${actor}`);
+}
+
+const settled = new Set<string>();
+
+/** Throws away what was read, so a retry is a real retry. */
+/**
+ * Whether the blends indexer is currently known to be unreachable.
+ *
+ * The wait screen asserted it as a fact whenever a collection had not
+ * been read yet, which is a different thing entirely and was false every
+ * time the indexer was healthy.
+ */
+export function indexerIsDown(): boolean {
+  return atomicIndexerDown('/neftyblocks/v1/blends');
+}
+
+export function forgetCollection(collection: string, actor = ''): void {
+  warmed.delete(`${collection}::${actor}`);
+  settled.delete(`${collection}::${actor}`);
+  // This collection only. Emptying the shared caches would make a retry
+  // on one NFT cost every other collection the page had already read.
+  clearDiscoverCache(collection);
+  clearUpgradesCache(collection);
+  // The exception, and it has to be global: the note only records that a
+  // route was unreachable, and the whole point of pressing Search again
+  // is to find out whether it still is.
+  clearAtomicIndexerDown();
+}
+
+/**
+ * A cheap "would any recipe here take this NFT" test for a whole
+ * collection.
+ *
+ * `whatUsesThis` answers the same question properly, for one NFT, and
+ * costs a walk of every recipe. Marking a grid of two hundred cards that
+ * way is two hundred walks. This reads the collection once and reduces it
+ * to a few sets, so each card costs a lookup.
+ *
+ * Deliberately looser than `whatUsesThis`: it answers "worth looking at",
+ * and the detail panel is where the actual answer lives. It never says
+ * yes where `whatUsesThis` would say no, because both are built from the
+ * same ingredient lists.
+ */
+export interface Matcher {
+  takes(a: AtomicAsset): boolean;
+  /** How many live recipes were read, so the screen can say. */
+  recipes: number;
+  /**
+   * True when one of the four reads failed.
+   *
+   * It matters which way this cuts. A mark is still a fact: the recipe
+   * that puts it there was really read. An absence is not, because the
+   * source that would have justified it may be the one that did not
+   * answer. So the count is reported as a floor and the filter says it
+   * may be hiding something.
+   */
+  partial: boolean;
+}
+
+export async function usableIndex(collection: string, actor = ''): Promise<Matcher> {
+  const { blends, upgrades, packs, neftyPacks } = await readSources(collection, actor);
+  settled.add(`${collection}::${actor}`);
+  const templates = new Set<string>();
+  const schemas = new Set<string>();
+  const collections = new Set<string>();
+  const attributeRules: {
+    collection?: string; schema?: string;
+    attributes: { attribute_name: string; allowed_values?: unknown[] }[];
+  }[] = [];
+  let recipes = 0;
+
+  if (blends.status === 'fulfilled') {
+    for (const b of blends.value.blends) {
+      if (b.status !== 'active') continue;
+      recipes += 1;
+      for (const [kind, p] of b.ingredients ?? []) {
+        if (kind === 'TEMPLATE_INGREDIENT') templates.add(String(p.template_id));
+        else if (kind === 'SCHEMA_INGREDIENT') schemas.add(`${p.collection_name}/${p.schema_name}`);
+        else if (kind === 'COLLECTION_INGREDIENT') collections.add(String(p.collection_name));
+        else if (kind === 'ATTRIBUTE_INGREDIENT') {
+          // The collection the rule names, not the collection the blend
+          // lives in. A blend can sit in one collection and take an NFT
+          // from another, and dropping this marked every NFT that merely
+          // shared a schema name and an attribute value: blend.nefty
+          // 27601 lives in landboxgames and takes a monsterfight NFT.
+          attributeRules.push({
+            collection: p.collection_name,
+            schema: p.schema_name,
+            attributes: p.attributes ?? [],
+          });
+        }
+      }
+    }
+  }
+  if (upgrades.status === 'fulfilled') {
+    for (const u of upgrades.value.upgrades) {
+      if (u.status !== 'active') continue;
+      recipes += 1;
+      for (const t of u.acceptedTemplateIds ?? []) templates.add(String(t));
+      for (const ing of u.ingredients ?? []) {
+        if (ing.kind === 'template') templates.add(String(ing.template_id));
+        else if (ing.kind === 'schema') schemas.add(`${ing.collection_name}/${ing.schema_name}`);
+        else if (ing.kind === 'collection') collections.add(String(ing.collection_name));
+      }
+    }
+  }
+  for (const res of [packs, neftyPacks]) {
+    if (res.status !== 'fulfilled') continue;
+    for (const d of res.value) {
+      // A pack that does not open until next month is not something you
+      // can do today, and the mark means "you can do something with this
+      // now". The detail panel still lists it, with the date.
+      if (d.unlock_time && d.unlock_time * 1000 > Date.now()) continue;
+      recipes += 1;
+      templates.add(String(d.pack_template_id));
+    }
+  }
+
+  return {
+    recipes,
+    partial: [blends, upgrades, packs, neftyPacks].some((r) => r.status === 'rejected'),
+    takes(a: AtomicAsset): boolean {
+      const tpl = String(a.template?.template_id ?? '');
+      if (tpl && templates.has(tpl)) return true;
+      const coll = a.collection?.collection_name ?? '';
+      if (coll && collections.has(coll)) return true;
+      const schema = a.schema?.schema_name ?? '';
+      if (coll && schema && schemas.has(`${coll}/${schema}`)) return true;
+      for (const rule of attributeRules) {
+        if (rule.collection && rule.collection !== coll) continue;
+        if (rule.schema && rule.schema !== schema) continue;
+        if (!rule.attributes.length) continue;
+        const ok = rule.attributes.every((att) => (att.allowed_values ?? [])
+          .map(String).includes(String((a.data ?? {})[att.attribute_name])));
+        if (ok) return true;
+      }
+      return false;
+    },
+  };
+}
+
 export async function whatUsesThis(a: AtomicAsset, actor = ''): Promise<Uses> {
   const collection = a.collection?.collection_name ?? '';
   if (!collection) return { uses: [], scanned: '', partial: false, unreadable: 0 };
   let unreadable = 0;
   const tpl = String(a.template?.template_id ?? '');
 
-  const [blends, upgrades, packs, neftyPacks] = await Promise.allSettled([
-    listBlends({ collection, includeInactive: false, actor }),
-    listUpgrades({ collection, includeInactive: false }),
-    listPackDesigns(collection),
-    listNeftyPackDesigns(collection),
-  ]);
+  const { blends, upgrades, packs, neftyPacks } = await readSources(collection, actor);
+  settled.add(`${collection}::${actor}`);
   const partial = [blends, upgrades, packs, neftyPacks].some((r) => r.status === 'rejected');
   const uses: Use[] = [];
 

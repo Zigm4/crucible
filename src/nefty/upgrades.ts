@@ -444,6 +444,11 @@ export async function loadUpgradeById(upgrade_id: string | number): Promise<Disc
   return toDiscovered(rows[0]);
 }
 
-export function clearUpgradesCache() {
-  cache.clear();
+export function clearUpgradesCache(collection?: string) {
+  // Same reason as clearDiscoverCache: a retry on one collection must not
+  // cost every other collection its read.
+  if (!collection) { cache.clear(); return; }
+  for (const key of [...cache.keys()]) {
+    if (key.startsWith(`${collection}::`)) cache.delete(key);
+  }
 }

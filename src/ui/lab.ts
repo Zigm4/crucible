@@ -36,7 +36,9 @@ import {
 } from '../chain/session';
 import { atomicFetch } from '../chain/rpc';
 import { SUGGESTED_COLLECTIONS } from './collections';
-import { whatUsesThis, checkTokenCost } from './bridge';
+import {
+  whatUsesThis, checkTokenCost, usableIndex, forgetCollection, indexerIsDown,
+} from './bridge';
 import {
   listWalletTokens, filterWalletTokens, emptyCount, displayBalance,
   completenessNote, provenanceNote,
@@ -45,7 +47,7 @@ import {
   emptyInventoryState, loadInventory, applyFilter, facetsOf, sortAssets,
   toggleFacet, clearFilters, activeFilterCount, facetValue, stringify,
   encodeInventoryView, decodeInventoryView, SORT_KEYS, ATTR_PREFIX,
-  CARD_SIZES, clampCardSize, loadTemplateOwners, artworkOf,
+  CARD_SIZES, clampCardSize, loadTemplateOwners, artworkOf, isUsable,
   type InventoryState,
 } from './inventory';
 import {
@@ -61,7 +63,7 @@ import {
 import { loadBlend as loadBlendRow } from '../nefty/blend';
 import { listAuthorizedCollections, isContractAuthorized } from '../atomic/collections';
 import { readCollectionSecurities, executeAdminAction } from '../nefty/admin';
-import { clearDiscoverCache } from '../nefty/discover';
+import { clearDiscoverCache, releaseChainWalk } from '../nefty/discover';
 import { clearUpgradesCache } from '../nefty/upgrades';
 import { clearDropsCache } from '../nefty/drops';
 import { listDropTokens, type DropToken } from '../nefty/dropTokens';
@@ -1844,7 +1846,8 @@ export function applyLabRoute(tool: string, subject: string): void {
     // After the preferences, so a link that names a view or a sort wins.
     // The sender's screen is the point of sharing one.
     decodeInventoryView(rest.join('~'), state.inv);
-    if (state.inv.owner) void loadInventory(state.inv, state.inv.owner).then(rerender);
+    if (state.inv.owner) void loadInventory(state.inv, state.inv.owner)
+      .then(() => { warmInventoryRecipes(); rerender(); });
   }
   // #/lab/run/<kind>~<collection>~<id>, so a shared recipe opens on the
   // screen that matters rather than on the first question. A bare id
@@ -2904,6 +2907,100 @@ async function loadTokenCosts(): Promise<void> {
 }
 
 /**
+ * Asks what the open NFT can be fed to.
+ *
+ * A function rather than a handler body because two controls start it:
+ * the first look, and Search again after a contract did not answer.
+ */
+function startUsesLookup(): void {
+  const inv = state.inv;
+  const a = inv.assets.find((x) => x.asset_id === inv.openAsset);
+  if (!a) return;
+  inv.uses = undefined;
+  inv.usesState = 'loading';
+  const asked = inv.openAsset;
+  void whatUsesThis(a, state.actor).then((u) => {
+    // Only paint if this is still the NFT on screen.
+    if (state.inv.openAsset !== asked) return;
+    state.inv.uses = u;
+    state.inv.usesState = 'done';
+    rerender();
+  }).catch(() => {
+    if (state.inv.openAsset !== asked) return;
+    state.inv.usesState = 'idle';
+    rerender();
+  });
+}
+
+/**
+ * Reads the recipes of the collections this wallet actually holds, in the
+ * background, before anybody asks.
+ *
+ * The first look at a collection costs about half a minute right now: the
+ * NeftyBlocks blends indexer has been returning 522 and the fallback is a
+ * walk of the on-chain blends table. Paying that after a click is a
+ * feature nobody waits for; paying it while somebody is still scrolling
+ * their inventory is free.
+ *
+ * Biggest collections first, a few at a time. A wallet can hold NFTs from
+ * a hundred collections and reading all of them would be a crawl, so this
+ * covers the ones somebody is most likely to click and the rest are read
+ * on demand, exactly as before.
+ */
+const WARM_COLLECTIONS = 8;
+const WARM_AT_ONCE = 2;
+
+function warmInventoryRecipes(): void {
+  const inv = state.inv;
+  const owner = inv.loadedFor;
+  if (!owner || inv.matchersFor === owner) return;
+  inv.matchersFor = owner;
+  inv.matchers = {};
+
+  const counts = new Map<string, number>();
+  for (const a of inv.assets) {
+    const c = a.collection?.collection_name ?? '';
+    if (c) counts.set(c, (counts.get(c) ?? 0) + 1);
+  }
+  const ranked = [...counts.entries()].sort((x, y) => y[1] - x[1]);
+  const order = ranked.slice(0, WARM_COLLECTIONS).map(([c]) => c);
+  // What is NOT being read, so the screen can say so rather than counting
+  // NFTs in an unread collection as having no use.
+  inv.collectionsHeld = ranked.length;
+  inv.assetsUnread = ranked.slice(WARM_COLLECTIONS).reduce((n, [, c]) => n + c, 0);
+  if (!order.length) return;
+
+  const actor = state.actor;
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next; next += 1;
+      if (i >= order.length) return;
+      const collection = order[i];
+      // Somebody moved on. Nothing here is worth reading for a screen
+      // that is gone.
+      if (state.inv.matchersFor !== owner) return;
+      state.inv.matchers[collection] = 'loading';
+      rerender();
+      try {
+        const m = await usableIndex(collection, actor);
+        if (state.inv.matchersFor !== owner) return;
+        state.inv.matchers[collection] = m;
+      } catch {
+        if (state.inv.matchersFor !== owner) return;
+        state.inv.matchers[collection] = 'failed';
+      }
+      rerender();
+    }
+  };
+  const running = Array.from({ length: WARM_AT_ONCE }, () => worker());
+  // The shared walk is tens of megabytes. It exists so eight collections
+  // cost one read, and once they have had it there is no reason to keep
+  // every blend on WAX in a phone's memory.
+  void Promise.all(running).then(() => releaseChainWalk(), () => releaseChainWalk());
+}
+
+/**
  * Fetches the wallet's tokens, once per wallet.
  *
  * Guarded on the wallet it was asked for: opening the sheet, closing it
@@ -3119,13 +3216,30 @@ function renderAssetDetail(inv: InventoryState): string {
  * inventory could tell you what an NFT was and never what it was for.
  */
 function renderUses(inv: InventoryState): string {
+  const collection = inv.assets.find((a) => a.asset_id === inv.openAsset)
+    ?.collection?.collection_name ?? '';
+  const warm = inv.matchers[collection];
+
   if (inv.usesState === 'idle') {
     return `<div class="inv-uses">
-      <button data-lab="inv-uses">What can I do with this?</button>
+      <button class="lab-primary" data-lab="inv-uses">What can I do with this?</button>
+      ${warm === 'loading'
+        ? '<p class="lab-hint">Still reading this collection\'s recipes in the background.</p>'
+        : ''}
     </div>`;
   }
   if (inv.usesState === 'loading') {
-    return '<p class="lab-hint">Reading the recipes in this collection.</p>';
+    // Said plainly, because it is often the honest answer to "why is this
+    // slow": NeftyBlocks' blends indexer has been down, and the fallback
+    // is a walk of the on-chain table. It is read once per collection and
+    // started in the background as soon as an inventory is on screen, so
+    // this line is mostly seen by whoever clicks within the first moments.
+    return `<div class="inv-uses">
+      <p class="lab-hint">Reading this collection's recipes.
+      ${indexerIsDown()
+        ? 'The blends indexer is not answering, so they are being read from the chain. That walk is done once and shared by every collection.'
+        : ''}</p>
+    </div>`;
   }
   const u = inv.uses;
   // What was actually read, stated once and used by both branches. The
@@ -3142,22 +3256,27 @@ function renderUses(inv: InventoryState): string {
       ${x?.unreadable ? `${x.unreadable} recipe${x.unreadable === 1 ? '' : 's'} in this collection ${x.unreadable === 1 ? 'has an ingredient rule' : 'have ingredient rules'} this page cannot read.` : ''}
     </p>`;
 
+  const again = `<button data-lab="inv-uses-again">Search again</button>`;
+
   if (!u || !u.uses.length) {
     return `<div class="inv-uses">
       <p class="lab-hint">Nothing in the recipes that were searched takes this NFT right now.</p>
-      ${u?.partial ? '<p class="lab-warn">A contract did not answer, so even that is not certain.</p>' : ''}
+      ${u?.partial
+        ? `<p class="lab-warn">A contract did not answer, so even that is not certain.</p>${again}`
+        : again}
       ${scope(u)}
     </div>`;
   }
-  return `<div class="inv-uses">
-    <h4>What you can do with it</h4>
-    ${u.partial ? '<p class="lab-warn">A contract did not answer, so this list may be short.</p>' : ''}
+  return `<div class="inv-uses inv-uses-hit">
+    <h4><span class="inv-spark">USE</span> ${u.uses.length === 1 ? 'This NFT can be used' : `This NFT can be used ${u.uses.length} ways`}</h4>
+    ${u.partial ? `<p class="lab-warn">A contract did not answer, so this list may be short.</p>${again}` : ''}
     ${u.uses.map((x) => `
       <a class="inv-use ${x.live ? '' : 'muted'}" href="#/lab/run/${esc(x.link)}">
         <span class="inv-use-label">${esc(x.label)}</span>
         <span class="lab-tag">${esc(x.kind)}</span>
         <span class="lab-hint">${esc(x.because)}${x.live ? '' : ' · not running'}</span>
       </a>`).join('')}
+    ${u.partial ? '' : again}
     ${scope(u)}
   </div>`;
 }
@@ -3250,6 +3369,24 @@ function renderInventoryScreen(inv: InventoryState): string {
   const shown = sorted.slice(0, inv.limit);
   const facets = facetsOf(inv.assets, inv);
   const active = activeFilterCount(inv);
+  // Counted over everything owned rather than over what is on screen, so
+  // the number does not move as filters change and the button reads as a
+  // fact about the wallet.
+  const warmState = Object.values(inv.matchers);
+  const usableKnown = warmState.some((m) => typeof m === 'object');
+  const usableCount = usableKnown ? inv.assets.filter((a) => isUsable(a, inv)).length : 0;
+  const stillReading = warmState.filter((m) => m === 'loading').length;
+  // A mark is a fact; the absence of one is only a fact when every source
+  // answered. When one did not, the count is a floor and says so.
+  // Always a floor, never a total. Even with every collection read and
+  // every contract answering, this looks only in each NFT's OWN
+  // collection and only at NeftyBlocks: a blend can live in one
+  // collection and take an NFT from another (blend.nefty 27601 lives in
+  // landboxgames and takes a monsterfight NFT), and WaxDAO and the
+  // Blenderizer are never searched at all. The extra reasons below are
+  // worth naming separately because they are fixable by waiting.
+  const someFailed = warmState.some((m) => typeof m === 'object' && m.partial)
+    || warmState.some((m) => m === 'failed');
 
   // The chips for what is currently on, so undoing never means hunting
   // through the rail for the value you picked.
@@ -3316,28 +3453,30 @@ function renderInventoryScreen(inv: InventoryState): string {
   const listMin = 380 + attrCols.length * 90;
 
   const body = inv.view === 'list'
-    ? `<div class="inv-list" style="--inv-tpl:${listTpl};--inv-min:${listMin}px">
+    ? `<div class="inv-list ${inv.usableOnly ? 'inv-all-usable' : ''}" style="--inv-tpl:${listTpl};--inv-min:${listMin}px">
         <div class="inv-list-head">
           <span>Name</span><span>Collection</span><span>Template</span><span>Mint</span>
           ${attrCols.map((c) => `<span>${esc(c.label)}</span>`).join('')}
         </div>
         ${shown.map((a) => `
           <div class="inv-list-row" data-lab="inv-open" data-value="${esc(a.asset_id)}" role="button" tabindex="0">
-            <span class="inv-name">${esc(a.name || a.asset_id)}</span>
+            <span class="inv-name">${isUsable(a, inv) ? '<span class="inv-spark" title="A recipe in this collection takes this NFT">USE</span> ' : ''}${esc(a.name || a.asset_id)}</span>
             <span>${esc(a.collection?.collection_name ?? '')}</span>
             <span>${esc(a.template?.template_id ?? '')}</span>
             <span>${esc(a.template_mint ?? '')}</span>
             ${attrCols.map((c) => `<span>${esc(facetValue(a, c.key))}</span>`).join('')}
           </div>`).join('')}
       </div>`
-    : `<div class="inv-grid" style="--inv-card:${inv.cardSize}px">
+    : `<div class="inv-grid ${inv.usableOnly ? 'inv-all-usable' : ''}" style="--inv-card:${inv.cardSize}px">
         ${shown.map((a) => {
           const img = artworkOf(a);
+          const usable = isUsable(a, inv);
           return `
-          <button class="inv-card" data-lab="inv-open" data-value="${esc(a.asset_id)}"
-                  title="${esc(a.asset_id)}">
+          <button class="inv-card ${usable ? 'inv-usable' : ''}" data-lab="inv-open" data-value="${esc(a.asset_id)}"
+                  title="${esc(a.asset_id)}${usable ? ' · a recipe takes this' : ''}">
             ${img ? renderMediaThumb({ ref: img, alt: a.name ?? a.asset_id, className: 'media-thumb-sm' })
                   : '<span class="lab-noart"></span>'}
+            ${usable ? '<span class="inv-spark" title="A recipe in this collection takes this NFT">USE</span>' : ''}
             <span class="inv-card-name">${esc(a.name || a.asset_id)}</span>
             <span class="inv-card-sub">${esc(a.collection?.collection_name ?? '')}${a.template_mint ? ` · #${esc(a.template_mint)}` : ''}</span>
           </button>`;
@@ -3370,6 +3509,13 @@ function renderInventoryScreen(inv: InventoryState): string {
       <button class="inv-filter-btn ${active ? 'on' : ''}" data-lab="inv-filters">
         Filters${active ? ` (${active})` : ''}
       </button>
+      ${usableKnown || inv.usableOnly ? `
+        <button class="inv-filter-btn inv-usable-btn ${inv.usableOnly ? 'on' : ''}" data-lab="inv-usable"
+                title="NFTs a NeftyBlocks blend, upgrade or pack in their own collection will take, right now. WaxDAO and Blenderizer recipes are not searched.">
+          ${inv.usableOnly
+            ? (usableKnown ? 'Showing only usable' : 'Only usable, once the recipes are read')
+            : `Usable in a recipe (${usableCount.toLocaleString('en-US')}+)`}
+        </button>` : ''}
       ${active ? `<button data-lab="inv-clear">clear ${active} filter${active === 1 ? '' : 's'}</button>` : ''}
       ${shareButton('tool', 'link to this view')}
     </div>
@@ -3382,6 +3528,13 @@ function renderInventoryScreen(inv: InventoryState): string {
       <strong>${filtered.length.toLocaleString('en-US')}</strong> of
       ${inv.assets.length.toLocaleString('en-US')} NFT${inv.assets.length === 1 ? '' : 's'}
       ${active ? 'match' : 'owned'}${shown.length < filtered.length ? `, showing the first ${shown.length.toLocaleString('en-US')}` : ''}.
+      ${usableKnown ? `<strong>At least ${usableCount.toLocaleString('en-US')}</strong> of the ${inv.assets.length.toLocaleString('en-US')} you own can go into a recipe${active ? ', filter or no filter' : ''}.` : ''}
+      ${stillReading ? `<span class="inv-warming">Reading the recipes of ${stillReading} more collection${stillReading === 1 ? '' : 's'}.</span>` : ''}
+      ${inv.assetsUnread > 0 ? `<span class="inv-warming">${inv.assetsUnread.toLocaleString('en-US')} NFT${inv.assetsUnread === 1 ? '' : 's'} in your smaller collections ${inv.assetsUnread === 1 ? 'was' : 'were'} not checked: only your ${Math.min(WARM_COLLECTIONS, inv.collectionsHeld)} biggest collections of ${inv.collectionsHeld} are read.</span>` : ''}
+      ${someFailed
+        ? '<span class="inv-warming">A contract did not answer for one of them, so there may be more.</span>' : ''}
+      ${usableKnown && !stillReading
+        ? '<span class="inv-warming">Only NeftyBlocks recipes in an NFT\'s own collection are searched, so this is a floor.</span>' : ''}
     </p>
 
     <div class="inv-split">
@@ -5544,7 +5697,8 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
             state.inv.ownerDraft = state.actor;
           }
           if (state.inv.owner && state.inv.loadedFor !== state.inv.owner && !state.inv.loading) {
-            void loadInventory(state.inv, state.inv.owner).then(render);
+            void loadInventory(state.inv, state.inv.owner)
+              .then(() => { warmInventoryRecipes(); render(); });
           }
           writeLabHash();
           break;
@@ -5657,14 +5811,21 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           if (!who) return;
           state.inv.owner = who;
           state.inv.ownerDraft = who;
-          void loadInventory(state.inv, who, kind === 'inv-reload').then(() => { writeLabHash(); render(); });
+          // Refresh means the NFTs may have changed, so what they can be
+          // used for is a fresh question. Without this the warm pass saw
+          // the wallet as already done and a newly acquired NFT from a
+          // collection nobody had read stayed unmarked for good.
+          if (kind === 'inv-reload') state.inv.matchersFor = '';
+          void loadInventory(state.inv, who, kind === 'inv-reload')
+            .then(() => { warmInventoryRecipes(); writeLabHash(); render(); });
           render();
           return;
         }
         case 'inv-me':
           state.inv.owner = state.actor;
           state.inv.ownerDraft = state.actor;
-          void loadInventory(state.inv, state.actor).then(() => { writeLabHash(); render(); });
+          void loadInventory(state.inv, state.actor)
+            .then(() => { warmInventoryRecipes(); writeLabHash(); render(); });
           break;
         case 'inv-view':
           state.inv.view = el.dataset.value === 'list' ? 'list' : 'grid';
@@ -5735,6 +5896,16 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           const owner = state.inv.owner;
           const assets = state.inv.assets;
           const loadedFor = state.inv.loadedFor;
+          // What was already read about this wallet survives the reset,
+          // because a saved view is a set of filters and not a different
+          // wallet. Dropping these took every USE mark off the screen and
+          // nothing re-warmed, since this path deliberately does not
+          // re-fetch. A view saved with the usable toggle on then read
+          // "Only usable, once the recipes are read" for good.
+          const matchers = state.inv.matchers;
+          const matchersFor = state.inv.matchersFor;
+          const collectionsHeld = state.inv.collectionsHeld;
+          const assetsUnread = state.inv.assetsUnread;
           state.inv = emptyInventoryState();
           decodeInventoryView(found.view, state.inv);
           // A saved view is a set of filters, not a wallet. Whoever is on
@@ -5743,6 +5914,13 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           state.inv.ownerDraft = owner;
           state.inv.assets = assets;
           state.inv.loadedFor = loadedFor;
+          state.inv.matchers = matchers;
+          state.inv.matchersFor = matchersFor;
+          state.inv.collectionsHeld = collectionsHeld;
+          state.inv.assetsUnread = assetsUnread;
+          // And if nothing had been read yet, this is the moment to start:
+          // the view may have arrived with the usable toggle on.
+          warmInventoryRecipes();
           writeLabHash();
           break;
         }
@@ -5751,14 +5929,22 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
             savedViews: (readPrefs().savedViews ?? []).filter((v) => v.name !== (el.dataset.value ?? '')),
           });
           break;
-        case 'inv-open':
+        case 'inv-open': {
           state.inv.openAsset = el.dataset.value ?? '';
           state.inv.openTemplate = '';
           // The previous NFT's answer must not be shown under this one.
           state.inv.uses = undefined;
           state.inv.usesState = 'idle';
           writeLabHash();
+          // If the collection is already read, the answer is instant and
+          // making somebody press a button for it is a click for nothing.
+          // If it is not, the button stays, because half a minute is a
+          // wait to opt into rather than one to be dropped in.
+          const opened = state.inv.assets.find((x) => x.asset_id === state.inv.openAsset);
+          const known = state.inv.matchers[opened?.collection?.collection_name ?? ''];
+          if (typeof known === 'object') startUsesLookup();
           break;
+        }
         case 'inv-close':
           state.inv.openAsset = '';
           state.inv.openTemplate = '';
@@ -5783,24 +5969,42 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           });
           break;
         }
-        case 'inv-uses': {
-          const a = state.inv.assets.find((x) => x.asset_id === state.inv.openAsset);
-          if (!a) return;
-          state.inv.usesState = 'loading';
-          const asked = state.inv.openAsset;
-          void whatUsesThis(a, state.actor).then((u) => {
-            // Only paint if this is still the NFT on screen.
-            if (state.inv.openAsset !== asked) return;
-            state.inv.uses = u;
-            state.inv.usesState = 'done';
-            render();
-          }).catch(() => {
-            if (state.inv.openAsset !== asked) return;
-            state.inv.usesState = 'idle';
-            render();
-          });
+        case 'inv-usable':
+          state.inv.usableOnly = !state.inv.usableOnly;
+          state.inv.limit = 120;
+          writeLabHash();
+          break;
+        case 'inv-uses-again': {
+          // A real retry: the cached answer, the listers' own caches and
+          // the note saying every indexer was unreachable all go, so this
+          // asks the chain again rather than replaying the failure. It
+          // then starts the read itself instead of waiting for a second
+          // click on a button the retry state does not even show.
+          const again = state.inv.assets.find((x) => x.asset_id === state.inv.openAsset);
+          const c = again?.collection?.collection_name ?? '';
+          if (c) {
+            forgetCollection(c, state.actor);
+            // Rebuilt, not dropped. Deleting it left every USE mark in
+            // that collection gone for the rest of the session, and with
+            // the toggle on it emptied the grid with no way back.
+            state.inv.matchers[c] = 'loading';
+            const owner = state.inv.matchersFor;
+            void usableIndex(c, state.actor).then((m) => {
+              if (state.inv.matchersFor !== owner) return;
+              state.inv.matchers[c] = m;
+              rerender();
+            }).catch(() => {
+              if (state.inv.matchersFor !== owner) return;
+              state.inv.matchers[c] = 'failed';
+              rerender();
+            });
+          }
+          startUsesLookup();
           break;
         }
+        case 'inv-uses':
+          startUsesLookup();
+          break;
         case 'inv-template-back':
           state.inv.openTemplate = '';
           writeLabHash();
@@ -5815,7 +6019,8 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           applyInventoryPrefs(state.inv);
           state.inv.owner = who;
           state.inv.ownerDraft = who;
-          void loadInventory(state.inv, who).then(() => { writeLabHash(); render(); });
+          void loadInventory(state.inv, who)
+            .then(() => { warmInventoryRecipes(); writeLabHash(); render(); });
           break;
         }
         case 'inv-forget':

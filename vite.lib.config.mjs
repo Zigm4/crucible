@@ -20,6 +20,7 @@ export default defineConfig({
         bridge: 'src/ui/bridge.ts',
         wallet: 'src/nefty/wallet.ts',
         tokens: 'src/nefty/tokens.ts',
+        discover: 'src/nefty/discover.ts',
         guidedRun: 'src/ui/guidedRun.ts',
         lab: 'src/ui/lab.ts',
         collections: 'src/atomic/collections.ts',

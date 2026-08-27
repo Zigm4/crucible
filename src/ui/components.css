@@ -2864,6 +2864,43 @@ button.inv-card { border: 0; cursor: pointer; font: inherit; color: inherit; tex
 .tok-tag.off { color: inherit; opacity: .5; }
 
 
+/* ─── what a recipe can take ────────────────────────────────────────────
+
+   The mark on a card is small, but it is the only thing on that grid
+   that says an NFT is worth a click, so it reads as a label rather than
+   a decoration: a word, not a dot, and the same word in the list, in the
+   detail heading and on the filter button. */
+.inv-spark {
+  display: inline-block;
+  font-size: .62em; font-weight: 700; letter-spacing: .08em;
+  padding: 1px 5px; border-radius: 3px; vertical-align: middle;
+  background: var(--ok); color: var(--bg);
+}
+.inv-card { position: relative; }
+/* On a card it is a corner mark, not a word. At the smallest size a card
+   is 64px wide and three letters sat across the name; the word stays for
+   the list and the detail heading, where there is room for it. */
+.inv-card .inv-spark {
+  position: absolute; top: 3px; right: 3px; z-index: 1;
+  width: 9px; height: 9px; padding: 0; border-radius: 50%;
+  overflow: hidden; text-indent: -99em; letter-spacing: 0;
+  box-shadow: 0 0 0 2px var(--bg);
+}
+/* When the filter is on, every single card carries it, and a mark that is
+   on everything marks nothing. */
+.inv-all-usable .inv-spark { display: none; }
+/* `button.inv-card { border: 0 }` outranks a bare class and leaves no
+   border to colour, so this needs the width back as well as the colour. */
+button.inv-card.inv-usable { border: 1px solid var(--ok); }
+.inv-usable-btn.on { border-color: var(--ok); color: var(--ok); }
+.inv-uses-hit {
+  border-left: 3px solid var(--ok);
+  padding-left: 12px;
+}
+.inv-uses-hit h4 { display: flex; align-items: center; gap: 8px; }
+.inv-warming { opacity: .7; }
+
+
 /* ─── inventory: the narrow-screen block ───────────────────────────────
 
    Deliberately the LAST thing in this file.
