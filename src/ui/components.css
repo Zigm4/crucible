@@ -2802,9 +2802,6 @@ button.inv-card { border: 0; cursor: pointer; font: inherit; color: inherit; tex
 .inv-list-row[role="button"] { cursor: pointer; }
 .inv-list-row[role="button"]:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
-
-/* ─── inventory: the narrow-screen block ───────────────────────────────
-
 /* The box is reserved whether or not a picture resolves. Without this a
    card with no artwork collapsed to 33px and the grid read as broken. */
 .inv-card .media-thumb, .inv-card .lab-noart {
@@ -2818,6 +2815,52 @@ button.inv-card { border: 0; cursor: pointer; font: inherit; color: inherit; tex
 .run-odd-name { cursor: default; }
 
 
+/* The bridge, both directions. */
+.inv-uses { margin: 14px 0; }
+.inv-uses h4 { margin: 0 0 6px; }
+.inv-use {
+  display: grid; gap: 2px 10px; align-items: baseline;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px 10px; margin-bottom: 4px; border-radius: 7px;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  text-decoration: none; color: inherit;
+}
+.inv-use:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.inv-use.muted { opacity: .6; }
+.inv-use-label { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv-use .lab-hint { grid-column: 1 / -1; }
+.run-see-mine { display: inline-block; margin-top: 4px; font-size: .78em; }
+
+
+/* ─── the token sheet ───────────────────────────────────────────────────
+
+   Four things per row and only two columns to put them in, because on a
+   phone a token row that scrolls sideways is a token row nobody reads.
+   Ticker and amount lead, issuer and status sit underneath in the quiet
+   size: two people can issue "GOLD" and the issuer is the only thing
+   that tells them apart, but it is not what you scan for. */
+.tok-search { position: sticky; top: 0; z-index: 1; background: var(--bg); padding-bottom: 8px; }
+.tok-search input { width: 100%; }
+.tok-list { display: flex; flex-direction: column; gap: 4px; }
+.tok-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1px 10px;
+  padding: 8px 10px; border-radius: 7px;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+.tok-row.muted { opacity: .55; }
+.tok-sym { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Tabular figures so a column of balances lines up on the decimal
+   point instead of drifting with the width of each digit. */
+.tok-amt { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tok-src { font-size: .78em; opacity: .7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tok-tag { font-size: .72em; text-align: right; color: var(--ok); white-space: nowrap; }
+.tok-tag.off { color: inherit; opacity: .5; }
+
+
+/* ─── inventory: the narrow-screen block ───────────────────────────────
+
    Deliberately the LAST thing in this file.
 
    A media query carries no extra specificity, so a plain rule written
@@ -2826,7 +2869,14 @@ button.inv-card { border: 0; cursor: pointer; font: inherit; color: inherit; tex
    the facet rail stayed on the page beside its own popup. Both times the
    cause was a base `.inv-*` rule added underneath. Keeping the whole
    narrow-screen block at the end of the file means a new base rule can
-   no longer silently outrank it. */
+   no longer silently outrank it.
+
+   It also has to PARSE. This header comment was once left unterminated,
+   its closing marker landed nine lines lower, and everything between
+   became the prelude of an invalid selector: the browser dropped the
+   whole media query and the phone layout below shipped dead. The guard
+   in verify-lab-tools now strips comments the way a browser does and
+   checks that a `}` is the last thing before this block. */
 @media (max-width: 760px) {
   /* On a phone the same dialog is a bottom sheet: easier to reach with a
      thumb, and it does not float over content it is filtering. */
@@ -2839,4 +2889,3 @@ button.inv-card { border: 0; cursor: pointer; font: inherit; color: inherit; tex
   }
   .inv-list-head, .inv-list-row { min-width: var(--inv-min, 560px); }
 }
-

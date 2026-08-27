@@ -36,6 +36,8 @@ import {
 } from '../chain/session';
 import { atomicFetch } from '../chain/rpc';
 import { SUGGESTED_COLLECTIONS } from './collections';
+import { whatUsesThis, checkTokenCost } from './bridge';
+import { listWalletTokens, filterWalletTokens, emptyCount } from '../nefty/wallet';
 import {
   emptyInventoryState, loadInventory, applyFilter, facetsOf, sortAssets,
   toggleFacet, clearFilters, activeFilterCount, facetValue, stringify,
@@ -2833,6 +2835,115 @@ function editTokenControl(): string {
  * which is exactly the wallet data this page refuses to keep. A named set
  * of filters and a sort is the same intent, stored as choices instead.
  */
+/**
+ * Fetches the wallet's tokens, once per wallet.
+ *
+ * Guarded on the wallet it was asked for: opening the sheet, closing it
+ * and typing a different name would otherwise paint the first wallet's
+ * balances under the second wallet's title.
+ */
+function loadWalletTokens(who: string): void {
+  if (!who) return;
+  state.inv.tokensState = 'loading';
+  state.inv.tokensFor = who;
+  state.inv.tokens = undefined;
+  void listWalletTokens(who).then((t) => {
+    if (state.inv.tokensFor !== who) return;
+    state.inv.tokens = t;
+    state.inv.tokensState = 'done';
+    rerender();
+  }).catch(() => {
+    if (state.inv.tokensFor !== who) return;
+    state.inv.tokensState = 'error';
+    rerender();
+  });
+}
+
+/**
+ * The wallet's fungible tokens, as a dialog.
+ *
+ * A dialog and not a panel, for two reasons. It costs an indexer round
+ * trip plus one read per issuer, which is not a price the NFT list should
+ * pay every time somebody opens their inventory. And it is a different
+ * question: "what do I hold" rather than "which of these do I want".
+ * Same chrome as the filter sheet, so it is the same gesture on a phone.
+ *
+ * Every figure here is the exact string the issuing contract stores.
+ * Nothing on this screen is rounded, and the full string is on the row's
+ * title attribute for anyone who wants all eight decimals.
+ */
+function renderTokensDialog(inv: InventoryState): string {
+  if (!inv.tokensOpen) return '';
+
+  const shell = (body: string, foot: string) => `
+    <div class="inv-scrim" data-lab="inv-tokens-close"></div>
+    <aside class="inv-rail inv-tokens open">
+      <div class="inv-rail-head">
+        <strong>Tokens${inv.tokensFor ? ` of ${esc(inv.tokensFor)}` : ''}</strong>
+        <button class="lab-x" data-lab="inv-tokens-close" aria-label="Close">x</button>
+      </div>
+      <div class="inv-rail-body">${body}</div>
+      <div class="inv-rail-foot">${foot}</div>
+    </aside>`;
+
+  const done = `<button class="lab-primary" data-lab="inv-tokens-close">Done</button>`;
+
+  if (inv.tokensState === 'loading') {
+    return shell(
+      `<p class="lab-hint">Asking the history indexers which contracts have ever
+        paid this wallet, then reading each balance from the contract itself.</p>`,
+      done);
+  }
+  if (inv.tokensState === 'error' || !inv.tokens) {
+    return shell(
+      `<p class="lab-warn">Could not read the token list. Every public history
+        indexer refused or timed out.</p>
+       <button data-lab="inv-tokens-reload">Try again</button>`,
+      done);
+  }
+
+  const all = inv.tokens.tokens;
+  const rows = filterWalletTokens(all, inv.tokensQ, inv.tokensShowEmpty);
+  // Counted against the search, not against the whole wallet. Searching
+  // "wax" with four empty balances elsewhere offered to "show 4 empty"
+  // and then showed nothing, because none of the four were WAX tokens.
+  // A control that does nothing is worse than one that is not there.
+  const hidden = emptyCount(filterWalletTokens(all, inv.tokensQ, true));
+
+  const body = `
+    <div class="tok-search">
+      <input id="inv-tokens-q" type="text" spellcheck="false"
+             placeholder="search a ticker or an issuer" value="${esc(inv.tokensQ)}" />
+    </div>
+    ${rows.length ? `<div class="tok-list">${rows.map((t) => `
+      <div class="tok-row ${t.amount > 0 ? '' : 'muted'}" title="${esc(t.balance)}">
+        <span class="tok-sym">${esc(t.symbol)}</span>
+        <span class="tok-amt">${esc(t.display)}</span>
+        <span class="tok-src">${esc(t.contract)}</span>
+        ${t.usableInRecipes
+          ? '<span class="tok-tag" title="blend.nefty knows this token, so a blend or an upgrade is allowed to ask for it">recipes accept it</span>'
+          : '<span class="tok-tag off" title="No Nefty recipe can ask for this token: it is not in blend.nefty\'s registry">not a recipe token</span>'}
+      </div>`).join('')}</div>`
+      : `<p class="lab-empty">${inv.tokensQ ? 'No token matches that.' : 'This wallet holds no tokens.'}</p>`}
+    <p class="lab-hint">
+      Read from ${inv.tokens.sources} history indexer${inv.tokens.sources === 1 ? '' : 's'},
+      then confirmed against each contract.
+      ${inv.tokens.partial
+        ? `<strong>Not every indexer answered, so a token could be missing.</strong>
+           ${inv.tokens.skipped ? `${inv.tokens.skipped} issuer${inv.tokens.skipped === 1 ? ' was' : 's were'} skipped.` : ''}`
+        : ''}
+    </p>`;
+
+  const foot = `
+    ${hidden
+      ? `<button data-lab="inv-tokens-empty">${inv.tokensShowEmpty ? 'Hide' : 'Show'} ${hidden} empty</button>`
+      : '<span></span>'}
+    <span class="lab-hint">${rows.length} shown</span>
+    ${done}`;
+
+  return shell(body, foot);
+}
+
 function renderSavedViews(_active: number): string {
   if (!storageAvailable()) {
     return `<p class="lab-hint">Your browser will not let this page store anything, so views
@@ -2908,6 +3019,7 @@ function renderAssetDetail(inv: InventoryState): string {
         <p class="lab-hint">asset id <code>${esc(a.asset_id)}</code>
           · <a target="_blank" rel="noreferrer"
                href="https://neftyblocks.com/asset/${esc(a.asset_id)}">view on an explorer</a></p>
+        ${renderUses(inv)}
         ${rows.length ? `<div class="inv-attrs">
           ${rows.map(([k, v]) => `
             <div class="inv-attr">
@@ -2917,6 +3029,41 @@ function renderAssetDetail(inv: InventoryState): string {
         </div>` : '<p class="lab-hint">This NFT carries no attributes.</p>'}
       </div>
     </div>
+  </div>`;
+}
+
+/**
+ * What this NFT can be fed to, with a way to go and do it.
+ *
+ * The one thing that made the two tools feel like two demos: the
+ * inventory could tell you what an NFT was and never what it was for.
+ */
+function renderUses(inv: InventoryState): string {
+  if (inv.usesState === 'idle') {
+    return `<div class="inv-uses">
+      <button data-lab="inv-uses">What can I do with this?</button>
+    </div>`;
+  }
+  if (inv.usesState === 'loading') {
+    return '<p class="lab-hint">Reading the recipes in this collection.</p>';
+  }
+  const u = inv.uses;
+  if (!u || !u.uses.length) {
+    return `<p class="lab-hint">Nothing in <code>${esc(u?.scanned ?? '')}</code> takes this NFT
+      right now.${u?.partial ? ' One of the contracts did not answer, so this may be incomplete.' : ''}
+      Recipes in other collections are not searched.</p>`;
+  }
+  return `<div class="inv-uses">
+    <h4>What you can do with it</h4>
+    ${u.partial ? '<p class="lab-warn">A contract did not answer, so this list may be short.</p>' : ''}
+    ${u.uses.map((x) => `
+      <a class="inv-use ${x.live ? '' : 'muted'}" href="#/lab/run/${esc(x.link)}">
+        <span class="inv-use-label">${esc(x.label)}</span>
+        <span class="lab-tag">${esc(x.kind)}</span>
+        <span class="lab-hint">${esc(x.because)}${x.live ? '' : ' · not running'}</span>
+      </a>`).join('')}
+    <p class="lab-hint">Only <code>${esc(u.scanned)}</code> was searched. A recipe in another
+    collection can still name this template.</p>
   </div>`;
 }
 
@@ -2956,9 +3103,21 @@ function renderInventoryTool(): string {
   const inv = state.inv;
   // The class lives on <body>, outside the subtree render() replaces, so
   // it has to be reconciled here or a closed dialog leaves the page stuck.
+  // Both sheets count: reconciling only the filter one silently unlocked
+  // the page underneath the token sheet.
   try {
-    document.body.classList.toggle('inv-locked', inv.filtersOpen);
+    document.body.classList.toggle('inv-locked', inv.filtersOpen || inv.tokensOpen);
   } catch { /* no document in the harness */ }
+  // The token sheet belongs to the wallet, not to any one screen, so it
+  // is rendered outside them and floats above whichever is showing: the
+  // empty state before a read, the list, one NFT, one template. It used
+  // to live inside the list branch only, which meant pressing Tokens
+  // before reading an inventory loaded the balances and then had nowhere
+  // to put them.
+  return renderTokensDialog(inv) + renderInventoryScreen(inv);
+}
+
+function renderInventoryScreen(inv: InventoryState): string {
   // A detail view replaces the list rather than sitting under it, so the
   // way back is one control and never a scroll.
   if (inv.loadedFor && inv.openTemplate) return renderTemplateDetail(inv);
@@ -2975,6 +3134,15 @@ function renderInventoryTool(): string {
       ${inv.loadedFor ? `<button data-lab="inv-reload" ${inv.loading ? 'disabled' : ''}>Refresh</button>` : ''}
       ${state.actor && inv.owner !== state.actor
         ? `<button data-lab="inv-me">Use ${esc(state.actor)}</button>` : ''}
+      ${/* Beside the wallet, not beside Filters. Tokens are a property of
+            the wallet rather than of the NFT list, and putting the button
+            here means it answers "what do I hold" straight away instead
+            of after twenty thousand NFTs have finished loading. */''}
+      <button data-lab="inv-tokens"
+              title="Every fungible token this wallet holds">
+        Tokens${inv.tokensState === 'done' && inv.tokens && inv.tokensFor === inv.owner
+          ? ` (${inv.tokens.tokens.filter((t) => t.amount > 0).length})` : ''}
+      </button>
     </div>`;
 
   if (!inv.loadedFor) {
@@ -3238,6 +3406,16 @@ async function startRun(blendId: string): Promise<void> {
     // cares which copy gets burned can change it; autoPick never
     // overwrites a choice already made.
     if (run.assetsFor) run.picked = autoPick(runRequirements(), run.picked);
+    // And what the token costs actually mean for this wallet. Read after
+    // the requirements exist, because that is where the quantities are.
+    if (state.actor) {
+      const costs = runRequirements().filter((r) => r.kind === 'token');
+      await Promise.all(costs.map(async (r) => {
+        const qty = r.text.replace(/^Pay\s+/, '').trim();
+        const res = await checkTokenCost(state.actor, qty);
+        if (res) run.tokenHave[qty] = res;
+      }));
+    }
   } catch (e) {
     run.error = e instanceof Error ? e.message : String(e);
   } finally {
@@ -3403,12 +3581,29 @@ function renderCostAndReward(
               ? '<span class="lab-tag run-burn">leaves your wallet</span>' : ''}
             ${r.role === 'keep' ? '<span class="lab-tag run-keep">you keep this one</span>' : ''}
           </span>
-          <span class="run-slot-have">${r.have === undefined
-            ? '<span class="lab-hint">not checked</span>'
-            : short ? `<strong>you have ${r.have}</strong>, ${r.need - r.have} short`
-              : full ? `${mine.length} of ${r.need} picked`
-                : `you have ${r.have}, none picked`}</span>
+          <span class="run-slot-have">${(() => {
+            if (r.kind === 'token') {
+              const qty = r.text.replace(/^Pay\s+/, '').trim();
+              const t = run.tokenHave[qty];
+              if (!t) return '<span class="lab-hint">balance not readable</span>';
+              return t.have >= t.need
+                ? `<span class="lab-ok">you have ${t.have.toLocaleString('en-US')} ${esc(t.symbol)}</span>`
+                : `<strong class="lab-warn">you have ${t.have.toLocaleString('en-US')} ${esc(t.symbol)}</strong>, not enough`;
+            }
+            if (r.have === undefined) return '<span class="lab-hint">not checked</span>';
+            if (short) return `<strong>you have ${r.have}</strong>, ${r.need - r.have} short`;
+            return full ? `${mine.length} of ${r.need} picked` : `you have ${r.have}, none picked`;
+          })()}</span>
         </div>
+        ${r.kind === 'nft' && state.actor ? (() => {
+          // The other half of the bridge: from an ingredient, straight to
+          // the ones you hold. `tpl=` is the filter the inventory already
+          // understands, so this is a link and not a new feature.
+          const tpl = /template #(\d+)/.exec(r.text)?.[1];
+          const view = tpl ? `~tpl=${tpl}` : '';
+          return `<a class="run-see-mine" href="#/lab/inventory/${esc(state.actor)}${view}">
+            see the ones you hold</a>`;
+        })() : ''}
         ${r.kind === 'nft' && known && !short ? `
           <div class="run-pick-row">
             ${mine.map((id) => `<span class="lab-tag run-chosen">${esc(nameOf(id))}</span>`).join('')}
@@ -5360,6 +5555,33 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           state.inv.filtersOpen = false;
           document.body.classList.remove('inv-locked');
           break;
+        case 'inv-tokens': {
+          // Two sheets at once would stack on top of each other, so
+          // opening one closes the other.
+          state.inv.filtersOpen = false;
+          state.inv.tokensOpen = true;
+          document.body.classList.add('inv-locked');
+          // The field, not the loaded wallet: somebody can type a name and
+          // ask what it holds without waiting for its NFTs to be read.
+          const who = (root.querySelector<HTMLInputElement>('#inv-owner')?.value
+            ?? state.inv.owner).trim().toLowerCase() || state.inv.owner || state.actor;
+          // Re-read only when there is nothing to show for THIS wallet.
+          // Reopening the sheet on the same wallet should be instant.
+          if (who && (state.inv.tokensFor !== who || state.inv.tokensState === 'error')) {
+            loadWalletTokens(who);
+          }
+          break;
+        }
+        case 'inv-tokens-reload':
+          loadWalletTokens(state.inv.tokensFor || state.inv.owner || state.actor);
+          break;
+        case 'inv-tokens-close':
+          state.inv.tokensOpen = false;
+          document.body.classList.remove('inv-locked');
+          break;
+        case 'inv-tokens-empty':
+          state.inv.tokensShowEmpty = !state.inv.tokensShowEmpty;
+          break;
         case 'inv-size':
           state.inv.cardSize = clampCardSize(el.dataset.value);
           patchPrefs({ inventoryCardSize: state.inv.cardSize });
@@ -5405,6 +5627,9 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'inv-open':
           state.inv.openAsset = el.dataset.value ?? '';
           state.inv.openTemplate = '';
+          // The previous NFT's answer must not be shown under this one.
+          state.inv.uses = undefined;
+          state.inv.usesState = 'idle';
           writeLabHash();
           break;
         case 'inv-close':
@@ -5427,6 +5652,24 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           }).catch(() => {
             if (state.inv.openTemplate !== tpl) return;
             state.inv.templateState = 'error';
+            render();
+          });
+          break;
+        }
+        case 'inv-uses': {
+          const a = state.inv.assets.find((x) => x.asset_id === state.inv.openAsset);
+          if (!a) return;
+          state.inv.usesState = 'loading';
+          const asked = state.inv.openAsset;
+          void whatUsesThis(a, state.actor).then((u) => {
+            // Only paint if this is still the NFT on screen.
+            if (state.inv.openAsset !== asked) return;
+            state.inv.uses = u;
+            state.inv.usesState = 'done';
+            render();
+          }).catch(() => {
+            if (state.inv.openAsset !== asked) return;
+            state.inv.usesState = 'idle';
             render();
           });
           break;
@@ -5572,6 +5815,12 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   };
 
   bind('inv-q', (v) => { state.inv.q = v; state.inv.limit = 120; }, 'live');
+  bind('inv-tokens-q', (v) => { state.inv.tokensQ = v; }, 'live');
+  // Kept in state as it is typed, without a repaint. A wallet name that
+  // lives only in the DOM is lost the moment anything else re-renders,
+  // which is what happened the first time Tokens was pressed before
+  // Read inventory: the field emptied itself and nothing opened.
+  bind('inv-owner', (v) => { state.inv.owner = v.trim().toLowerCase(); });
   bind('inv-sort', (v) => { state.inv.sortKey = v; patchPrefs({ inventorySort: v }); writeLabHash(); });
   bind('lab-search', (v) => { state.search = v; }, 'live');
   bind('lab-token-search', (v) => { state.tokenSearch = v; }, 'live');

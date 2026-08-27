@@ -305,6 +305,137 @@ async function main() {
     say(!threw, 'every storage call is survivable when storage is not there');
   }
 
+  console.log('\n=== PHASE N - the wallet has tokens too ===');
+  {
+    const w = await import('./.build/wallet.mjs');
+
+    // Trimming trailing zeros off a decimal string loses nothing. Losing
+    // a digit that is not a zero would, so the exact figure is compared.
+    say(w.displayBalance('13368.20000000 UPMAX') === '13,368.2', 'eight trailing zeros are trimmed, not the value');
+    say(w.displayBalance('2063.82119692 WAX') === '2,063.82119692', 'every significant decimal survives');
+    say(w.displayBalance('500000000.0001 WUF') === '500,000,000.0001', 'nine figures group and the fraction stays');
+    say(w.displayBalance('7 CHIPS') === '7', 'a whole number gets no invented decimal point');
+    say(w.displayBalance('0.00000000 NEFTY') === '0', 'an empty balance reads as 0, not 0.00000000');
+
+    const t0 = Date.now();
+    const r = await w.listWalletTokens('zigm4.gm');
+    const took = Date.now() - t0;
+    say(r.tokens.length >= 15, `a real wallet returns its tokens (${r.tokens.length} in ${took}ms)`);
+    say(r.sources >= 2, `more than one indexer was asked (${r.sources} answered)`);
+
+    // The reason the union exists. wax.cryptolions.io answers this exact
+    // query with 3 tokens where the others return 17, and says nothing
+    // about being short. A single-host build would silently lose 14.
+    const wax = r.tokens.find((t) => t.symbol === 'WAX' && t.contract === 'eosio.token');
+    const upmax = r.tokens.find((t) => t.symbol === 'UPMAX');
+    say(Boolean(wax), 'WAX is there, read from eosio.token');
+    say(Boolean(upmax) && upmax.contract === 'underpunks55',
+        `a collection token is there with its real issuer (${upmax?.contract})`);
+
+    // Every figure has to be the chain's own string, not an indexer float.
+    say(r.tokens.every((t) => /^[0-9]+(\.[0-9]+)? [A-Z]{1,7}$/.test(t.balance)),
+        'every balance is the exact asset string the contract stores');
+    say(r.tokens.every((t) => t.display === w.displayBalance(t.balance)),
+        'and what is shown is derived from that string, never from a float');
+    say(upmax && upmax.usableInRecipes === true,
+        'a token blend.nefty registers is marked as one a recipe can ask for');
+    const junk = r.tokens.find((t) => !t.usableInRecipes);
+    say(Boolean(junk), `and one it does not is marked as it is (${junk?.symbol ?? 'none found'})`);
+
+    // Non-empty first: a list that opens on four zeroes reads as empty.
+    const firstZero = r.tokens.findIndex((t) => t.amount === 0);
+    const lastNonZero = r.tokens.map((t) => t.amount > 0).lastIndexOf(true);
+    say(firstZero === -1 || firstZero > lastNonZero, 'empty balances all sort below the ones that are not');
+
+    const shown = w.filterWalletTokens(r.tokens, '', false);
+    say(shown.every((t) => t.amount > 0), 'the sheet hides empty balances by default');
+    say(w.filterWalletTokens(r.tokens, '', true).length === r.tokens.length,
+        `and the toggle brings back all ${w.emptyCount(r.tokens)} of them`);
+    say(w.filterWalletTokens(r.tokens, 'upmax', false).length === 1, 'search finds a ticker');
+    say(w.filterWalletTokens(r.tokens, 'underpunks', false).length === 1,
+        'and finds an issuer, which is the only thing separating two tokens that share a ticker');
+    say(w.filterWalletTokens(r.tokens, 'zzzz', false).length === 0, 'and finds nothing when there is nothing');
+
+    // The empty-balance control is counted against the SEARCH, not the
+    // wallet. Searching "wax" once offered "show 4 empty" and then showed
+    // nothing, because none of the four empty balances were WAX tokens.
+    const matchedEmpties = w.emptyCount(w.filterWalletTokens(r.tokens, 'wax', true));
+    say(matchedEmpties === 0,
+        'a search that matches no empty balance offers to reveal none of them');
+    say(w.emptyCount(w.filterWalletTokens(r.tokens, '', true)) === w.emptyCount(r.tokens),
+        'and with no search it still offers every one');
+
+    // A wallet that holds nothing must say so rather than fail.
+    const none = await w.listWalletTokens('nefty.gm');
+    say(Array.isArray(none.tokens), `an empty wallet answers cleanly (${none.tokens.length} tokens)`);
+    const nobody = await w.listWalletTokens('');
+    say(nobody.tokens.length === 0 && nobody.sources === 0,
+        'and no wallet name asks no indexer anything');
+  }
+
+  console.log('\n=== PHASE M - the bridge between owning and doing ===');
+  {
+    const bridge = await import('./.build/bridge.mjs');
+    const runMod = await import('./.build/guidedRun.mjs');
+
+    // A pack, proved by construction: take a real pack design and ask
+    // what its own template can do.
+    const packs = await runMod.listRecipes('unpack', 'underpunks55', '');
+    const design = packs.choices.find((x) => x.source === 'pack');
+    const packAsset = {
+      asset_id: '999',
+      template: { template_id: String(design.raw.pack_template_id) },
+      collection: { collection_name: 'underpunks55' },
+      schema: { schema_name: 'packs' }, data: {},
+    };
+    const packUses = await bridge.whatUsesThis(packAsset, '');
+    const opener = packUses.uses.find((u) => u.kind === 'pack');
+    say(Boolean(opener), `an NFT that IS a pack says so: ${opener?.label ?? 'NOT FOUND'}`);
+    say(opener?.link === `pack~underpunks55~${design.id}`,
+        `and links straight to opening it (${opener?.link})`);
+
+    // Real NFTs from a real wallet: at least one must find a real use,
+    // or the bridge is only proved against something I built myself.
+    const owned = assets.filter((a) => a.collection?.collection_name === 'underpunks55').slice(0, 40);
+    let withUses = 0; let sample;
+    for (const a of owned) {
+      const u = await bridge.whatUsesThis(a, '');
+      if (u.uses.length) { withUses += 1; sample = sample ?? { a, u }; }
+      if (withUses >= 2) break;
+    }
+    say(withUses > 0,
+        sample
+          ? `a real NFT finds a real use: "${sample.a.name}" -> ${sample.u.uses[0].label} (${sample.u.uses[0].because})`
+          : 'no NFT in the sample found a use, so nothing was proved');
+
+    // Every use has to carry a reason and a link the runner can open.
+    if (sample) {
+      say(sample.u.uses.every((x) => x.link.split('~').length === 3 && x.because && x.label),
+          'every use carries a reason and a three-part runner link');
+      const links = sample.u.uses.map((x) => x.link);
+      say(new Set(links).size === links.length,
+          'the same recipe is never listed twice, however many of its ingredients match');
+      say(sample.u.scanned === 'underpunks55',
+          'and the screen can say which collection was actually searched');
+    }
+
+    // An NFT with no collection must not crash or claim to have looked.
+    const nowhere = await bridge.whatUsesThis({ asset_id: '1', data: {} }, '');
+    say(nowhere.uses.length === 0 && nowhere.scanned === '',
+        'an NFT with no collection returns nothing and says it searched nothing');
+
+    // The token check: the runner used to print "not checked" beside
+    // every cost, which is the one question that screen exists to answer.
+    const t = await bridge.checkTokenCost('zigm4.gm', '32.00000000 UPMAX');
+    say(t && t.symbol === 'UPMAX' && t.need === 32 && typeof t.have === 'number',
+        t ? `a token cost is measured: need ${t.need} ${t.symbol}, wallet holds ${t.have}` : 'token check returned nothing');
+    const unknown = await bridge.checkTokenCost('zigm4.gm', '1.0000 ZZZZNOPE');
+    say(unknown === undefined,
+        'an unregistered token returns nothing rather than guessing a contract and a balance');
+    say((await bridge.checkTokenCost('', '32.00000000 UPMAX')) === undefined,
+        'and no wallet asks the chain nothing');
+  }
+
   console.log('\n=== PHASE L - opening packs, on both pack contracts ===');
   {
     say(run.RECIPE_ACTIONS.some((a) => a.key === 'unpack'),
@@ -448,6 +579,32 @@ async function main() {
         offenders.length
           ? `these base rules sit BELOW the narrow-screen block and will override it: ${offenders.join(' ')}`
           : 'no base .inv- rule sits below it, so it cannot be silently outranked');
+
+    // Being last is worth nothing if the block never reaches the browser.
+    // The header comment above it was once left unterminated: its closing
+    // marker landed nine lines down, everything between became the
+    // prelude of an invalid selector, and the browser dropped the entire
+    // media query. Source order was perfect and the phone layout was
+    // dead, on the deployed site, for as long as it took a person to
+    // notice. So: strip comments the way a CSS tokenizer does, then check
+    // that the last thing before the block is the end of a rule.
+    let stripped = ''; let k = 0; let unterminated = false;
+    while (k < css.length) {
+      if (css.startsWith('/*', k)) {
+        const close = css.indexOf('*/', k + 2);
+        if (close === -1) { unterminated = true; break; }
+        k = close + 2;
+      } else { stripped += css[k]; k += 1; }
+    }
+    say(!unterminated, 'every comment in the file is closed');
+    say(!stripped.includes('*/'),
+        'no stray comment terminator survives, which would start an invalid selector');
+    const blockAt = stripped.indexOf('@media (max-width: 760px)');
+    const before = stripped.slice(0, blockAt).trimEnd();
+    say(before.endsWith('}'),
+        before.endsWith('}')
+          ? 'the block starts on a clean boundary, so a browser actually applies it'
+          : `loose text sits between the last rule and the block, so it parses as a selector: ...${JSON.stringify(before.slice(-70))}`);
   }
 
   console.log('\n=== PHASE J - the prototype actually signs ===');

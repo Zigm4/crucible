@@ -17,6 +17,8 @@ export default defineConfig({
         blend: 'src/nefty/blend.ts',
         inventory: 'src/ui/inventory.ts',
         prefs: 'src/ui/prefs.ts',
+        bridge: 'src/ui/bridge.ts',
+        wallet: 'src/nefty/wallet.ts',
         guidedRun: 'src/ui/guidedRun.ts',
         lab: 'src/ui/lab.ts',
         collections: 'src/atomic/collections.ts',

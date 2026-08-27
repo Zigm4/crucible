@@ -90,6 +90,27 @@ export interface InventoryState {
   openTemplate: string;
   templateOwners: { owner: string; count: number }[];
   templateState: 'idle' | 'loading' | 'done' | 'error';
+  /** What the open NFT can be fed to, and whether we have looked. */
+  uses: import('./bridge').Uses | undefined;
+  usesState: 'idle' | 'loading' | 'done';
+  /**
+   * The other half of a wallet: its fungible tokens.
+   *
+   * A dialog rather than a column, and loaded only when it is opened.
+   * Finding tokens costs an indexer round trip plus one read per issuer,
+   * which is not a price the NFT list should pay on every visit. Not in
+   * the URL for the same reason the filter drawer is not: whether a panel
+   * happened to be open is not part of the view somebody shares.
+   */
+  tokensOpen: boolean;
+  tokens: import('../nefty/wallet').WalletTokens | undefined;
+  tokensState: 'idle' | 'loading' | 'done' | 'error';
+  /** Which wallet the token list belongs to, so it cannot outlive it. */
+  tokensFor: string;
+  /** Free text over ticker and issuer, for wallets holding dozens. */
+  tokensQ: string;
+  /** Empty balances are hidden by default; this shows them. */
+  tokensShowEmpty: boolean;
 }
 
 export function emptyInventoryState(): InventoryState {
@@ -98,6 +119,9 @@ export function emptyInventoryState(): InventoryState {
     q: '', include: {}, exclude: {}, view: 'grid',
     sortKey: 'received', sortDesc: true, cardSize: 96, limit: 120, openFacets: [], filtersOpen: false,
     openAsset: '', openTemplate: '', templateOwners: [], templateState: 'idle',
+    uses: undefined, usesState: 'idle',
+    tokensOpen: false, tokens: undefined, tokensState: 'idle', tokensFor: '',
+    tokensQ: '', tokensShowEmpty: false,
   };
 }
 

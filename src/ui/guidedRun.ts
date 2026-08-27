@@ -308,6 +308,13 @@ export interface RunState {
   pickedRecipe?: RecipeChoice;
   /** Which slot's candidate list is open, if any. */
   openSlot?: number;
+  /**
+   * Token balances, keyed by the quantity string the recipe asks for.
+   * Filled in after the requirements are known: the whole question on
+   * this screen is whether you can afford it, and "not checked" is an
+   * honest non-answer.
+   */
+  tokenHave: Record<string, { have: number; need: number; symbol: string }>;
   /** Set while a wallet dialog is open, so nothing double-signs. */
   signing: boolean;
   /** The transaction id, once one exists. */
@@ -320,7 +327,8 @@ export function emptyRunState(): RunState {
     searched: false, reading: '',
     unreachable: [],
     blendId: '', loading: false, error: '', step: 1,
-    owner: '', assets: [], assetsFor: '', picked: {}, signing: false, lastTrxId: '',
+    owner: '', assets: [], assetsFor: '', picked: {}, tokenHave: {},
+    signing: false, lastTrxId: '',
   };
 }
 
