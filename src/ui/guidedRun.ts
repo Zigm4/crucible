@@ -34,98 +34,55 @@ import { listBlenderizerBlends } from '../blenderizer/blends';
 export type RunStep = 1 | 2 | 3 | 4;
 
 /**
- * The five things a player can actually run on WAX through these
- * contracts. Named the way somebody would describe them out loud, not
- * the way the contracts are organised, because the first screen has to
- * be answerable by somebody who does not know what a contract is.
+ * The three things a player wants to do.
+ *
+ * Not five. The first version made people choose "blend on NeftyBlocks"
+ * or "blend on WaxDAO" or "Blenderizer", which asks them to know which
+ * company hosts a recipe before they can look for it. That is an
+ * implementation detail: the intent is "blend", and finding out where it
+ * lives is our job, not theirs. So one action fans out across every
+ * contract that can serve it, and the answer says which one it came
+ * from.
  */
-export const RECIPE_KINDS = [
-  { key: 'blend', platform: 'NeftyBlocks', label: 'Blend NFTs',
-    blurb: 'Burn some NFTs, get a new one', contract: 'blend.nefty' },
-  { key: 'upgrade', platform: 'NeftyBlocks', label: 'Upgrade an NFT',
-    blurb: 'Keep the NFT, change what it says', contract: 'up.nefty' },
-  { key: 'drop', platform: 'NeftyBlocks', label: 'Claim a drop',
-    blurb: 'Buy or claim a fresh mint', contract: 'neftyblocksd' },
-  { key: 'waxdao', platform: 'WaxDAO', label: 'Blend on WaxDAO',
-    blurb: 'The same idea, a different contract', contract: 'waxdaomarket' },
-  { key: 'blenderizer', platform: 'Blenderizer', label: 'Blenderizer',
-    blurb: 'Swap NFTs inside one collection', contract: 'blenderizerx' },
+export const RECIPE_ACTIONS = [
+  { key: 'blend', label: 'Blend NFTs',
+    blurb: 'Burn some NFTs, get something new',
+    where: 'NeftyBlocks, WaxDAO and the Blenderizer, searched together' },
+  { key: 'upgrade', label: 'Upgrade an NFT',
+    blurb: 'Keep the NFT, change what it says',
+    where: 'NeftyBlocks only' },
+  { key: 'drop', label: 'Claim a drop',
+    blurb: 'Buy or claim a fresh mint',
+    where: 'NeftyBlocks only' },
 ] as const;
 
-export type RecipeKind = typeof RECIPE_KINDS[number]['key'];
+export type RecipeAction = typeof RECIPE_ACTIONS[number]['key'];
+
+/** Which contract a row actually came from. Step 4 needs this, people do not. */
+export type RecipeSource = 'blend' | 'waxdao' | 'blenderizer' | 'upgrade' | 'drop';
+
+export const SOURCE_INFO: Record<RecipeSource, { platform: string; contract: string }> = {
+  blend: { platform: 'NeftyBlocks', contract: 'blend.nefty' },
+  waxdao: { platform: 'WaxDAO', contract: 'waxdaomarket' },
+  blenderizer: { platform: 'Blenderizer', contract: 'blenderizerx' },
+  upgrade: { platform: 'NeftyBlocks', contract: 'up.nefty' },
+  drop: { platform: 'NeftyBlocks', contract: 'neftyblocksd' },
+};
+
+/** Every contract that can serve one action. */
+const SOURCES_FOR: Record<RecipeAction, RecipeSource[]> = {
+  blend: ['blend', 'waxdao', 'blenderizer'],
+  upgrade: ['upgrade'],
+  drop: ['drop'],
+};
+
+/** The action a source belongs to, for a deep link that names only the source. */
+export function actionOf(source: RecipeSource): RecipeAction {
+  return (Object.keys(SOURCES_FOR) as RecipeAction[])
+    .find((a) => SOURCES_FOR[a].includes(source)) ?? 'blend';
+}
 
 /** One row in the picker, whatever platform it came from. */
-export interface RecipeChoice {
-  id: string;
-  name: string;
-  /** A second line: what it produces, or why it cannot be run. */
-  note: string;
-  /** False when the contract says it is over, sold out or not started. */
-  live: boolean;
-}
-
-/**
- * Every recipe of one kind in one collection, in one shape.
- *
- * Each platform's lister returns something different, which is right for
- * the platform and wrong for a picker. This is the only place that knows
- * about all five, so adding a sixth means one function rather than a new
- * branch on every screen.
- */
-export async function listRecipes(
-  kind: RecipeKind, collection: string, actor: string,
-): Promise<RecipeChoice[]> {
-  const c = collection.trim().toLowerCase();
-  if (!c) return [];
-  if (kind === 'blend') {
-    const { blends } = await listBlends({ collection: c, includeInactive: false, actor });
-    return blends.map((b) => ({
-      id: String(b.blend_id),
-      name: b.name || `Blend #${b.blend_id}`,
-      note: b.is_random ? 'random result' : 'always the same result',
-      live: b.status === 'active',
-    }));
-  }
-  if (kind === 'upgrade') {
-    const { upgrades } = await listUpgrades({ collection: c, includeInactive: false });
-    return upgrades.map((u) => ({
-      id: String(u.upgrade_id),
-      name: u.name || `Upgrade #${u.upgrade_id}`,
-      note: 'rewrites an NFT you keep',
-      live: u.status === 'active',
-    }));
-  }
-  if (kind === 'drop') {
-    const { drops } = await listDrops({ collection: c, includeInactive: false });
-    return drops.map((d) => ({
-      id: String(d.drop_id),
-      name: d.name || `Drop #${d.drop_id}`,
-      // listing_price is the raw asset string, and "0.00000000 WAX"
-      // is how the contract says free. Saying so is friendlier than
-      // printing eight zeroes at somebody.
-      note: /[1-9]/.test(String(d.listing_price).split(' ')[0].replace('.', ''))
-        ? String(d.listing_price) : 'free',
-      live: d.status === 'active',
-    }));
-  }
-  if (kind === 'waxdao') {
-    const { blends } = await listWaxdaoBlends({ collection: c, includeInactive: false });
-    return blends.map((b) => ({
-      id: String(b.blend_id),
-      name: b.title || `Blend #${b.blend_id}`,
-      note: b.blends_remaining > 0 ? `${b.blends_remaining} left` : 'no limit stated',
-      live: b.status === 'active',
-    }));
-  }
-  const { blends } = await listBlenderizerBlends({ collection: c });
-  return blends.map((b) => ({
-    id: String(b.blend_id),
-    name: b.name || `Blenderizer #${b.blend_id}`,
-    note: 'swaps NFTs inside the collection',
-    live: true,
-  }));
-}
-
 /** One ingredient, turned into something a person can act on. */
 export interface Requirement {
   /** A sentence, not a variant name. */
@@ -137,17 +94,126 @@ export interface Requirement {
    * zero: a token cost we did not check must not read as "you have none".
    */
   have?: number;
-  /** Asset ids that satisfy this slot, for the picker in step 2. */
+  /** Asset ids that satisfy this slot, for the picker in step 4. */
   candidates: string[];
   kind: 'nft' | 'token' | 'other';
 }
 
-export interface RunState {
-  /** What kind of recipe, chosen on the first screen. */
-  kind: RecipeKind | '';
-  collection: string;
-  /** The recipes of that kind in that collection. */
+export interface RecipeChoice {
+  id: string;
+  name: string;
+  /** A second line: what it produces, or why it cannot be run. */
+  note: string;
+  /** False when the contract says it is over, sold out or not started. */
+  live: boolean;
+  /** Which contract served it. Shown as a badge, never asked for. */
+  source: RecipeSource;
+}
+
+/**
+ * Every recipe one action can reach, in one collection, in one shape.
+ *
+ * Each contract's lister returns something different, which is right for
+ * the contract and wrong for a picker. This is the only place that knows
+ * about all five, so adding a sixth is one entry here rather than a new
+ * branch on every screen.
+ *
+ * A blend fans out across three contracts at once. They are independent
+ * reads, so one being slow or down does not cost the others: a lister
+ * that throws contributes nothing and the rest still answer. Reporting
+ * "no blends here" because WaxDAO timed out would be worse than showing
+ * the Nefty ones.
+ */
+async function listOneSource(
+  source: RecipeSource, c: string, actor: string,
+): Promise<RecipeChoice[]> {
+  if (source === 'blend') {
+    const { blends } = await listBlends({ collection: c, includeInactive: false, actor });
+    return blends.map((b) => ({
+      source, id: String(b.blend_id),
+      name: b.name || `Blend #${b.blend_id}`,
+      note: b.is_random ? 'random result' : 'always the same result',
+      live: b.status === 'active',
+    }));
+  }
+  if (source === 'waxdao') {
+    const { blends } = await listWaxdaoBlends({ collection: c, includeInactive: false });
+    return blends.map((b) => ({
+      source, id: String(b.blend_id),
+      name: b.title || `Blend #${b.blend_id}`,
+      note: b.blends_remaining > 0 ? `${b.blends_remaining} left` : 'no limit stated',
+      live: b.status === 'active',
+    }));
+  }
+  if (source === 'blenderizer') {
+    const { blends } = await listBlenderizerBlends({ collection: c });
+    return blends.map((b) => ({
+      source, id: String(b.blend_id),
+      name: b.name || `Blenderizer #${b.blend_id}`,
+      note: 'swaps NFTs inside the collection',
+      live: true,
+    }));
+  }
+  if (source === 'upgrade') {
+    const { upgrades } = await listUpgrades({ collection: c, includeInactive: false });
+    return upgrades.map((u) => ({
+      source, id: String(u.upgrade_id),
+      name: u.name || `Upgrade #${u.upgrade_id}`,
+      note: 'rewrites an NFT you keep',
+      live: u.status === 'active',
+    }));
+  }
+  const { drops } = await listDrops({ collection: c, includeInactive: false });
+  return drops.map((d) => ({
+    source, id: String(d.drop_id),
+    name: d.name || `Drop #${d.drop_id}`,
+    // listing_price is the raw asset string, and "0.00000000 WAX" is how
+    // the contract says free. Saying so beats printing eight zeroes.
+    note: /[1-9]/.test(String(d.listing_price).split(' ')[0].replace('.', ''))
+      ? String(d.listing_price) : 'free',
+    live: d.status === 'active',
+  }));
+}
+
+export interface RecipeResults {
   choices: RecipeChoice[];
+  /** Contracts that failed, so the screen can say what it could not read. */
+  unreachable: RecipeSource[];
+}
+
+export async function listRecipes(
+  action: RecipeAction, collection: string, actor: string,
+): Promise<RecipeResults> {
+  const c = collection.trim().toLowerCase();
+  if (!c) return { choices: [], unreachable: [] };
+  const sources = SOURCES_FOR[action] ?? [];
+  const settled = await Promise.allSettled(
+    sources.map((src) => listOneSource(src, c, actor)),
+  );
+  const choices: RecipeChoice[] = [];
+  const unreachable: RecipeSource[] = [];
+  settled.forEach((r, i) => {
+    if (r.status === 'fulfilled') choices.push(...r.value);
+    else unreachable.push(sources[i]);
+  });
+  // Running first, then by name. Which contract it came from is a badge,
+  // not a sort key: sorting by platform would rebuild the grouping the
+  // player was just spared from choosing.
+  choices.sort((x, y) =>
+    Number(y.live) - Number(x.live) || x.name.localeCompare(y.name));
+  return { choices, unreachable };
+}
+
+export interface RunState {
+  /** What the person said they wanted to do, on the first screen. */
+  action: RecipeAction | '';
+  /** Which contract the recipe they picked actually lives on. */
+  source: RecipeSource | '';
+  collection: string;
+  /** The recipes that action can reach in that collection. */
+  choices: RecipeChoice[];
+  /** Contracts that would not answer, so the screen can say so. */
+  unreachable: RecipeSource[];
   listing: boolean;
   listError: string;
   /** The one they picked. */
@@ -165,7 +231,8 @@ export interface RunState {
 
 export function emptyRunState(): RunState {
   return {
-    kind: '', collection: '', choices: [], listing: false, listError: '',
+    action: '', source: '', collection: '', choices: [], listing: false, listError: '',
+    unreachable: [],
     blendId: '', loading: false, error: '', step: 1,
     owner: '', assets: [], assetsFor: '', picked: {},
   };

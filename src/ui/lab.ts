@@ -47,8 +47,9 @@ import {
 } from './prefs';
 import {
   emptyRunState, loadRunAssets, requirementsOf, rewardsOf, canAfford,
-  blendTitle, blendImage, listRecipes, collectionsOwned, RECIPE_KINDS,
-  type RunState, type RunStep, type RecipeKind,
+  blendTitle, blendImage, listRecipes, collectionsOwned,
+  RECIPE_ACTIONS, SOURCE_INFO, actionOf,
+  type RunState, type RunStep, type RecipeAction, type RecipeSource,
 } from './guidedRun';
 import { loadBlend as loadBlendRow } from '../nefty/blend';
 import { listAuthorizedCollections, isContractAuthorized } from '../atomic/collections';
@@ -1772,7 +1773,7 @@ function writeLabHash() {
       : state.tool === 'inventory' && state.inv.owner
         ? `/${encodeSubject(state.inv.owner + (view ? `~${view}` : ''))}`
         : state.tool === 'run' && state.run.blendId
-          ? `/${encodeSubject(`${state.run.kind || 'blend'}~${state.run.collection}~${state.run.blendId}`)}`
+          ? `/${encodeSubject(`${state.run.source || 'blend'}~${state.run.collection}~${state.run.blendId}`)}`
         : '';
     const target = `#/lab/${state.tool}${subject}`;
     if (location.hash === target) return;
@@ -1811,7 +1812,9 @@ export function applyLabRoute(tool: string, subject: string): void {
     const id = (parts.length >= 3 ? parts[2] : parts[0]).trim();
     if (id && id !== state.run.blendId) {
       state.run = emptyRunState();
-      state.run.kind = (parts.length >= 3 ? parts[0] : 'blend') as RecipeKind;
+      const src = (parts.length >= 3 ? parts[0] : 'blend') as RecipeSource;
+      state.run.source = src;
+      state.run.action = actionOf(src);
       state.run.collection = parts.length >= 3 ? parts[1] : '';
       state.run.step = 4;
       void startRun(id);
@@ -2937,8 +2940,18 @@ function renderInventoryTool(): string {
     .slice(0, 4)
     .map((f) => ({ key: f.key, label: f.label }));
 
+  // The template is computed once and handed to the whole table, so the
+  // header and every row resolve identically. Four fixed columns plus one
+  // per attribute; the minimum width is what makes it scroll rather than
+  // squeeze on a phone.
+  const listTpl = [
+    'minmax(150px, 1.6fr)', 'minmax(110px, 1fr)', 'minmax(70px, .6fr)', 'minmax(50px, .4fr)',
+    ...attrCols.map(() => 'minmax(90px, .8fr)'),
+  ].join(' ');
+  const listMin = 380 + attrCols.length * 90;
+
   const body = inv.view === 'list'
-    ? `<div class="inv-list">
+    ? `<div class="inv-list" style="--inv-tpl:${listTpl};--inv-min:${listMin}px">
         <div class="inv-list-head">
           <span>Name</span><span>Collection</span><span>Template</span><span>Mint</span>
           ${attrCols.map((c) => `<span>${esc(c.label)}</span>`).join('')}
@@ -3056,17 +3069,19 @@ const RUN_STEPS: { n: RunStep; title: string; q: string }[] = [
 /** Lists the recipes of the chosen kind in the chosen collection. */
 async function loadRunChoices(): Promise<void> {
   const run = state.run;
-  if (!run.kind || !run.collection) return;
+  if (!run.action || !run.collection) return;
   run.listing = true;
   run.listError = '';
   run.choices = [];
+  run.unreachable = [];
   rerender();
-  const askedFor = `${run.kind}::${run.collection}`;
+  const askedFor = `${run.action}::${run.collection}`;
   try {
-    const choices = await listRecipes(run.kind, run.collection, state.actor);
+    const res = await listRecipes(run.action, run.collection, state.actor);
     // A slow list must not land on a question somebody has moved past.
-    if (`${run.kind}::${run.collection}` !== askedFor) return;
-    run.choices = choices;
+    if (`${run.action}::${run.collection}` !== askedFor) return;
+    run.choices = res.choices;
+    run.unreachable = res.unreachable;
   } catch (e) {
     run.listError = e instanceof Error ? e.message : String(e);
   } finally {
@@ -3085,7 +3100,9 @@ async function startRun(blendId: string): Promise<void> {
   run.picked = {};
   rerender();
   try {
-    if (run.kind === 'blend' || !run.kind) {
+    // Only the NeftyBlocks blend contract has a detail view so far, so
+    // only its rows are fetched. The rest say so at step 4.
+    if (run.source === 'blend' || !run.source) {
       run.blend = await loadBlendRow({ blend_id: blendId });
     }
     run.owner = state.actor;
@@ -3101,7 +3118,6 @@ async function startRun(blendId: string): Promise<void> {
 
 function renderRunTool(): string {
   const run = state.run;
-  const kind = RECIPE_KINDS.find((k) => k.key === run.kind);
 
   const rail = `
     <div class="run-rail">
@@ -3109,8 +3125,8 @@ function renderRunTool(): string {
         // Never offer a step whose question the previous one has not
         // answered: "which one" with no collection is a blank screen.
         const reachable = st.n === 1
-          || (st.n === 2 && run.kind)
-          || (st.n === 3 && run.kind && run.collection)
+          || (st.n === 2 && run.action)
+          || (st.n === 3 && run.action && run.collection)
           || (st.n === 4 && run.blendId);
         return `
         <button class="run-step ${run.step === st.n ? 'on' : ''} ${run.step > st.n ? 'done' : ''}"
@@ -3126,14 +3142,15 @@ function renderRunTool(): string {
   if (run.step === 1) {
     body = `
       <h4>What do you want to do?</h4>
-      <p class="lab-hint">Three contracts, five things you can run on them. Pick the one that
-      matches what you are trying to do.</p>
+      <p class="lab-hint">Pick what you are trying to do. Which contract hosts it is our problem,
+      not yours: a blend search reads NeftyBlocks, WaxDAO and the Blenderizer at once and tells you
+      where each result came from.</p>
       <div class="run-kinds">
-        ${RECIPE_KINDS.map((k) => `
-          <button class="run-kind ${run.kind === k.key ? 'on' : ''}" data-lab="run-kind" data-value="${k.key}">
-            <strong>${esc(k.label)}</strong>
-            <small>${esc(k.blurb)}</small>
-            <span class="lab-hint">${esc(k.platform)} · <code>${esc(k.contract)}</code></span>
+        ${RECIPE_ACTIONS.map((a) => `
+          <button class="run-kind ${run.action === a.key ? 'on' : ''}" data-lab="run-kind" data-value="${a.key}">
+            <strong>${esc(a.label)}</strong>
+            <small>${esc(a.blurb)}</small>
+            <span class="lab-hint">${esc(a.where)}</span>
           </button>`).join('')}
       </div>`;
   } else if (run.step === 2) {
@@ -3163,16 +3180,20 @@ function renderRunTool(): string {
     body = `
       <h4>Which one?</h4>
       ${run.listError ? `<p class="lab-warn">${esc(run.listError)}</p>` : ''}
-      ${run.listing ? '<p class="lab-hint">Reading the contract.</p>' : ''}
+      ${run.listing ? '<p class="lab-hint">Reading the contracts.</p>' : ''}
+      ${run.unreachable.length ? `<p class="lab-warn">
+        Could not reach ${run.unreachable.map((u) => esc(SOURCE_INFO[u].contract)).join(' and ')},
+        so anything there is missing from this list.</p>` : ''}
       ${!run.listing && !run.choices.length
-        ? `<p class="lab-empty">No ${esc(kind?.label.toLowerCase() ?? 'recipe')} found in
-           <code>${esc(run.collection)}</code>. Check the spelling, or try another kind on step 1.</p>`
+        ? `<p class="lab-empty">Nothing found in <code>${esc(run.collection)}</code>.
+           Check the spelling, or try another action on step 1.</p>`
         : ''}
       <div class="run-choices">
         ${run.choices.map((c) => `
-          <button class="run-choice ${run.blendId === c.id ? 'on' : ''}"
-                  data-lab="run-pick" data-value="${esc(c.id)}">
+          <button class="run-choice ${run.blendId === c.id && run.source === c.source ? 'on' : ''}"
+                  data-lab="run-pick" data-value="${esc(c.id)}" data-source="${esc(c.source)}">
             <span class="run-choice-name">${esc(c.name)}</span>
+            <span class="lab-tag run-badge">${esc(SOURCE_INFO[c.source].platform)}</span>
             <span class="lab-hint">${esc(c.note)}${c.live ? '' : ' · not running'}</span>
             <span class="lab-hint">#${esc(c.id)}</span>
           </button>`).join('')}
@@ -3205,12 +3226,12 @@ function renderRunDetail(): string {
   // Only Nefty blends are modelled in detail so far. Saying so beats
   // showing a confident empty screen for the other four.
   if (!run.blend) {
-    const kind = RECIPE_KINDS.find((k) => k.key === run.kind);
+    const info = run.source ? SOURCE_INFO[run.source] : undefined;
     return `<p class="lab-hint">
       <strong>#${esc(run.blendId)}</strong> in <code>${esc(run.collection)}</code>, on
-      <code>${esc(kind?.contract ?? '')}</code>. The cost and odds breakdown is only written for
-      NeftyBlocks blends so far, so this prototype stops here for
-      ${esc(kind?.label.toLowerCase() ?? 'this kind')}. The main app already runs it.</p>`;
+      <code>${esc(info?.contract ?? '')}</code> (${esc(info?.platform ?? '')}). The cost and odds
+      breakdown is only written for <code>blend.nefty</code> so far, so this prototype stops here.
+      The main app already runs it.</p>`;
   }
 
   const b = run.blend;
@@ -4900,7 +4921,8 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           break;
         case 'tool-run': state.tool = 'run'; writeLabHash(); break;
         case 'run-kind':
-          state.run.kind = (el.dataset.value ?? '') as RecipeKind;
+          state.run.action = (el.dataset.value ?? '') as RecipeAction;
+          state.run.source = '';
           // Choosing a different kind invalidates the list under it.
           state.run.choices = [];
           state.run.blendId = '';
@@ -4929,6 +4951,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         }
         case 'run-pick':
           state.run.step = 4;
+          state.run.source = (el.dataset.source ?? 'blend') as RecipeSource;
           void startRun(el.dataset.value ?? '');
           return;
         case 'run-step':

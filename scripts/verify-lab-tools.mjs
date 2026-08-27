@@ -335,6 +335,21 @@ async function main() {
           : 'no base .inv- rule sits below it, so it cannot be silently outranked');
   }
 
+  console.log('\n=== PHASE H - the list table shares one column template ===');
+  {
+    const fs = await import('node:fs/promises');
+    const css = await fs.readFile(new URL('../src/ui/components.css', import.meta.url), 'utf8');
+    // The header sat over the wrong column because `width: max-content`
+    // let every row size to its own longest cell, so no two agreed on
+    // where a column started. Measured in a browser at 1280px after the
+    // fix: 6 rows, 0 misaligned, all 8 column edges identical.
+    const rowRule = css.slice(css.indexOf('.inv-list-head, .inv-list-row'));
+    say(!/width:\s*max-content/.test(rowRule.slice(0, 400)),
+        'list rows do not size to their own content, which is what misaligned the header');
+    say(/grid-template-columns:\s*var\(--inv-tpl/.test(css),
+        'the header and the rows take their columns from one shared variable');
+  }
+
   console.log('\n=== PHASE F - the runner, against a live blend ===');
   {
     const BLEND = '45780';
@@ -376,21 +391,45 @@ async function main() {
       say(nftSlots.length === 0 || run.canAfford(none) === false,
           'and is reported as unable to run it');
 
-      // The chooser: one lister across five contracts, so a sixth is one
-      // function rather than a branch on every screen.
-      const kinds = run.RECIPE_KINDS.map((k) => k.key);
-      say(kinds.length === 5 && kinds.includes('waxdao') && kinds.includes('blenderizer'),
-          `every platform is offered: ${run.RECIPE_KINDS.map((k) => k.platform).join(', ')}`);
-      const found = await run.listRecipes('blend', 'captainshelm', '');
-      say(found.length > 0, `listRecipes found ${found.length} blend(s) in captainshelm`);
-      say(found.every((c) => c.id && c.name && typeof c.live === 'boolean'),
-          'every row carries an id, a name and whether it is running');
+      // The chooser asks what you want to DO, not which company hosts it.
+      const actions = run.RECIPE_ACTIONS.map((a) => a.key);
+      say(actions.length === 3 && !actions.includes('waxdao') && !actions.includes('blenderizer'),
+          `three actions offered, no platform to choose: ${actions.join(', ')}`);
+      // ...and a blend search still reaches all three blend contracts.
+      say(run.actionOf('waxdao') === 'blend' && run.actionOf('blenderizer') === 'blend'
+          && run.actionOf('upgrade') === 'upgrade',
+          'every contract maps back to the action it serves');
+
+      // underpunks55 deliberately: it has blends on all three contracts, so
+      // this proves the fan-out really merges rather than just running.
+      // A collection with only Nefty blends would pass while the WaxDAO
+      // and Blenderizer legs were quietly broken.
+      const found = await run.listRecipes('blend', 'underpunks55', '');
+      const bySource = {};
+      for (const c of found.choices) bySource[c.source] = (bySource[c.source] ?? 0) + 1;
+      say(Object.keys(bySource).length === 3,
+          `one blend search reached every contract: ${
+            Object.entries(bySource).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+      say(found.choices.length > 0,
+          `${found.choices.length} recipes found without anyone naming a platform`);
+      say(found.choices.every((c) => c.id && c.name && typeof c.live === 'boolean' && c.source),
+          'every row carries an id, a name, whether it is running, and where it came from');
+      say(found.choices.every((c) => run.SOURCE_INFO[c.source]),
+          'every source has a platform and contract to show as a badge');
+      say(found.unreachable.length === 0,
+          `all three contracts answered${found.unreachable.length ? ` (missing ${found.unreachable})` : ''}`);
+      // Running first. Sorting by platform would rebuild the grouping the
+      // player was just spared from choosing.
+      const liveFlags = found.choices.map((c) => c.live);
+      say(liveFlags.every((v, i) => i === 0 || !(v && !liveFlags[i - 1])),
+          'recipes that are running are listed before ones that are not');
+
       // A collection nobody has ever used must come back empty rather
       // than throwing, because people will mistype one.
       const none2 = await run.listRecipes('blend', 'zzzzzzzzzzzz', '');
-      say(Array.isArray(none2) && none2.length === 0,
+      say(none2.choices.length === 0 && none2.unreachable.length === 0,
           'an unknown collection returns nothing rather than failing');
-      say((await run.listRecipes('blend', '', '')).length === 0,
+      say((await run.listRecipes('blend', '', '')).choices.length === 0,
           'no collection asks the chain nothing at all');
 
       // The chips on the "which collection" screen come from the wallet.
