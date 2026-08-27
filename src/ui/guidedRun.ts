@@ -26,10 +26,10 @@ import type { BlendRow, IngredientVariant } from '../nefty/blend';
 import { isDeterministic, deterministicResults, poolDraws, oddsAreCertain } from '../nefty/blend';
 import { listAssetsForOwner, type AtomicAsset } from '../atomic/assets';
 import { listBlends } from '../nefty/discover';
-import { listUpgrades } from '../nefty/upgrades';
+import { listUpgrades, loadUpgradeById } from '../nefty/upgrades';
 import { listDrops } from '../nefty/drops';
-import { listWaxdaoBlends } from '../waxdao/blends';
-import { listBlenderizerBlends } from '../blenderizer/blends';
+import { listWaxdaoBlends, loadWaxdaoBlendById } from '../waxdao/blends';
+import { listBlenderizerBlends, loadBlenderizerBlendById } from '../blenderizer/blends';
 
 export type RunStep = 1 | 2 | 3 | 4;
 
@@ -108,6 +108,15 @@ export interface RecipeChoice {
   live: boolean;
   /** Which contract served it. Shown as a badge, never asked for. */
   source: RecipeSource;
+  /**
+   * The row the lister returned, kept as-is.
+   *
+   * Step 4 needs the full recipe, and there is no loadDropById to fetch
+   * one back. Holding what we already read is not only simpler, it is
+   * safer: the detail screen can never disagree with the row that was
+   * clicked, which a second fetch could.
+   */
+  raw: unknown;
 }
 
 /**
@@ -130,7 +139,7 @@ async function listOneSource(
   if (source === 'blend') {
     const { blends } = await listBlends({ collection: c, includeInactive: false, actor });
     return blends.map((b) => ({
-      source, id: String(b.blend_id),
+      source, raw: b, id: String(b.blend_id),
       name: b.name || `Blend #${b.blend_id}`,
       note: b.is_random ? 'random result' : 'always the same result',
       live: b.status === 'active',
@@ -139,7 +148,7 @@ async function listOneSource(
   if (source === 'waxdao') {
     const { blends } = await listWaxdaoBlends({ collection: c, includeInactive: false });
     return blends.map((b) => ({
-      source, id: String(b.blend_id),
+      source, raw: b, id: String(b.blend_id),
       name: b.title || `Blend #${b.blend_id}`,
       note: b.blends_remaining > 0 ? `${b.blends_remaining} left` : 'no limit stated',
       live: b.status === 'active',
@@ -148,7 +157,7 @@ async function listOneSource(
   if (source === 'blenderizer') {
     const { blends } = await listBlenderizerBlends({ collection: c });
     return blends.map((b) => ({
-      source, id: String(b.blend_id),
+      source, raw: b, id: String(b.blend_id),
       name: b.name || `Blenderizer #${b.blend_id}`,
       note: 'swaps NFTs inside the collection',
       live: true,
@@ -157,7 +166,7 @@ async function listOneSource(
   if (source === 'upgrade') {
     const { upgrades } = await listUpgrades({ collection: c, includeInactive: false });
     return upgrades.map((u) => ({
-      source, id: String(u.upgrade_id),
+      source, raw: u, id: String(u.upgrade_id),
       name: u.name || `Upgrade #${u.upgrade_id}`,
       note: 'rewrites an NFT you keep',
       live: u.status === 'active',
@@ -165,7 +174,7 @@ async function listOneSource(
   }
   const { drops } = await listDrops({ collection: c, includeInactive: false });
   return drops.map((d) => ({
-    source, id: String(d.drop_id),
+    source, raw: d, id: String(d.drop_id),
     name: d.name || `Drop #${d.drop_id}`,
     // listing_price is the raw asset string, and "0.00000000 WAX" is how
     // the contract says free. Saying so beats printing eight zeroes.
@@ -227,6 +236,8 @@ export interface RunState {
   assetsFor: string;
   /** Asset ids the person chose, per requirement index. */
   picked: Record<number, string[]>;
+  /** The row they clicked on step 3, kept so step 4 needs no second read. */
+  pickedRecipe?: RecipeChoice;
 }
 
 export function emptyRunState(): RunState {
@@ -423,6 +434,236 @@ export async function loadRunAssets(st: RunState, owner: string): Promise<void> 
     st.assets = assets;
     st.assetsFor = owner;
   } catch { /* the counts simply stay unknown */ }
+}
+
+/**
+ * Cost and reward for the four contracts that are not blend.nefty.
+ *
+ * Same two questions, same two shapes, read from the row the picker
+ * already had. Written per contract rather than generically because the
+ * four say genuinely different things: a Blenderizer recipe always burns
+ * templates and always mints one, a drop charges a price and mints, an
+ * upgrade keeps your NFT and rewrites a field. Pretending they are one
+ * thing would produce a sentence that fits none of them.
+ *
+ * Ownership counting reuses the same rule as blends where the ingredient
+ * is an NFT, so "you have 3" means the same thing on every screen.
+ */
+export interface RecipeDetail {
+  requirements: Requirement[];
+  rewards: Reward[];
+  /** False when the result is drawn rather than fixed. */
+  sure: boolean;
+  /** One line of context above the two lists, or ''. */
+  note: string;
+}
+
+const countOwned = (assets: AtomicAsset[], pred: (a: AtomicAsset) => boolean) =>
+  assets.filter(pred).length;
+
+/** Everything the four non-blend.nefty sources say, in the shared shape. */
+export function describeRecipe(
+  source: RecipeSource, raw: unknown, assets: AtomicAsset[], known: boolean,
+): RecipeDetail | undefined {
+  const have = (n: number) => (known ? n : undefined);
+
+  if (source === 'waxdao') {
+    const b = raw as {
+      ingredients?: WaxdaoLike[]; results?: { nft_name?: string; template_id?: number; result_type?: string }[];
+      blends_remaining?: number;
+    };
+    const requirements: Requirement[] = (b.ingredients ?? []).map((ing) => {
+      if (ing.kind === 'fungible') {
+        return { text: `Pay ${ing.quantity}`, need: 1, candidates: [], kind: 'token' as const };
+      }
+      const amount = Number(ing.amount ?? 1) || 1;
+      const fate = ing.burn === false ? 'kept' : 'burned';
+      if (ing.kind === 'nft_template') {
+        const n = countOwned(assets, (a) => String(a.template?.template_id ?? '') === String(ing.template_id));
+        return { text: `${amount} x template #${ing.template_id} (${fate})`, need: amount, have: have(n),
+                 candidates: [], kind: 'nft' as const };
+      }
+      if (ing.kind === 'nft_schema') {
+        const n = countOwned(assets, (a) => a.collection?.collection_name === ing.collection_name
+          && a.schema?.schema_name === ing.schema_name);
+        return { text: `${amount} x any ${ing.schema_name} NFT (${fate})`, need: amount, have: have(n),
+                 candidates: [], kind: 'nft' as const };
+      }
+      if (ing.kind === 'nft_collection') {
+        const n = countOwned(assets, (a) => a.collection?.collection_name === ing.collection_name);
+        return { text: `${amount} x any NFT from ${ing.collection_name} (${fate})`, need: amount, have: have(n),
+                 candidates: [], kind: 'nft' as const };
+      }
+      if (ing.kind === 'nft_attribute') {
+        // The attribute conditions are not decoded by the lister, so the
+        // count would be wrong. Left unchecked rather than guessed.
+        return { text: `${amount} x ${ing.schema_name} matching this recipe's attribute rule`,
+                 need: amount, candidates: [], kind: 'other' as const };
+      }
+      return { text: 'An ingredient this page cannot read yet', need: 1, candidates: [], kind: 'other' as const };
+    });
+    // nft_name is not trustworthy. Blend 1547 on underpunks55 carries the
+    // literal string "name" there, which is the contract's placeholder,
+    // not a title. Anything that looks like the field's own label is
+    // dropped in favour of the template id, which is always real.
+    const rewards: Reward[] = (b.results ?? []).map((r) => {
+      const n = String(r.nft_name ?? '').trim();
+      const real = n && !['name', 'nft_name', 'null', 'undefined'].includes(n.toLowerCase());
+      const amount = Number((r as { amount?: number }).amount ?? 1) || 1;
+      const what = real ? n : r.template_id ? `template #${r.template_id}` : (r.result_type || 'a reward');
+      return { text: amount > 1 ? `${amount} x ${what}` : what };
+    });
+    return { requirements, rewards, sure: true, note: '' };
+  }
+
+  if (source === 'blenderizer') {
+    const b = raw as {
+      slots?: { template_id: number; amount: number }[];
+      name?: string; target?: number; target_issued?: number; target_max?: number;
+    };
+    const requirements: Requirement[] = (b.slots ?? []).map((sl) => {
+      const n = countOwned(assets, (a) => String(a.template?.template_id ?? '') === String(sl.template_id));
+      const amount = Number(sl.amount ?? 1) || 1;
+      return { text: `${amount} x template #${sl.template_id} (burned)`, need: amount, have: have(n),
+               candidates: [], kind: 'nft' as const };
+    });
+    const left = Number(b.target_max ?? 0) > 0
+      ? `${Number(b.target_max) - Number(b.target_issued ?? 0)} left of ${b.target_max}`
+      : 'no cap';
+    return {
+      requirements,
+      rewards: [{ text: b.name || `template #${b.target}` }],
+      sure: true,
+      note: `The Blenderizer always mints the same template. ${left}.`,
+    };
+  }
+
+  if (source === 'upgrade') {
+    const u = raw as {
+      ingredients?: UpgradeLike[];
+      specs?: { schema_name: string; results?: { attribute_name: string; immediate_value?: string | number; is_random?: boolean }[] }[];
+      is_random?: boolean;
+    };
+    const requirements: Requirement[] = (u.ingredients ?? []).map((ing) => {
+      if (ing.kind === 'ft') {
+        return { text: `Pay ${ing.quantity}`, need: 1, candidates: [], kind: 'token' as const };
+      }
+      const amount = Number(ing.amount ?? 1) || 1;
+      if (ing.kind === 'template') {
+        const n = countOwned(assets, (a) => String(a.template?.template_id ?? '') === String(ing.template_id));
+        return { text: `${amount} x template #${ing.template_id}`, need: amount, have: have(n),
+                 candidates: [], kind: 'nft' as const };
+      }
+      if (ing.kind === 'schema') {
+        const n = countOwned(assets, (a) => a.collection?.collection_name === ing.collection_name
+          && a.schema?.schema_name === ing.schema_name);
+        return { text: `${amount} x any ${ing.schema_name} NFT`, need: amount, have: have(n),
+                 candidates: [], kind: 'nft' as const };
+      }
+      if (ing.kind === 'collection') {
+        const n = countOwned(assets, (a) => a.collection?.collection_name === ing.collection_name);
+        return { text: `${amount} x any NFT from ${ing.collection_name}`, need: amount, have: have(n),
+                 candidates: [], kind: 'nft' as const };
+      }
+      if (ing.kind === 'balance') {
+        return { text: `Spend ${ing.cost} from an NFT's ${ing.attribute_name} balance`,
+                 need: 1, candidates: [], kind: 'other' as const };
+      }
+      return { text: `${amount} x ${ing.schema_name ?? 'an'} NFT matching this recipe's attribute rule`,
+               need: amount, candidates: [], kind: 'other' as const };
+    });
+    // An attribute value can be an IPFS hash, which is a correct answer
+    // and a useless one to read. Long opaque values are shortened rather
+    // than printed whole; the attribute name is the part that matters.
+    const short = (v: string | number) => {
+      const t = String(v);
+      return t.length > 28 ? `${t.slice(0, 10)}…${t.slice(-6)}` : t;
+    };
+    const rewards: Reward[] = (u.specs ?? []).flatMap((sp) =>
+      (sp.results ?? []).map((r) => ({
+        text: r.is_random || r.immediate_value === undefined
+          ? `${sp.schema_name}: ${r.attribute_name} changes to something drawn at random`
+          : `${sp.schema_name}: ${r.attribute_name} becomes ${short(r.immediate_value)}`,
+      })));
+    return {
+      requirements, rewards, sure: !u.is_random,
+      note: 'You keep the NFT. An upgrade rewrites what it says, it does not burn it.',
+    };
+  }
+
+  if (source === 'drop') {
+    const d = raw as {
+      listing_price?: string; is_free?: boolean;
+      assets_to_mint?: { template_id: number }[];
+      max_claimable?: number; current_claimed?: number; account_remaining?: number;
+    };
+    const paid = !d.is_free
+      && /[1-9]/.test(String(d.listing_price ?? '').split(' ')[0].replace('.', ''));
+    const requirements: Requirement[] = paid
+      ? [{ text: `Pay ${d.listing_price}`, need: 1, candidates: [], kind: 'token' as const }]
+      : [];
+    const rewards: Reward[] = (d.assets_to_mint ?? []).map((m) => ({ text: `template #${m.template_id}` }));
+    const cap = Number(d.max_claimable ?? 0) > 0
+      ? `${Number(d.max_claimable) - Number(d.current_claimed ?? 0)} of ${d.max_claimable} left`
+      : 'no overall cap';
+    return {
+      requirements, rewards, sure: true,
+      note: paid
+        ? `A drop mints straight to you. ${cap}.`
+        : `Free. A drop mints straight to you. ${cap}.`,
+    };
+  }
+  return undefined;
+}
+
+/** Structural shapes, kept local so this file does not import five types. */
+type WaxdaoLike = {
+  kind: string; quantity?: string; amount?: number; burn?: boolean;
+  template_id?: number; schema_name?: string; collection_name?: string;
+};
+type UpgradeLike = {
+  kind: string; quantity?: string; amount?: number; template_id?: number;
+  schema_name?: string; collection_name?: string; attribute_name?: string; cost?: number;
+};
+
+/**
+ * One recipe row, fetched by id.
+ *
+ * Only needed when somebody arrives by a shared link: clicking through
+ * the picker already has the row in hand. Without this, a pasted
+ * #/lab/run/waxdao~coll~1547 reached step 4 with nothing to describe and
+ * showed a dead end, which is exactly what a shared link must not do.
+ *
+ * Drops have no loader of their own, so the collection is listed and the
+ * id picked out of it. That needs the collection, which the link carries.
+ */
+export async function loadRecipeById(
+  source: RecipeSource, id: string, collection: string, actor: string,
+): Promise<RecipeChoice | undefined> {
+  const info = SOURCE_INFO[source];
+  const wrap = (name: string, raw: unknown, live: boolean, note = ''): RecipeChoice =>
+    ({ source, raw, id, name, note, live });
+  try {
+    if (source === 'waxdao') {
+      const b = await loadWaxdaoBlendById(id);
+      return b ? wrap(b.title || `Blend #${id}`, b, b.status === 'active') : undefined;
+    }
+    if (source === 'blenderizer') {
+      const b = await loadBlenderizerBlendById(id);
+      return b ? wrap(b.name || `Blenderizer #${id}`, b, true) : undefined;
+    }
+    if (source === 'upgrade') {
+      const u = await loadUpgradeById(id);
+      return u ? wrap(u.name || `Upgrade #${id}`, u, u.status === 'active') : undefined;
+    }
+    if (source === 'drop') {
+      if (!collection) return undefined;
+      const { choices } = await listRecipes('drop', collection, actor);
+      return choices.find((c) => c.id === id);
+    }
+  } catch { /* a link to something unreadable says so on screen */ }
+  void info;
+  return undefined;
 }
 
 /** Which steps a person may jump to: never past one that is not answered. */

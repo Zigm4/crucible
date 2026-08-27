@@ -36,6 +36,7 @@
  */
 
 import { atomicFetch } from '../chain/rpc';
+import { SUGGESTED_COLLECTIONS } from './collections';
 import { renderMediaThumb } from './media';
 import { pickImageRef } from '../atomic/image';
 import { listAssetsForOwner, type AtomicAsset } from '../atomic/assets';
@@ -869,7 +870,7 @@ export function renderCatalogPage(): string {
       </div>
       <div class="collection-chips">
         <span class="collection-chips-label">suggestions:</span>
-        ${['underpunks55', 'cigalepixeld', 'northshireup', 'pearlhorizon']
+        ${SUGGESTED_COLLECTIONS
           .map((c) => `<button type="button" class="collection-chip${s.collection === c ? ' active' : ''}" data-action="catalogPickCollection" data-collection="${c}">${c}</button>`)
           .join('')}
       </div>

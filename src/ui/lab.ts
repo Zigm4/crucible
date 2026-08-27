@@ -35,6 +35,7 @@ import {
   type KnownSession,
 } from '../chain/session';
 import { atomicFetch } from '../chain/rpc';
+import { SUGGESTED_COLLECTIONS } from './collections';
 import {
   emptyInventoryState, loadInventory, applyFilter, facetsOf, sortAssets,
   toggleFacet, clearFilters, activeFilterCount, facetValue, stringify,
@@ -47,7 +48,7 @@ import {
 } from './prefs';
 import {
   emptyRunState, loadRunAssets, requirementsOf, rewardsOf, canAfford,
-  blendTitle, blendImage, listRecipes, collectionsOwned,
+  blendTitle, blendImage, listRecipes, collectionsOwned, describeRecipe, loadRecipeById,
   RECIPE_ACTIONS, SOURCE_INFO, actionOf,
   type RunState, type RunStep, type RecipeAction, type RecipeSource,
 } from './guidedRun';
@@ -3100,10 +3101,15 @@ async function startRun(blendId: string): Promise<void> {
   run.picked = {};
   rerender();
   try {
-    // Only the NeftyBlocks blend contract has a detail view so far, so
-    // only its rows are fetched. The rest say so at step 4.
     if (run.source === 'blend' || !run.source) {
       run.blend = await loadBlendRow({ blend_id: blendId });
+    } else if (!run.pickedRecipe) {
+      // Arrived by a shared link, so nothing was clicked and there is no
+      // row in hand. Fetch the one the link names.
+      run.pickedRecipe = await loadRecipeById(run.source, blendId, run.collection, state.actor);
+      if (!run.pickedRecipe) {
+        run.error = `Could not read #${blendId} on ${SOURCE_INFO[run.source].contract}.`;
+      }
     }
     run.owner = state.actor;
     if (state.actor) await loadRunAssets(run, state.actor);
@@ -3165,8 +3171,14 @@ function renderRunTool(): string {
           ${run.listing ? 'Looking' : 'Find recipes'}
         </button>
       </div>
+      <div class="collection-chips">
+        <span class="collection-chips-label">try one of these:</span>
+        ${SUGGESTED_COLLECTIONS.map((c) => `
+          <button type="button" class="collection-chip${run.collection === c ? ' active' : ''}"
+                  data-lab="run-collection-pick" data-value="${esc(c)}">${esc(c)}</button>`).join('')}
+      </div>
       ${owned.length ? `
-        <p class="lab-hint">Collections you hold NFTs in:</p>
+        <p class="lab-hint">Or one you already hold NFTs in:</p>
         <div class="lab-tools inv-chips">
           ${owned.map((c) => `
             <button class="lab-tag" data-lab="run-collection-pick" data-value="${esc(c.name)}">
@@ -3174,8 +3186,8 @@ function renderRunTool(): string {
             </button>`).join('')}
         </div>`
         : state.actor
-          ? '<p class="lab-hint">Reading your NFTs to suggest collections.</p>'
-          : '<p class="lab-hint">Connect a wallet and this will suggest the collections you already hold.</p>'}`;
+          ? '<p class="lab-hint">Reading your NFTs to suggest more.</p>'
+          : '<p class="lab-hint">Connect a wallet and this will also suggest the collections you hold.</p>'}`;
   } else if (run.step === 3) {
     body = `
       <h4>Which one?</h4>
@@ -3217,43 +3229,20 @@ function renderRunTool(): string {
   </div>`;
 }
 
-/** Step 4: everything about the one recipe they chose. */
-function renderRunDetail(): string {
-  const run = state.run;
-  if (run.loading) return '<p class="lab-hint">Reading the recipe.</p>';
-  if (!run.blendId) return '<p class="lab-hint">Pick a recipe on the previous step.</p>';
-
-  // Only Nefty blends are modelled in detail so far. Saying so beats
-  // showing a confident empty screen for the other four.
-  if (!run.blend) {
-    const info = run.source ? SOURCE_INFO[run.source] : undefined;
-    return `<p class="lab-hint">
-      <strong>#${esc(run.blendId)}</strong> in <code>${esc(run.collection)}</code>, on
-      <code>${esc(info?.contract ?? '')}</code> (${esc(info?.platform ?? '')}). The cost and odds
-      breakdown is only written for <code>blend.nefty</code> so far, so this prototype stops here.
-      The main app already runs it.</p>`;
-  }
-
-  const b = run.blend;
-  const known = Boolean(run.assetsFor);
-  const reqs = requirementsOf(b, run.assets, known);
-  const { sure, rewards } = rewardsOf(b);
+/**
+ * The two questions, drawn the same way for all five contracts.
+ *
+ * One renderer rather than five, so a person moving between a Nefty
+ * blend and a WaxDAO one reads the same layout and the counts mean the
+ * same thing. It takes the shared shapes, never a contract's own row.
+ */
+function renderCostAndReward(
+  reqs: ReturnType<typeof requirementsOf>, rewards: { text: string; odds?: number }[],
+  sure: boolean, known: boolean,
+): string {
   const afford = canAfford(reqs);
-  const art = blendImage(b);
   const max = Math.max(1, ...rewards.map((r) => r.odds ?? 0));
-
   return `
-    <div class="run-head">
-      ${art ? renderMediaThumb({ ref: art, alt: blendTitle(b) }) : ''}
-      <div>
-        <h4>${esc(blendTitle(b))}</h4>
-        <p class="lab-hint">${esc(String(b.collection_name))} · #${esc(String(b.blend_id))}</p>
-        <p>${sure
-          ? 'A <strong>sure thing</strong>: every run gives the same result.'
-          : 'A <strong>gamble</strong>: the result is drawn when you run it.'}</p>
-      </div>
-    </div>
-
     <h4>What it takes from you</h4>
     ${!known ? '<p class="lab-hint">Connect a wallet to see how much of this you already hold.</p>' : ''}
     ${reqs.length ? reqs.map((r) => {
@@ -3266,20 +3255,74 @@ function renderRunDetail(): string {
           : short ? `<strong>you have ${r.have}</strong>, ${r.need - r.have} short`
             : `you have ${r.have}`}</span>
       </div>`;
-    }).join('') : '<p class="lab-hint">Nothing. This recipe is free.</p>'}
-    ${known ? (afford
+    }).join('') : '<p class="lab-hint">Nothing. This one is free.</p>'}
+    ${known && reqs.some((r) => r.have !== undefined) ? (afford
       ? '<p class="lab-ok">You hold everything this needs.</p>'
       : '<p class="lab-warn">You are short on at least one ingredient, so this would fail.</p>') : ''}
 
     <h4>What it gives back</h4>
+    ${sure ? '' : '<p class="lab-hint">Drawn at random. The bars are the real odds from the contract.</p>'}
     ${rewards.length ? rewards.map((r) => `
       <div class="run-odd">
         <span class="run-odd-name">${esc(r.text)}</span>
         ${r.odds === undefined ? '<span class="lab-hint">always</span>' : `
           <span class="run-odd-bar"><i style="width:${Math.max(2, (r.odds / max) * 100)}%"></i></span>
           <span class="run-odd-pct">${r.odds.toFixed(r.odds < 1 ? 2 : 1)}%</span>`}
-      </div>`).join('') : '<p class="lab-hint">The contract lists no outcome.</p>'}
+      </div>`).join('') : '<p class="lab-hint">The contract lists no outcome.</p>'}`;
+}
 
+/** Step 4: everything about the one recipe they chose. */
+function renderRunDetail(): string {
+  const run = state.run;
+  if (run.loading) return '<p class="lab-hint">Reading the recipe.</p>';
+  if (!run.blendId) return '<p class="lab-hint">Pick a recipe on the previous step.</p>';
+
+  // Only Nefty blends are modelled in detail so far. Saying so beats
+  // showing a confident empty screen for the other four.
+  const known = Boolean(run.assetsFor);
+  const info = run.source ? SOURCE_INFO[run.source] : undefined;
+
+  // Everything that is not a blend.nefty blend is described from the row
+  // the picker already held, which is why there is no second fetch and
+  // no loadDropById to be missing.
+  if (!run.blend) {
+    const detail = run.source && run.pickedRecipe
+      ? describeRecipe(run.source, run.pickedRecipe.raw, run.assets, known)
+      : undefined;
+    if (!detail) {
+      return `<p class="lab-hint">
+        <strong>#${esc(run.blendId)}</strong> in <code>${esc(run.collection)}</code>, on
+        <code>${esc(info?.contract ?? '')}</code>. This page could not read its recipe.</p>`;
+    }
+    return `
+      <div class="run-head">
+        <div>
+          <h4>${esc(run.pickedRecipe?.name ?? `#${run.blendId}`)}</h4>
+          <p class="lab-hint">${esc(run.collection)} · #${esc(run.blendId)} ·
+            ${esc(info?.platform ?? '')} <code>${esc(info?.contract ?? '')}</code></p>
+          ${detail.note ? `<p>${esc(detail.note)}</p>` : ''}
+        </div>
+      </div>
+      ${renderCostAndReward(detail.requirements, detail.rewards, detail.sure, known)}
+      <p class="lab-hint">This prototype stops before signing. The main app already builds the
+      real transaction for this one.</p>`;
+  }
+
+  const b = run.blend;
+  const reqs = requirementsOf(b, run.assets, known);
+  const { sure, rewards } = rewardsOf(b);
+  const art = blendImage(b);
+
+  return `
+    <div class="run-head">
+      ${art ? renderMediaThumb({ ref: art, alt: blendTitle(b) }) : ''}
+      <div>
+        <h4>${esc(blendTitle(b))}</h4>
+        <p class="lab-hint">${esc(String(b.collection_name))} · #${esc(String(b.blend_id))} ·
+          ${esc(info?.platform ?? 'NeftyBlocks')} <code>${esc(info?.contract ?? 'blend.nefty')}</code></p>
+      </div>
+    </div>
+    ${renderCostAndReward(reqs, rewards, sure, known)}
     <p class="lab-hint">This prototype stops before signing. The main app already builds the real
     transaction for this blend.</p>`;
 }
@@ -4949,11 +4992,17 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           void loadRunChoices();
           return;
         }
-        case 'run-pick':
+        case 'run-pick': {
+          const id = el.dataset.value ?? '';
+          const src = (el.dataset.source ?? 'blend') as RecipeSource;
           state.run.step = 4;
-          state.run.source = (el.dataset.source ?? 'blend') as RecipeSource;
-          void startRun(el.dataset.value ?? '');
+          state.run.source = src;
+          // Kept from the list rather than re-fetched, so the detail can
+          // never describe a different row from the one that was clicked.
+          state.run.pickedRecipe = state.run.choices.find((c) => c.id === id && c.source === src);
+          void startRun(id);
           return;
+        }
         case 'run-step':
           state.run.step = Number(el.dataset.value) as RunStep;
           break;

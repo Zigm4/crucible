@@ -335,6 +335,51 @@ async function main() {
           : 'no base .inv- rule sits below it, so it cannot be silently outranked');
   }
 
+  console.log('\n=== PHASE I - step 4 works for every contract, not just one ===');
+  {
+    // The prototype used to describe cost and reward only for
+    // blend.nefty and show a dead end for the other four, which meant a
+    // shared link to a WaxDAO blend led somebody nowhere.
+    const cases = [
+      { source: 'waxdao', id: '1547', collection: 'underpunks55' },
+      { source: 'blenderizer', id: '', collection: 'underpunks55' },
+      { source: 'upgrade', id: '', collection: 'underpunks55' },
+      { source: 'drop', id: '', collection: 'pearlhorizon' },
+    ];
+    for (const c of cases) {
+      let id = c.id;
+      if (!id) {
+        const listed = await run.listRecipes(run.actionOf(c.source), c.collection, '');
+        id = listed.choices.find((x) => x.source === c.source)?.id ?? '';
+        if (!id) { fails.push(`no ${c.source} sample in ${c.collection}, so it was never checked`); continue; }
+      }
+      // By id, the way a pasted link arrives: nothing was clicked, so
+      // there is no row in hand and it has to be fetched.
+      const choice = await run.loadRecipeById(c.source, id, c.collection, '');
+      if (!choice) { fails.push(`${c.source} #${id} could not be loaded from a link`); continue; }
+      const d = run.describeRecipe(c.source, choice.raw, assets, true);
+      if (!d) { fails.push(`${c.source} #${id} loaded but produced no detail`); continue; }
+      const bad = [...d.requirements, ...d.rewards]
+        .map((x) => x.text)
+        .filter((t) => !t || t.includes('undefined') || t.includes('[object') || t === 'name');
+      say(bad.length === 0 && d.rewards.length > 0,
+          `${c.source} #${id}: ${d.requirements.length} cost line(s), ${d.rewards.length} reward(s)${
+            bad.length ? ` — BAD: ${bad.join(', ')}` : ''}`);
+      // Ownership counting has to mean the same thing on every screen.
+      const nftSlots = d.requirements.filter((r) => r.kind === 'nft');
+      if (nftSlots.length) {
+        const unknown = run.describeRecipe(c.source, choice.raw, [], false);
+        say(unknown.requirements.filter((r) => r.kind === 'nft').every((r) => r.have === undefined),
+            `${c.source}: with no wallet read, nothing claims "you have 0"`);
+      }
+    }
+    // The placeholder WaxDAO writes into nft_name must never reach a screen.
+    const wd = await run.loadRecipeById('waxdao', '1547', 'underpunks55', '');
+    const wdd = wd && run.describeRecipe('waxdao', wd.raw, [], false);
+    say(wdd && wdd.rewards.every((r) => r.text.toLowerCase() !== 'name'),
+        'the literal string "name" that waxdaomarket stores is not shown as a reward');
+  }
+
   console.log('\n=== PHASE H - the list table shares one column template ===');
   {
     const fs = await import('node:fs/promises');
