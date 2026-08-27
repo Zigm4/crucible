@@ -35,6 +35,12 @@ import {
   type KnownSession,
 } from '../chain/session';
 import { atomicFetch } from '../chain/rpc';
+import {
+  emptyInventoryState, loadInventory, applyFilter, facetsOf, sortAssets,
+  toggleFacet, clearFilters, activeFilterCount, facetValue, stringify,
+  encodeInventoryView, decodeInventoryView, SORT_KEYS, ATTR_PREFIX,
+  type InventoryState,
+} from './inventory';
 import { listAuthorizedCollections, isContractAuthorized } from '../atomic/collections';
 import { readCollectionSecurities, executeAdminAction } from '../nefty/admin';
 import { clearDiscoverCache } from '../nefty/discover';
@@ -149,7 +155,7 @@ type LabMode = 'create' | 'edit';
  * the WAX premium-name auction reader and bidder. They share nothing but
  * the wallet, so each keeps its own state.
  */
-type LabTool = 'recipes' | 'names' | 'crucible';
+type LabTool = 'recipes' | 'names' | 'crucible' | 'inventory';
 /** Which of the two share buttons a copy came from. */
 type ShareScope = 'tool' | 'auction';
 
@@ -276,6 +282,8 @@ export interface LabForm {
 /** LabForm plus everything that only exists to drive the screen. */
 interface LabState extends LabForm {
   tool: LabTool;
+  /** The inventory workbench, self-contained in ./inventory. */
+  inv: InventoryState;
   mode: LabMode;
   /** Edit mode: what exists in this collection, and what is being changed. */
   existing: LabExisting[];
@@ -400,6 +408,7 @@ interface LabState extends LabForm {
 
 const state: LabState = {
   tool: 'recipes',
+  inv: emptyInventoryState(),
   mode: 'create',
   existing: [],
   existingState: 'idle',
@@ -1744,7 +1753,12 @@ async function onCopyLabLink(scope: ShareScope) {
 function writeLabHash() {
   try {
     if (!location.hash.startsWith('#/lab')) return;
-    const subject = state.tool === 'names' && state.nameStatusFor ? `/${encodeSubject(state.nameStatusFor)}` : '';
+    const view = state.tool === 'inventory' ? encodeInventoryView(state.inv) : '';
+    const subject = state.tool === 'names' && state.nameStatusFor
+      ? `/${encodeSubject(state.nameStatusFor)}`
+      : state.tool === 'inventory' && state.inv.owner
+        ? `/${encodeSubject(state.inv.owner + (view ? `~${view}` : ''))}`
+        : '';
     const target = `#/lab/${state.tool}${subject}`;
     if (location.hash === target) return;
     history.replaceState(null, '', target);
@@ -1757,7 +1771,18 @@ function writeLabHash() {
  * in the same place.
  */
 export function applyLabRoute(tool: string, subject: string): void {
-  if (tool === 'names' || tool === 'recipes' || tool === 'crucible') state.tool = tool;
+  if (tool === 'names' || tool === 'recipes' || tool === 'crucible' || tool === 'inventory') {
+    state.tool = tool;
+  }
+  // #/lab/inventory/<owner>~q=...~collection=... carries the whole view, so
+  // a filtered inventory is a link somebody can paste into chat.
+  if (state.tool === 'inventory' && subject) {
+    const [owner, ...rest] = decodeSubject(subject).split('~');
+    state.inv = emptyInventoryState();
+    state.inv.owner = owner.trim().toLowerCase();
+    decodeInventoryView(rest.join('~'), state.inv);
+    if (state.inv.owner) void loadInventory(state.inv, state.inv.owner).then(rerender);
+  }
   const wanted = state.tool === 'names' ? decodeSubject(subject).trim().toLowerCase() : '';
   // A bare #/lab is not a link anyone can share back, so fill it in. Not
   // when a name is still being looked up: that would write the previous
@@ -2729,6 +2754,172 @@ function editTokenControl(): string {
       </div>
       <button class="lab-ghost" data-lab="token-close">Cancel</button>
     </div>`;
+}
+
+// ─── tool: inventory ────────────────────────────────────────────────────
+
+/**
+ * The inventory workbench.
+ *
+ * Everything here reads from one in-memory list, so typing, faceting and
+ * sorting never touch the network. The facet rail is rebuilt from the
+ * filtered set on every render, which is what makes the refinement
+ * progressive rather than a fixed set of dropdowns.
+ */
+function renderInventoryTool(): string {
+  const inv = state.inv;
+
+  const bar = `
+    <div class="lab-field inv-bar">
+      <label for="inv-owner">Wallet</label>
+      <input id="inv-owner" type="text" spellcheck="false" autocapitalize="off"
+             placeholder="account name" value="${esc(inv.owner)}" />
+      <button data-lab="inv-load" ${inv.loading ? 'disabled' : ''}>
+        ${inv.loading ? 'Reading' : 'Read inventory'}
+      </button>
+      ${inv.loadedFor ? `<button data-lab="inv-reload" ${inv.loading ? 'disabled' : ''}>Refresh</button>` : ''}
+      ${state.actor && inv.owner !== state.actor
+        ? `<button data-lab="inv-me">Use ${esc(state.actor)}</button>` : ''}
+    </div>`;
+
+  if (!inv.loadedFor) {
+    return `<div class="lab-panel">
+      <h3>Inventory</h3>
+      <p class="lab-hint">Every NFT one wallet owns, read once and then searched, filtered and
+      sorted on your machine. Nothing is stored: the view lives in the address bar, so a filtered
+      inventory is a link you can send someone.</p>
+      ${bar}
+      ${inv.loading ? '<p class="lab-hint">Reading every page of the inventory. Large wallets take a moment.</p>' : ''}
+      ${inv.error ? `<p class="lab-warn">${esc(inv.error)}</p>` : ''}
+    </div>`;
+  }
+
+  const filtered = applyFilter(inv.assets, inv);
+  const sorted = sortAssets(filtered, inv.sortKey, inv.sortDesc);
+  const shown = sorted.slice(0, inv.limit);
+  const facets = facetsOf(inv.assets, inv);
+  const active = activeFilterCount(inv);
+
+  // The chips for what is currently on, so undoing never means hunting
+  // through the rail for the value you picked.
+  const chip = (key: string, value: string, mode: 'include' | 'exclude') => `
+    <button class="lab-tag ${mode === 'exclude' ? 'lab-row-bad' : 'lab-row-mine'}"
+            data-lab="inv-chip" data-key="${esc(key)}" data-value="${esc(value)}" data-mode="${mode}">
+      ${mode === 'exclude' ? 'not ' : ''}${esc(key.startsWith(ATTR_PREFIX) ? key.slice(ATTR_PREFIX.length) : key)}:
+      ${esc(value)} <span class="lab-x">x</span>
+    </button>`;
+
+  const activeChips = [
+    ...Object.entries(inv.include).flatMap(([k, vs]) => vs.map((v) => chip(k, v, 'include'))),
+    ...Object.entries(inv.exclude).flatMap(([k, vs]) => vs.map((v) => chip(k, v, 'exclude'))),
+  ].join('');
+
+  const rail = facets.map((f) => {
+    const open = inv.openFacets.includes(f.key);
+    const chosen = (inv.include[f.key]?.length ?? 0) + (inv.exclude[f.key]?.length ?? 0);
+    return `
+      <div class="lab-panel inv-facet">
+        <button class="inv-facet-head" data-lab="inv-facet" data-key="${esc(f.key)}">
+          <strong>${esc(f.label)}</strong>
+          <span class="lab-hint">${f.total} value${f.total === 1 ? '' : 's'}${chosen ? `, ${chosen} on` : ''}</span>
+          <span class="lab-nav-actions">${open ? '−' : '+'}</span>
+        </button>
+        ${open ? `<div class="inv-facet-body">
+          ${f.values.map((v) => {
+            const inc = (inv.include[f.key] ?? []).includes(v.value);
+            const exc = (inv.exclude[f.key] ?? []).includes(v.value);
+            return `
+            <div class="inv-facet-row ${inc ? 'on' : ''} ${exc ? 'off' : ''}">
+              <button class="inv-facet-val" data-lab="inv-inc" data-key="${esc(f.key)}" data-value="${esc(v.value)}"
+                      title="Show only these">${esc(v.value || '(empty)')}</button>
+              <span class="lab-hint">${v.count}</span>
+              <button class="inv-facet-not" data-lab="inv-exc" data-key="${esc(f.key)}" data-value="${esc(v.value)}"
+                      title="Hide these">${exc ? 'hidden' : 'hide'}</button>
+            </div>`;
+          }).join('')}
+          ${f.total > f.values.length
+            ? `<p class="lab-hint">${f.total - f.values.length} more value${f.total - f.values.length === 1 ? '' : 's'} not listed. Narrow the search to see them.</p>`
+            : ''}
+        </div>` : ''}
+      </div>`;
+  }).join('');
+
+  // Attribute columns worth showing in list mode: the ones the current
+  // result set actually shares, so a VESSEL search shows VESSEL's fields.
+  const attrCols = facets
+    .filter((f) => f.key.startsWith(ATTR_PREFIX))
+    .slice(0, 4)
+    .map((f) => ({ key: f.key, label: f.label }));
+
+  const body = inv.view === 'list'
+    ? `<div class="inv-list">
+        <div class="inv-list-head">
+          <span>Name</span><span>Collection</span><span>Template</span><span>Mint</span>
+          ${attrCols.map((c) => `<span>${esc(c.label)}</span>`).join('')}
+        </div>
+        ${shown.map((a) => `
+          <div class="inv-list-row">
+            <span class="inv-name">${esc(a.name || a.asset_id)}</span>
+            <span>${esc(a.collection?.collection_name ?? '')}</span>
+            <span>${esc(a.template?.template_id ?? '')}</span>
+            <span>${esc(a.template_mint ?? '')}</span>
+            ${attrCols.map((c) => `<span>${esc(facetValue(a, c.key))}</span>`).join('')}
+          </div>`).join('')}
+      </div>`
+    : `<div class="inv-grid">
+        ${shown.map((a) => {
+          const img = (a.data ?? {}).img ?? (a.data ?? {}).image ?? (a.data ?? {}).video;
+          return `
+          <div class="inv-card" title="${esc(a.asset_id)}">
+            ${img ? renderMediaThumb({ ref: stringify(img), alt: a.name ?? a.asset_id, className: 'media-thumb-sm' })
+                  : '<span class="lab-noart"></span>'}
+            <span class="inv-card-name">${esc(a.name || a.asset_id)}</span>
+            <span class="inv-card-sub">${esc(a.collection?.collection_name ?? '')}${a.template_mint ? ` · #${esc(a.template_mint)}` : ''}</span>
+          </div>`;
+        }).join('')}
+      </div>`;
+
+  return `<div class="lab-panel">
+    <h3>Inventory</h3>
+    ${bar}
+    ${inv.error ? `<p class="lab-warn">${esc(inv.error)}</p>` : ''}
+
+    <div class="lab-field inv-bar">
+      <input id="inv-q" type="text" spellcheck="false" placeholder="search name, collection, schema, template, id, any attribute"
+             value="${esc(inv.q)}" />
+      <div class="lab-seg">
+        <button class="${inv.view === 'grid' ? 'on' : ''}" data-lab="inv-view" data-value="grid">Grid</button>
+        <button class="${inv.view === 'list' ? 'on' : ''}" data-lab="inv-view" data-value="list">List</button>
+      </div>
+      <select id="inv-sort">
+        ${[...SORT_KEYS, ...facets.filter((f) => f.key.startsWith(ATTR_PREFIX)).map((f) => ({ key: f.key, label: f.label }))]
+          .map((k) => `<option value="${esc(k.key)}" ${inv.sortKey === k.key ? 'selected' : ''}>sort by ${esc(k.label)}</option>`).join('')}
+      </select>
+      <button data-lab="inv-order">${inv.sortDesc ? 'desc' : 'asc'}</button>
+      ${active ? `<button data-lab="inv-clear">clear ${active} filter${active === 1 ? '' : 's'}</button>` : ''}
+      ${shareButton('tool', 'link to this view')}
+    </div>
+
+    ${activeChips ? `<div class="lab-tools inv-chips">${activeChips}</div>` : ''}
+
+    <p class="lab-hint">
+      <strong>${filtered.length.toLocaleString('en-US')}</strong> of
+      ${inv.assets.length.toLocaleString('en-US')} NFT${inv.assets.length === 1 ? '' : 's'}
+      ${active ? 'match' : 'owned'}${shown.length < filtered.length ? `, showing the first ${shown.length.toLocaleString('en-US')}` : ''}.
+    </p>
+
+    <div class="inv-split">
+      <aside class="inv-rail">
+        ${rail || '<p class="lab-hint">Nothing left to narrow by.</p>'}
+      </aside>
+      <div class="inv-body">
+        ${filtered.length ? body : '<p class="lab-empty">Nothing matches. Loosen a filter.</p>'}
+        ${shown.length < filtered.length
+          ? `<button data-lab="inv-more">Show ${Math.min(240, filtered.length - shown.length).toLocaleString('en-US')} more</button>`
+          : ''}
+      </div>
+    </div>
+  </div>`;
 }
 
 // ─── tool: WAX premium name auctions ────────────────────────────────────
@@ -3810,6 +4001,9 @@ export function renderLabPage(): string {
       <button class="${state.tool === 'crucible' ? 'on' : ''}" data-lab="tool-crucible">
         Crucible Contracts<small>our own engine, in preview</small>
       </button>
+      <button class="${state.tool === 'inventory' ? 'on' : ''}" data-lab="tool-inventory">
+        Inventory<small>every NFT you own, searchable</small>
+      </button>
       ${shareButton('tool', 'link to this tool')}
     </div>`;
 
@@ -3820,6 +4014,19 @@ export function renderLabPage(): string {
         ${toolBar}
         ${walletBar()}
         ${renderCrucibleTool()}
+      </section>`;
+  }
+
+  if (state.tool === 'inventory') {
+    // Wider than the rest of the lab on purpose. Every other tool is a
+    // form, where a narrow column is easier to read; this one exists
+    // because people cannot see enough of their NFTs at once.
+    return `
+      <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
+      <section class="lab lab-wide">
+        ${toolBar}
+        ${walletBar()}
+        ${renderInventoryTool()}
       </section>`;
   }
 
@@ -4323,6 +4530,14 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
 
         case 'tool-recipes': state.tool = 'recipes'; writeLabHash(); break;
         case 'tool-crucible': state.tool = 'crucible'; writeLabHash(); break;
+        case 'tool-inventory':
+          state.tool = 'inventory';
+          if (!state.inv.owner && state.actor) state.inv.owner = state.actor;
+          if (state.inv.owner && state.inv.loadedFor !== state.inv.owner && !state.inv.loading) {
+            void loadInventory(state.inv, state.inv.owner).then(render);
+          }
+          writeLabHash();
+          break;
         case 'tool-names':
           state.tool = 'names';
           state.lastTx = ''; state.lastError = '';
@@ -4330,6 +4545,59 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           if (state.topBidsState === 'idle') void loadTopBids();
           writeLabHash();
           break;
+        // ── inventory ────────────────────────────────────────────────
+        case 'inv-load':
+        case 'inv-reload': {
+          const who = (root.querySelector<HTMLInputElement>('#inv-owner')?.value ?? state.inv.owner)
+            .trim().toLowerCase();
+          if (!who) return;
+          state.inv.owner = who;
+          void loadInventory(state.inv, who, kind === 'inv-reload').then(() => { writeLabHash(); render(); });
+          render();
+          return;
+        }
+        case 'inv-me':
+          state.inv.owner = state.actor;
+          void loadInventory(state.inv, state.actor).then(() => { writeLabHash(); render(); });
+          break;
+        case 'inv-view':
+          state.inv.view = el.dataset.value === 'list' ? 'list' : 'grid';
+          writeLabHash();
+          break;
+        case 'inv-order':
+          state.inv.sortDesc = !state.inv.sortDesc;
+          writeLabHash();
+          break;
+        case 'inv-clear':
+          clearFilters(state.inv);
+          writeLabHash();
+          break;
+        case 'inv-more':
+          // Raised rather than removed: painting 20,000 cards at once locks
+          // the tab, and nobody reads 20,000 cards.
+          state.inv.limit += 240;
+          break;
+        case 'inv-facet': {
+          const key = el.dataset.key ?? '';
+          state.inv.openFacets = state.inv.openFacets.includes(key)
+            ? state.inv.openFacets.filter((k) => k !== key)
+            : [...state.inv.openFacets, key];
+          break;
+        }
+        case 'inv-inc':
+        case 'inv-exc':
+        case 'inv-chip': {
+          const key = el.dataset.key ?? '';
+          const value = el.dataset.value ?? '';
+          const mode = kind === 'inv-exc' || el.dataset.mode === 'exclude' ? 'exclude' : 'include';
+          toggleFacet(state.inv, key, value, mode);
+          // A narrowed set is a new page of results, so start it at the top
+          // rather than 700 rows down from the last one.
+          state.inv.limit = 120;
+          writeLabHash();
+          break;
+        }
+
         case 'login':  void onLabLogin(); return;
         case 'logout': void onLabLogout(); return;
 
@@ -4419,6 +4687,8 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     if (!isSelect) el.addEventListener('change', deferrableRender);
   };
 
+  bind('inv-q', (v) => { state.inv.q = v; state.inv.limit = 120; }, 'live');
+  bind('inv-sort', (v) => { state.inv.sortKey = v; writeLabHash(); });
   bind('lab-search', (v) => { state.search = v; }, 'live');
   bind('lab-token-search', (v) => { state.tokenSearch = v; }, 'live');
   bind('lab-name-query', (v) => { state.nameQuery = v; });
