@@ -2553,3 +2553,11 @@ input.lab-inline { max-width: 190px; }
 .inv-bar > input[type="text"] { flex: 1 1 220px; min-width: 0; margin: 0; }
 .inv-bar > select { margin: 0; }
 .inv-bar #inv-q { flex: 1 1 320px; }
+
+.inv-views { margin: 8px 0 12px; }
+.inv-view-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; }
+.inv-view-tag > button {
+  background: none; border: 0; padding: 0; cursor: pointer; color: inherit; font: inherit;
+}
+.inv-view-tag > .lab-x { opacity: .5; padding: 0 4px; }
+.inv-view-tag > .lab-x:hover { opacity: 1; color: var(--err); }

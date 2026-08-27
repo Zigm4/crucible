@@ -41,6 +41,9 @@ import {
   encodeInventoryView, decodeInventoryView, SORT_KEYS, ATTR_PREFIX,
   type InventoryState,
 } from './inventory';
+import {
+  readPrefs, patchPrefs, forgetPrefs, storageAvailable, type SavedView,
+} from './prefs';
 import { listAuthorizedCollections, isContractAuthorized } from '../atomic/collections';
 import { readCollectionSecurities, executeAdminAction } from '../nefty/admin';
 import { clearDiscoverCache } from '../nefty/discover';
@@ -1779,7 +1782,10 @@ export function applyLabRoute(tool: string, subject: string): void {
   if (state.tool === 'inventory' && subject) {
     const [owner, ...rest] = decodeSubject(subject).split('~');
     state.inv = emptyInventoryState();
+    applyInventoryPrefs(state.inv);
     state.inv.owner = owner.trim().toLowerCase();
+    // After the preferences, so a link that names a view or a sort wins.
+    // The sender's screen is the point of sharing one.
     decodeInventoryView(rest.join('~'), state.inv);
     if (state.inv.owner) void loadInventory(state.inv, state.inv.owner).then(rerender);
   }
@@ -2766,6 +2772,54 @@ function editTokenControl(): string {
  * filtered set on every render, which is what makes the refinement
  * progressive rather than a fixed set of dropdowns.
  */
+/**
+ * Puts remembered choices onto a fresh inventory state.
+ *
+ * Only ever touches how things are displayed. The wallet, the assets and
+ * the filters are left exactly as the caller set them, because those are
+ * data or a shared link, not a preference.
+ */
+/**
+ * Filter sets a person named and can bring back.
+ *
+ * This is the honest answer to "let me sort my inventory how I want it".
+ * A hand-dragged order would have to store a position for every asset,
+ * which is exactly the wallet data this page refuses to keep. A named set
+ * of filters and a sort is the same intent, stored as choices instead.
+ */
+function renderSavedViews(active: number): string {
+  if (!storageAvailable()) {
+    return `<p class="lab-hint">Your browser will not let this page store anything, so views
+      cannot be saved here. Everything else works; the address bar still carries the view.</p>`;
+  }
+  const views: SavedView[] = readPrefs().savedViews ?? [];
+  return `
+    <div class="inv-views">
+      <div class="lab-field inv-bar">
+        <input id="inv-view-name" type="text" spellcheck="false" maxlength="48"
+               placeholder="name this view, e.g. my combat tech" />
+        <button data-lab="inv-save-view" ${active ? '' : 'disabled'}>Save view</button>
+        ${views.length ? '<button data-lab="inv-forget">Forget my settings</button>' : ''}
+      </div>
+      ${views.length ? `<div class="lab-tools inv-chips">
+        ${views.map((v) => `
+          <span class="lab-tag inv-view-tag">
+            <button data-lab="inv-load-view" data-value="${esc(v.name)}">${esc(v.name)}</button>
+            <button class="lab-x" data-lab="inv-drop-view" data-value="${esc(v.name)}" title="Forget this view">x</button>
+          </span>`).join('')}
+      </div>` : ''}
+      <p class="lab-hint">Saved in this browser only: the name you typed and the filters, nothing
+      else. No wallet, no NFT, no balance. It is never sent anywhere.</p>
+    </div>`;
+}
+
+function applyInventoryPrefs(inv: InventoryState): void {
+  const p = readPrefs();
+  if (p.inventoryView === 'grid' || p.inventoryView === 'list') inv.view = p.inventoryView;
+  if (p.inventorySort) inv.sortKey = p.inventorySort;
+  if (typeof p.inventorySortDesc === 'boolean') inv.sortDesc = p.inventorySortDesc;
+}
+
 function renderInventoryTool(): string {
   const inv = state.inv;
 
@@ -2901,6 +2955,8 @@ function renderInventoryTool(): string {
     </div>
 
     ${activeChips ? `<div class="lab-tools inv-chips">${activeChips}</div>` : ''}
+
+    ${renderSavedViews(active)}
 
     <p class="lab-hint">
       <strong>${filtered.length.toLocaleString('en-US')}</strong> of
@@ -4532,6 +4588,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'tool-crucible': state.tool = 'crucible'; writeLabHash(); break;
         case 'tool-inventory':
           state.tool = 'inventory';
+          if (!state.inv.loadedFor) applyInventoryPrefs(state.inv);
           if (!state.inv.owner && state.actor) state.inv.owner = state.actor;
           if (state.inv.owner && state.inv.loadedFor !== state.inv.owner && !state.inv.loading) {
             void loadInventory(state.inv, state.inv.owner).then(render);
@@ -4562,11 +4619,45 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           break;
         case 'inv-view':
           state.inv.view = el.dataset.value === 'list' ? 'list' : 'grid';
+          patchPrefs({ inventoryView: state.inv.view });
           writeLabHash();
           break;
         case 'inv-order':
           state.inv.sortDesc = !state.inv.sortDesc;
+          patchPrefs({ inventorySortDesc: state.inv.sortDesc });
           writeLabHash();
+          break;
+        case 'inv-save-view': {
+          const name = (root.querySelector<HTMLInputElement>('#inv-view-name')?.value ?? '').trim();
+          if (!name) return;
+          const views = (readPrefs().savedViews ?? []).filter((v) => v.name !== name);
+          patchPrefs({ savedViews: [...views, { name, view: encodeInventoryView(state.inv) }] });
+          break;
+        }
+        case 'inv-load-view': {
+          const name = el.dataset.value ?? '';
+          const found = (readPrefs().savedViews ?? []).find((v) => v.name === name);
+          if (!found) return;
+          const owner = state.inv.owner;
+          const assets = state.inv.assets;
+          const loadedFor = state.inv.loadedFor;
+          state.inv = emptyInventoryState();
+          decodeInventoryView(found.view, state.inv);
+          // A saved view is a set of filters, not a wallet. Whoever is on
+          // screen stays on screen, and their NFTs are not re-fetched.
+          state.inv.owner = owner;
+          state.inv.assets = assets;
+          state.inv.loadedFor = loadedFor;
+          writeLabHash();
+          break;
+        }
+        case 'inv-drop-view':
+          patchPrefs({
+            savedViews: (readPrefs().savedViews ?? []).filter((v) => v.name !== (el.dataset.value ?? '')),
+          });
+          break;
+        case 'inv-forget':
+          forgetPrefs();
           break;
         case 'inv-clear':
           clearFilters(state.inv);
@@ -4688,7 +4779,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   };
 
   bind('inv-q', (v) => { state.inv.q = v; state.inv.limit = 120; }, 'live');
-  bind('inv-sort', (v) => { state.inv.sortKey = v; writeLabHash(); });
+  bind('inv-sort', (v) => { state.inv.sortKey = v; patchPrefs({ inventorySort: v }); writeLabHash(); });
   bind('lab-search', (v) => { state.search = v; }, 'live');
   bind('lab-token-search', (v) => { state.tokenSearch = v; }, 'live');
   bind('lab-name-query', (v) => { state.nameQuery = v; });

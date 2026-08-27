@@ -23,10 +23,11 @@
  * 3. Every facet value can be included OR excluded. "Don't show shrooms"
  *    is one click on the same chip that would have filtered to them.
  *
- * State lives in the URL, not in storage. This page promises a clean boot
- * on every load, and a filtered inventory is worth sharing anyway: the
- * hash carries the whole view, so a link reproduces exactly what the
- * sender was looking at.
+ * The view lives in the URL, so a filtered inventory is a link somebody
+ * can send. Separately, and only for choices rather than data, a few
+ * preferences survive a reload through ./prefs: which view mode you like,
+ * how you sort, and any filter sets you named. Nothing about your wallet
+ * or your NFTs is ever written, and a button clears the lot.
  */
 import { listAssetsForOwner, clearAssetsCache, type AtomicAsset } from '../atomic/assets';
 

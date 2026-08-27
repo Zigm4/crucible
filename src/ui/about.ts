@@ -48,10 +48,15 @@ const PANELS: Panel[] = [
         existed still go where they always went.</li>
         <li><strong>No backend.</strong> One HTML file plus JavaScript.
         No server I run, no database, nothing tracking you.</li>
-        <li><strong>No persistent storage.</strong> Every page load
-        is a clean boot. The only thing the page reads is the URL
-        hash (for shareable links to a specific blend / drop /
-        upgrade).</li>
+        <li><strong>Almost no storage, and none of it about you.</strong>
+        Every page load is a clean boot. The page reads the URL hash
+        (for shareable links to a specific blend / drop / upgrade),
+        and the inventory tool remembers a handful of your own
+        <em>choices</em> in your browser: grid or list, how you sort,
+        and any filter sets you named yourself. Never a wallet name,
+        never an asset, never a balance, never anything read from the
+        chain. It stays on your machine, it is never sent anywhere,
+        and "Forget my settings" in that tool erases it.</li>
         <li><strong>Open source.</strong> Read every line. Fork it,
         host it yourself, never trust me again. That's the whole
         point.</li>
