@@ -2442,3 +2442,122 @@ input.lab-inline { max-width: 190px; }
 
 /* A 64 character transaction id has nothing to break on. */
 .lab-tx { overflow-wrap: anywhere; }
+
+/* ─── inventory workbench ──────────────────────────────────────────────
+   A rail of facets beside a dense body. The rail is what makes refining
+   possible; the body is what the complaint was about, so it is built to
+   put as much on a screen as stays readable. */
+.inv-split {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 760px) {
+  /* The rail goes above rather than beside: a 200px column beside a grid
+     leaves neither enough room to be useful on a phone. */
+  .inv-split { grid-template-columns: 1fr; }
+  .inv-rail { max-height: 260px; overflow-y: auto; }
+}
+.inv-rail { display: flex; flex-direction: column; gap: 6px; }
+.inv-facet { padding: 0; margin: 0; }
+.inv-facet-head {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: inherit;
+}
+.inv-facet-body { padding: 0 10px 8px; display: flex; flex-direction: column; gap: 2px; }
+.inv-facet-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  align-items: baseline;
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.inv-facet-row.on  { background: color-mix(in srgb, var(--ok) 18%, transparent); }
+.inv-facet-row.off { background: color-mix(in srgb, var(--err) 14%, transparent); opacity: .7; }
+.inv-facet-val, .inv-facet-not {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: inherit; text-align: left; font: inherit;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.inv-facet-not { font-size: .78em; opacity: .6; }
+.inv-facet-not:hover { opacity: 1; color: var(--err); }
+
+.inv-chips { flex-wrap: wrap; gap: 4px; }
+
+/* Dense on purpose. The whole complaint was "you can only see a few at a
+   time", so the cards are small and the columns are as many as fit. */
+.inv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 6px;
+}
+.inv-card {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 4px; border-radius: 6px;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  min-width: 0;
+}
+.inv-card .media-thumb { width: 100%; aspect-ratio: 1; }
+.inv-card .media-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.inv-card-name, .inv-card-sub {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.inv-card-name { font-size: .8em; }
+.inv-card-sub  { font-size: .72em; opacity: .6; }
+
+/* List mode: no artwork at all, which is the point. Columns are driven by
+   whatever attributes the current result set shares, so the grid template
+   is set from the row rather than fixed here. */
+.inv-list { display: flex; flex-direction: column; font-size: .84em; }
+.inv-list-head, .inv-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) minmax(0, .7fr) minmax(0, .5fr) repeat(auto-fit, minmax(0, 1fr));
+  gap: 8px;
+  padding: 3px 6px;
+  align-items: baseline;
+}
+.inv-list-head { font-weight: 600; opacity: .6; border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent); }
+.inv-list-row:nth-child(even) { background: color-mix(in srgb, currentColor 4%, transparent); }
+.inv-list-row > span, .inv-list-head > span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.inv-name { font-weight: 500; }
+
+/* The inventory is the one lab tool that wants the whole window. Every
+   other one is a form, where a narrow measure reads better. */
+/* `main` caps every page at 960px, which is right for a form and wrong
+   for an inventory. Rather than loosen that globally, this one section
+   breaks out of the column: it stays centred on the viewport whatever
+   the parent's width is. */
+.lab-wide {
+  max-width: none;
+  width: min(1600px, 96vw);
+  margin-left: calc(50% - min(800px, 48vw));
+  margin-right: calc(50% - min(800px, 48vw));
+}
+.inv-bar {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px;
+}
+.inv-bar > label { margin: 0; }
+.inv-bar > input[type="text"] { flex: 1 1 220px; min-width: 0; margin: 0; }
+.inv-bar > select { margin: 0; }
+.inv-bar #inv-q { flex: 1 1 320px; }
+
+.inv-views { margin: 8px 0 12px; }
+.inv-view-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; }
+.inv-view-tag > button {
+  background: none; border: 0; padding: 0; cursor: pointer; color: inherit; font: inherit;
+}
+.inv-view-tag > .lab-x { opacity: .5; padding: 0 4px; }
+.inv-view-tag > .lab-x:hover { opacity: 1; color: var(--err); }
