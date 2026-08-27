@@ -346,6 +346,28 @@ async function main() {
       say(nftSlots.length === 0 || run.canAfford(none) === false,
           'and is reported as unable to run it');
 
+      // The chooser: one lister across five contracts, so a sixth is one
+      // function rather than a branch on every screen.
+      const kinds = run.RECIPE_KINDS.map((k) => k.key);
+      say(kinds.length === 5 && kinds.includes('waxdao') && kinds.includes('blenderizer'),
+          `every platform is offered: ${run.RECIPE_KINDS.map((k) => k.platform).join(', ')}`);
+      const found = await run.listRecipes('blend', 'captainshelm', '');
+      say(found.length > 0, `listRecipes found ${found.length} blend(s) in captainshelm`);
+      say(found.every((c) => c.id && c.name && typeof c.live === 'boolean'),
+          'every row carries an id, a name and whether it is running');
+      // A collection nobody has ever used must come back empty rather
+      // than throwing, because people will mistype one.
+      const none2 = await run.listRecipes('blend', 'zzzzzzzzzzzz', '');
+      say(Array.isArray(none2) && none2.length === 0,
+          'an unknown collection returns nothing rather than failing');
+      say((await run.listRecipes('blend', '', '')).length === 0,
+          'no collection asks the chain nothing at all');
+
+      // The chips on the "which collection" screen come from the wallet.
+      const owned = run.collectionsOwned(assets);
+      say(owned.length > 0 && owned[0].count >= (owned[owned.length - 1]?.count ?? 0),
+          `collections you hold are offered, commonest first: ${owned.slice(0, 3).map((c) => `${c.name} (${c.count})`).join(', ')}`);
+
       const { rewards } = run.rewardsOf(blend);
       say(rewards.length > 0, `outcomes described: ${rewards.length}`);
       say(rewards.every((r) => r.odds === undefined || (r.odds >= 0 && r.odds <= 100.0001)),

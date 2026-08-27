@@ -47,7 +47,8 @@ import {
 } from './prefs';
 import {
   emptyRunState, loadRunAssets, requirementsOf, rewardsOf, canAfford,
-  blendTitle, blendImage, type RunState, type RunStep,
+  blendTitle, blendImage, listRecipes, collectionsOwned, RECIPE_KINDS,
+  type RunState, type RunStep, type RecipeKind,
 } from './guidedRun';
 import { loadBlend as loadBlendRow } from '../nefty/blend';
 import { listAuthorizedCollections, isContractAuthorized } from '../atomic/collections';
@@ -1771,7 +1772,7 @@ function writeLabHash() {
       : state.tool === 'inventory' && state.inv.owner
         ? `/${encodeSubject(state.inv.owner + (view ? `~${view}` : ''))}`
         : state.tool === 'run' && state.run.blendId
-          ? `/${encodeSubject(state.run.blendId)}`
+          ? `/${encodeSubject(`${state.run.kind || 'blend'}~${state.run.collection}~${state.run.blendId}`)}`
         : '';
     const target = `#/lab/${state.tool}${subject}`;
     if (location.hash === target) return;
@@ -1801,9 +1802,20 @@ export function applyLabRoute(tool: string, subject: string): void {
     decodeInventoryView(rest.join('~'), state.inv);
     if (state.inv.owner) void loadInventory(state.inv, state.inv.owner).then(rerender);
   }
+  // #/lab/run/<kind>~<collection>~<id>, so a shared recipe opens on the
+  // screen that matters rather than on the first question. A bare id
+  // still works and is read as a NeftyBlocks blend, which is what every
+  // link written before this shape meant.
   if (state.tool === 'run' && subject) {
-    const id = decodeSubject(subject).trim();
-    if (id && id !== state.run.blendId) { state.run = emptyRunState(); void startRun(id); }
+    const parts = decodeSubject(subject).split('~');
+    const id = (parts.length >= 3 ? parts[2] : parts[0]).trim();
+    if (id && id !== state.run.blendId) {
+      state.run = emptyRunState();
+      state.run.kind = (parts.length >= 3 ? parts[0] : 'blend') as RecipeKind;
+      state.run.collection = parts.length >= 3 ? parts[1] : '';
+      state.run.step = 4;
+      void startRun(id);
+    }
   }
   const wanted = state.tool === 'names' ? decodeSubject(subject).trim().toLowerCase() : '';
   // A bare #/lab is not a link anyone can share back, so fill it in. Not
@@ -3021,21 +3033,62 @@ function renderInventoryTool(): string {
 
 // ─── tool: run a recipe, guided ─────────────────────────────────────────
 
-/** Pulls one blend and the wallet's NFTs, then opens the runner on it. */
+/**
+ * Four questions, in the order somebody actually has them.
+ *
+ * The first version opened on "paste a blend id", which assumes you
+ * already know the answer to every question this is supposed to ask. A
+ * player knows what they want to do and roughly where; they do not know
+ * a numeric id, and there is no reason they should.
+ *
+ *   1. What do you want to do?   blend, upgrade, claim, and on which platform
+ *   2. Which collection?         typed, or picked from what you own
+ *   3. Which one?                every recipe of that kind, listed
+ *   4. Check it                  what it costs, what it gives, then sign
+ */
+const RUN_STEPS: { n: RunStep; title: string; q: string }[] = [
+  { n: 1, title: 'What', q: 'What do you want to do?' },
+  { n: 2, title: 'Where', q: 'Which collection?' },
+  { n: 3, title: 'Which', q: 'Which one?' },
+  { n: 4, title: 'Check', q: 'What does it cost, what do you get?' },
+];
+
+/** Lists the recipes of the chosen kind in the chosen collection. */
+async function loadRunChoices(): Promise<void> {
+  const run = state.run;
+  if (!run.kind || !run.collection) return;
+  run.listing = true;
+  run.listError = '';
+  run.choices = [];
+  rerender();
+  const askedFor = `${run.kind}::${run.collection}`;
+  try {
+    const choices = await listRecipes(run.kind, run.collection, state.actor);
+    // A slow list must not land on a question somebody has moved past.
+    if (`${run.kind}::${run.collection}` !== askedFor) return;
+    run.choices = choices;
+  } catch (e) {
+    run.listError = e instanceof Error ? e.message : String(e);
+  } finally {
+    run.listing = false;
+    rerender();
+  }
+}
+
+/** Opens one recipe. Only Nefty blends have a detail view so far. */
 async function startRun(blendId: string): Promise<void> {
   const run = state.run;
   run.blendId = blendId;
   run.loading = true;
   run.error = '';
   run.blend = undefined;
-  run.step = 1;
   run.picked = {};
   rerender();
   try {
-    run.blend = await loadBlendRow({ blend_id: blendId });
+    if (run.kind === 'blend' || !run.kind) {
+      run.blend = await loadBlendRow({ blend_id: blendId });
+    }
     run.owner = state.actor;
-    // Ownership counts are what make step 2 worth showing, but a missing
-    // wallet must not block the rest: the recipe is still worth reading.
     if (state.actor) await loadRunAssets(run, state.actor);
   } catch (e) {
     run.error = e instanceof Error ? e.message : String(e);
@@ -3046,138 +3099,92 @@ async function startRun(blendId: string): Promise<void> {
   }
 }
 
-const RUN_STEPS: { n: RunStep; title: string; q: string }[] = [
-  { n: 1, title: 'The recipe', q: 'What is this?' },
-  { n: 2, title: 'Your side', q: 'What does it cost me?' },
-  { n: 3, title: 'Their side', q: 'What do I get?' },
-  { n: 4, title: 'Review', q: 'Ready?' },
-];
-
 function renderRunTool(): string {
   const run = state.run;
-
-  const finder = `
-    <div class="lab-field inv-bar">
-      <label for="run-id">Blend id</label>
-      <input id="run-id" type="text" spellcheck="false" inputmode="numeric"
-             placeholder="e.g. 45780" value="${esc(run.blendId)}" />
-      <button data-lab="run-load" ${run.loading ? 'disabled' : ''}>
-        ${run.loading ? 'Reading' : 'Open it'}
-      </button>
-    </div>`;
-
-  if (!run.blend) {
-    return `<div class="lab-panel">
-      <h3>Run a recipe</h3>
-      <p class="lab-hint">The same shape as the creator on the other tab, pointed the other way:
-      one question per screen, and the two a player actually asks first. What does this take from
-      me, and what do I get. Paste a blend id to see it.</p>
-      ${finder}
-      ${run.error ? `<p class="lab-warn">${esc(run.error)}</p>` : ''}
-    </div>`;
-  }
-
-  const b = run.blend;
-  const known = Boolean(run.assetsFor);
-  const reqs = requirementsOf(b, run.assets, known);
-  const { sure, rewards } = rewardsOf(b);
-  const afford = canAfford(reqs);
-  const art = blendImage(b);
+  const kind = RECIPE_KINDS.find((k) => k.key === run.kind);
 
   const rail = `
     <div class="run-rail">
-      ${RUN_STEPS.map((s) => `
-        <button class="run-step ${run.step === s.n ? 'on' : ''} ${run.step > s.n ? 'done' : ''}"
-                data-lab="run-step" data-value="${s.n}">
-          <span class="run-dot">${s.n}</span>
-          <span class="run-step-text">
-            <strong>${s.title}</strong>
-            <small>${s.q}</small>
-          </span>
-        </button>`).join('')}
+      ${RUN_STEPS.map((st) => {
+        // Never offer a step whose question the previous one has not
+        // answered: "which one" with no collection is a blank screen.
+        const reachable = st.n === 1
+          || (st.n === 2 && run.kind)
+          || (st.n === 3 && run.kind && run.collection)
+          || (st.n === 4 && run.blendId);
+        return `
+        <button class="run-step ${run.step === st.n ? 'on' : ''} ${run.step > st.n ? 'done' : ''}"
+                data-lab="run-step" data-value="${st.n}" ${reachable ? '' : 'disabled'}>
+          <span class="run-dot">${st.n}</span>
+          <span class="run-step-text"><strong>${st.title}</strong><small>${st.q}</small></span>
+        </button>`;
+      }).join('')}
     </div>`;
 
-  const slot = (r: ReturnType<typeof requirementsOf>[number]) => {
-    const short = r.have !== undefined && r.have < r.need;
-    return `
-      <div class="run-slot ${short ? 'run-short' : r.have !== undefined ? 'run-ok' : ''}">
-        <span class="run-slot-text">${esc(r.text)}</span>
-        <span class="run-slot-have">
-          ${r.have === undefined
-            ? '<span class="lab-hint">not checked</span>'
-            : short
-              ? `<strong>you have ${r.have}</strong>, ${r.need - r.have} short`
-              : `you have ${r.have}`}
-        </span>
-      </div>`;
-  };
-
   let body = '';
+
   if (run.step === 1) {
     body = `
-      <div class="run-head">
-        ${art ? renderMediaThumb({ ref: art, alt: blendTitle(b) }) : ''}
-        <div>
-          <h4>${esc(blendTitle(b))}</h4>
-          <p class="lab-hint">${esc(String(b.collection_name))} · blend #${esc(String(b.blend_id))}</p>
-          <p>${sure
-            ? 'This is a <strong>sure thing</strong>. Every run produces the same result.'
-            : 'This is a <strong>gamble</strong>. What you get is drawn when you run it.'}</p>
-          <p class="lab-hint">
-            ${Number(b.max) > 0
-              ? `Used ${esc(String(b.use_count))} of ${esc(String(b.max))} times.`
-              : `Used ${esc(String(b.use_count))} times, with no cap.`}
-            ${Number(b.security_id ?? 0) ? ' Entry is gated by a whitelist.' : ''}
-          </p>
-        </div>
+      <h4>What do you want to do?</h4>
+      <p class="lab-hint">Three contracts, five things you can run on them. Pick the one that
+      matches what you are trying to do.</p>
+      <div class="run-kinds">
+        ${RECIPE_KINDS.map((k) => `
+          <button class="run-kind ${run.kind === k.key ? 'on' : ''}" data-lab="run-kind" data-value="${k.key}">
+            <strong>${esc(k.label)}</strong>
+            <small>${esc(k.blurb)}</small>
+            <span class="lab-hint">${esc(k.platform)} · <code>${esc(k.contract)}</code></span>
+          </button>`).join('')}
       </div>`;
   } else if (run.step === 2) {
+    const owned = collectionsOwned(run.assets).slice(0, 24);
     body = `
-      <h4>What it takes from you</h4>
-      ${!known ? '<p class="lab-hint">Connect a wallet to see how much of this you already hold.</p>' : ''}
-      ${reqs.length ? reqs.map(slot).join('') : '<p class="lab-hint">Nothing. This recipe is free.</p>'}
-      ${known && !afford
-        ? '<p class="lab-warn">You are short on at least one ingredient, so this would fail.</p>'
-        : known ? '<p class="lab-ok">You hold everything this needs.</p>' : ''}`;
-  } else if (run.step === 3) {
-    const max = Math.max(1, ...rewards.map((r) => r.odds ?? 0));
-    body = `
-      <h4>What it gives back</h4>
-      ${sure
-        ? '<p class="lab-hint">One outcome, every time.</p>'
-        : '<p class="lab-hint">Drawn at random. The bars are the real odds from the contract.</p>'}
-      ${rewards.length ? rewards.map((r) => `
-        <div class="run-odd">
-          <span class="run-odd-name">${esc(r.text)}</span>
-          ${r.odds === undefined ? '<span class="lab-hint">always</span>' : `
-            <span class="run-odd-bar"><i style="width:${Math.max(2, (r.odds / max) * 100)}%"></i></span>
-            <span class="run-odd-pct">${r.odds.toFixed(r.odds < 1 ? 2 : 1)}%</span>`}
-        </div>`).join('') : '<p class="lab-hint">The contract lists no outcome for this recipe.</p>'}`;
-  } else {
-    body = `
-      <h4>Before you sign</h4>
-      <div class="run-review">
-        <div>
-          <h5>You give</h5>
-          ${reqs.length ? reqs.map((r) => `<p>${esc(r.text)}</p>`).join('') : '<p>Nothing</p>'}
-        </div>
-        <div>
-          <h5>You get</h5>
-          ${sure
-            ? rewards.map((r) => `<p>${esc(r.text)}</p>`).join('')
-            : `<p>One of ${rewards.length} outcome${rewards.length === 1 ? '' : 's'}, drawn at random.</p>`}
-        </div>
+      <h4>Which collection?</h4>
+      <p class="lab-hint">The collection that made the recipe. Not your wallet.</p>
+      <div class="lab-field inv-bar">
+        <input id="run-collection" type="text" spellcheck="false" autocapitalize="off"
+               placeholder="e.g. underpunks55" value="${esc(run.collection)}" />
+        <button class="lab-primary" data-lab="run-find" ${run.listing ? 'disabled' : ''}>
+          ${run.listing ? 'Looking' : 'Find recipes'}
+        </button>
       </div>
-      ${known && !afford
-        ? '<p class="lab-warn">You are short on an ingredient. Signing this would fail on chain.</p>'
+      ${owned.length ? `
+        <p class="lab-hint">Collections you hold NFTs in:</p>
+        <div class="lab-tools inv-chips">
+          ${owned.map((c) => `
+            <button class="lab-tag" data-lab="run-collection-pick" data-value="${esc(c.name)}">
+              ${esc(c.name)} <span class="lab-hint">${c.count}</span>
+            </button>`).join('')}
+        </div>`
+        : state.actor
+          ? '<p class="lab-hint">Reading your NFTs to suggest collections.</p>'
+          : '<p class="lab-hint">Connect a wallet and this will suggest the collections you already hold.</p>'}`;
+  } else if (run.step === 3) {
+    body = `
+      <h4>Which one?</h4>
+      ${run.listError ? `<p class="lab-warn">${esc(run.listError)}</p>` : ''}
+      ${run.listing ? '<p class="lab-hint">Reading the contract.</p>' : ''}
+      ${!run.listing && !run.choices.length
+        ? `<p class="lab-empty">No ${esc(kind?.label.toLowerCase() ?? 'recipe')} found in
+           <code>${esc(run.collection)}</code>. Check the spelling, or try another kind on step 1.</p>`
         : ''}
-      <p class="lab-hint">This prototype stops here. Signing still runs through the main app,
-      which already builds the real transaction.</p>`;
+      <div class="run-choices">
+        ${run.choices.map((c) => `
+          <button class="run-choice ${run.blendId === c.id ? 'on' : ''}"
+                  data-lab="run-pick" data-value="${esc(c.id)}">
+            <span class="run-choice-name">${esc(c.name)}</span>
+            <span class="lab-hint">${esc(c.note)}${c.live ? '' : ' · not running'}</span>
+            <span class="lab-hint">#${esc(c.id)}</span>
+          </button>`).join('')}
+      </div>`;
+  } else {
+    body = renderRunDetail();
   }
 
   return `<div class="lab-panel">
     <h3>Run a recipe</h3>
-    ${finder}
+    <p class="lab-hint">The player side of NeftyBlocks, WaxDAO and the Blenderizer, asked as
+    questions. Nothing here signs anything yet.</p>
     ${run.error ? `<p class="lab-warn">${esc(run.error)}</p>` : ''}
     ${rail}
     <div class="run-body">${body}</div>
@@ -3187,6 +3194,73 @@ function renderRunTool(): string {
       <button class="lab-primary" data-lab="run-next" ${run.step === 4 ? 'disabled' : ''}>Continue</button>
     </div>
   </div>`;
+}
+
+/** Step 4: everything about the one recipe they chose. */
+function renderRunDetail(): string {
+  const run = state.run;
+  if (run.loading) return '<p class="lab-hint">Reading the recipe.</p>';
+  if (!run.blendId) return '<p class="lab-hint">Pick a recipe on the previous step.</p>';
+
+  // Only Nefty blends are modelled in detail so far. Saying so beats
+  // showing a confident empty screen for the other four.
+  if (!run.blend) {
+    const kind = RECIPE_KINDS.find((k) => k.key === run.kind);
+    return `<p class="lab-hint">
+      <strong>#${esc(run.blendId)}</strong> in <code>${esc(run.collection)}</code>, on
+      <code>${esc(kind?.contract ?? '')}</code>. The cost and odds breakdown is only written for
+      NeftyBlocks blends so far, so this prototype stops here for
+      ${esc(kind?.label.toLowerCase() ?? 'this kind')}. The main app already runs it.</p>`;
+  }
+
+  const b = run.blend;
+  const known = Boolean(run.assetsFor);
+  const reqs = requirementsOf(b, run.assets, known);
+  const { sure, rewards } = rewardsOf(b);
+  const afford = canAfford(reqs);
+  const art = blendImage(b);
+  const max = Math.max(1, ...rewards.map((r) => r.odds ?? 0));
+
+  return `
+    <div class="run-head">
+      ${art ? renderMediaThumb({ ref: art, alt: blendTitle(b) }) : ''}
+      <div>
+        <h4>${esc(blendTitle(b))}</h4>
+        <p class="lab-hint">${esc(String(b.collection_name))} · #${esc(String(b.blend_id))}</p>
+        <p>${sure
+          ? 'A <strong>sure thing</strong>: every run gives the same result.'
+          : 'A <strong>gamble</strong>: the result is drawn when you run it.'}</p>
+      </div>
+    </div>
+
+    <h4>What it takes from you</h4>
+    ${!known ? '<p class="lab-hint">Connect a wallet to see how much of this you already hold.</p>' : ''}
+    ${reqs.length ? reqs.map((r) => {
+      const short = r.have !== undefined && r.have < r.need;
+      return `
+      <div class="run-slot ${short ? 'run-short' : r.have !== undefined ? 'run-ok' : ''}">
+        <span class="run-slot-text">${esc(r.text)}</span>
+        <span class="run-slot-have">${r.have === undefined
+          ? '<span class="lab-hint">not checked</span>'
+          : short ? `<strong>you have ${r.have}</strong>, ${r.need - r.have} short`
+            : `you have ${r.have}`}</span>
+      </div>`;
+    }).join('') : '<p class="lab-hint">Nothing. This recipe is free.</p>'}
+    ${known ? (afford
+      ? '<p class="lab-ok">You hold everything this needs.</p>'
+      : '<p class="lab-warn">You are short on at least one ingredient, so this would fail.</p>') : ''}
+
+    <h4>What it gives back</h4>
+    ${rewards.length ? rewards.map((r) => `
+      <div class="run-odd">
+        <span class="run-odd-name">${esc(r.text)}</span>
+        ${r.odds === undefined ? '<span class="lab-hint">always</span>' : `
+          <span class="run-odd-bar"><i style="width:${Math.max(2, (r.odds / max) * 100)}%"></i></span>
+          <span class="run-odd-pct">${r.odds.toFixed(r.odds < 1 ? 2 : 1)}%</span>`}
+      </div>`).join('') : '<p class="lab-hint">The contract lists no outcome.</p>'}
+
+    <p class="lab-hint">This prototype stops before signing. The main app already builds the real
+    transaction for this blend.</p>`;
 }
 
 // ─── tool: WAX premium name auctions ────────────────────────────────────
@@ -4825,11 +4899,38 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           writeLabHash();
           break;
         case 'tool-run': state.tool = 'run'; writeLabHash(); break;
-        case 'run-load': {
-          const id = (root.querySelector<HTMLInputElement>('#run-id')?.value ?? '').trim();
-          if (id) void startRun(id);
+        case 'run-kind':
+          state.run.kind = (el.dataset.value ?? '') as RecipeKind;
+          // Choosing a different kind invalidates the list under it.
+          state.run.choices = [];
+          state.run.blendId = '';
+          state.run.blend = undefined;
+          state.run.step = 2;
+          // The collection chips come from the wallet's own NFTs, which
+          // are read here rather than on arrival at step 4, so they are
+          // already there when the question is asked.
+          if (state.actor && state.run.assetsFor !== state.actor) {
+            void loadRunAssets(state.run, state.actor).then(render);
+          }
+          break;
+        case 'run-collection-pick':
+          state.run.collection = el.dataset.value ?? '';
+          state.run.step = 3;
+          void loadRunChoices();
+          return;
+        case 'run-find': {
+          const c = (root.querySelector<HTMLInputElement>('#run-collection')?.value ?? '')
+            .trim().toLowerCase();
+          if (!c) return;
+          state.run.collection = c;
+          state.run.step = 3;
+          void loadRunChoices();
           return;
         }
+        case 'run-pick':
+          state.run.step = 4;
+          void startRun(el.dataset.value ?? '');
+          return;
         case 'run-step':
           state.run.step = Number(el.dataset.value) as RunStep;
           break;

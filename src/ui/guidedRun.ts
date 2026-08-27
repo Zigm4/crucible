@@ -25,8 +25,106 @@
 import type { BlendRow, IngredientVariant } from '../nefty/blend';
 import { isDeterministic, deterministicResults, poolDraws, oddsAreCertain } from '../nefty/blend';
 import { listAssetsForOwner, type AtomicAsset } from '../atomic/assets';
+import { listBlends } from '../nefty/discover';
+import { listUpgrades } from '../nefty/upgrades';
+import { listDrops } from '../nefty/drops';
+import { listWaxdaoBlends } from '../waxdao/blends';
+import { listBlenderizerBlends } from '../blenderizer/blends';
 
 export type RunStep = 1 | 2 | 3 | 4;
+
+/**
+ * The five things a player can actually run on WAX through these
+ * contracts. Named the way somebody would describe them out loud, not
+ * the way the contracts are organised, because the first screen has to
+ * be answerable by somebody who does not know what a contract is.
+ */
+export const RECIPE_KINDS = [
+  { key: 'blend', platform: 'NeftyBlocks', label: 'Blend NFTs',
+    blurb: 'Burn some NFTs, get a new one', contract: 'blend.nefty' },
+  { key: 'upgrade', platform: 'NeftyBlocks', label: 'Upgrade an NFT',
+    blurb: 'Keep the NFT, change what it says', contract: 'up.nefty' },
+  { key: 'drop', platform: 'NeftyBlocks', label: 'Claim a drop',
+    blurb: 'Buy or claim a fresh mint', contract: 'neftyblocksd' },
+  { key: 'waxdao', platform: 'WaxDAO', label: 'Blend on WaxDAO',
+    blurb: 'The same idea, a different contract', contract: 'waxdaomarket' },
+  { key: 'blenderizer', platform: 'Blenderizer', label: 'Blenderizer',
+    blurb: 'Swap NFTs inside one collection', contract: 'blenderizerx' },
+] as const;
+
+export type RecipeKind = typeof RECIPE_KINDS[number]['key'];
+
+/** One row in the picker, whatever platform it came from. */
+export interface RecipeChoice {
+  id: string;
+  name: string;
+  /** A second line: what it produces, or why it cannot be run. */
+  note: string;
+  /** False when the contract says it is over, sold out or not started. */
+  live: boolean;
+}
+
+/**
+ * Every recipe of one kind in one collection, in one shape.
+ *
+ * Each platform's lister returns something different, which is right for
+ * the platform and wrong for a picker. This is the only place that knows
+ * about all five, so adding a sixth means one function rather than a new
+ * branch on every screen.
+ */
+export async function listRecipes(
+  kind: RecipeKind, collection: string, actor: string,
+): Promise<RecipeChoice[]> {
+  const c = collection.trim().toLowerCase();
+  if (!c) return [];
+  if (kind === 'blend') {
+    const { blends } = await listBlends({ collection: c, includeInactive: false, actor });
+    return blends.map((b) => ({
+      id: String(b.blend_id),
+      name: b.name || `Blend #${b.blend_id}`,
+      note: b.is_random ? 'random result' : 'always the same result',
+      live: b.status === 'active',
+    }));
+  }
+  if (kind === 'upgrade') {
+    const { upgrades } = await listUpgrades({ collection: c, includeInactive: false });
+    return upgrades.map((u) => ({
+      id: String(u.upgrade_id),
+      name: u.name || `Upgrade #${u.upgrade_id}`,
+      note: 'rewrites an NFT you keep',
+      live: u.status === 'active',
+    }));
+  }
+  if (kind === 'drop') {
+    const { drops } = await listDrops({ collection: c, includeInactive: false });
+    return drops.map((d) => ({
+      id: String(d.drop_id),
+      name: d.name || `Drop #${d.drop_id}`,
+      // listing_price is the raw asset string, and "0.00000000 WAX"
+      // is how the contract says free. Saying so is friendlier than
+      // printing eight zeroes at somebody.
+      note: /[1-9]/.test(String(d.listing_price).split(' ')[0].replace('.', ''))
+        ? String(d.listing_price) : 'free',
+      live: d.status === 'active',
+    }));
+  }
+  if (kind === 'waxdao') {
+    const { blends } = await listWaxdaoBlends({ collection: c, includeInactive: false });
+    return blends.map((b) => ({
+      id: String(b.blend_id),
+      name: b.title || `Blend #${b.blend_id}`,
+      note: b.blends_remaining > 0 ? `${b.blends_remaining} left` : 'no limit stated',
+      live: b.status === 'active',
+    }));
+  }
+  const { blends } = await listBlenderizerBlends({ collection: c });
+  return blends.map((b) => ({
+    id: String(b.blend_id),
+    name: b.name || `Blenderizer #${b.blend_id}`,
+    note: 'swaps NFTs inside the collection',
+    live: true,
+  }));
+}
 
 /** One ingredient, turned into something a person can act on. */
 export interface Requirement {
@@ -45,6 +143,14 @@ export interface Requirement {
 }
 
 export interface RunState {
+  /** What kind of recipe, chosen on the first screen. */
+  kind: RecipeKind | '';
+  collection: string;
+  /** The recipes of that kind in that collection. */
+  choices: RecipeChoice[];
+  listing: boolean;
+  listError: string;
+  /** The one they picked. */
   blendId: string;
   loading: boolean;
   error: string;
@@ -59,9 +165,29 @@ export interface RunState {
 
 export function emptyRunState(): RunState {
   return {
+    kind: '', collection: '', choices: [], listing: false, listError: '',
     blendId: '', loading: false, error: '', step: 1,
     owner: '', assets: [], assetsFor: '', picked: {},
   };
+}
+
+/**
+ * The collections a wallet actually holds NFTs in.
+ *
+ * Offered as chips on the "which collection" screen, because typing an
+ * exact twelve character collection name from memory is the step where
+ * people give up. Derived from the inventory we already loaded for the
+ * cost check, so it costs no extra request.
+ */
+export function collectionsOwned(assets: AtomicAsset[]): { name: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const a of assets) {
+    const c = a.collection?.collection_name;
+    if (c) counts.set(c, (counts.get(c) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((x, y) => y.count - x.count || x.name.localeCompare(y.name));
 }
 
 /** The name an author gave a recipe, or a fallback that is still useful. */
