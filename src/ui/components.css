@@ -2447,12 +2447,8 @@ input.lab-inline { max-width: 190px; }
    A rail of facets beside a dense body. The rail is what makes refining
    possible; the body is what the complaint was about, so it is built to
    put as much on a screen as stays readable. */
-.inv-split {
-  display: grid;
-  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
-}
+/* One column: the filters are a dialog, so the results get the width. */
+.inv-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
 /* A grid item's default min-width is auto, which means "as wide as my
    content", so the table pushed the column instead of scrolling inside
    it and the whole card overflowed. This is the fix, and it has to be on
@@ -2465,8 +2461,48 @@ input.lab-inline { max-width: 190px; }
    comes back. That is exactly what happened: the Filters button computed
    to display:none at 375px until these moved up here. */
 .inv-rail-head, .inv-rail-foot { display: none; }
-.inv-filter-btn { display: none; }
 .inv-scrim { display: none; }
+/* Always there, at every width, because the filters are always a dialog. */
+.inv-filter-btn { display: inline-block; }
+.inv-filter-btn.on { border-color: var(--accent); }
+
+.inv-rail.open {
+  display: flex;
+  position: fixed;
+  z-index: 60;
+  background: var(--bg);
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  gap: 0;
+  /* Centred on a large screen, a bottom sheet on a small one. */
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  width: min(460px, 92vw);
+  max-height: 80vh;
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgb(0 0 0 / .55);
+}
+.inv-rail.open .inv-rail-head,
+.inv-rail.open .inv-rail-foot {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; flex: 0 0 auto;
+}
+.inv-rail.open .inv-rail-head {
+  justify-content: space-between;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+}
+.inv-rail.open .inv-rail-foot {
+  justify-content: space-between;
+  border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+}
+/* The body is the only thing that moves, which is how you can tell it
+   scrolls without being told. */
+.inv-rail.open .inv-rail-body {
+  flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain;
+  padding: 10px 12px; -webkit-overflow-scrolling: touch;
+}
+.inv-rail.open .inv-rail-foot .lab-primary { margin-left: auto; }
+.inv-scrim { position: fixed; inset: 0; z-index: 59; background: rgb(0 0 0 / .55); }
+body.inv-locked { overflow: hidden; }
 
 /* One piece of markup, two presentations. On a wide screen the facets
    are a column beside the results, which is where you want them while
@@ -2474,7 +2510,11 @@ input.lab-inline { max-width: 190px; }
    scrollbar, which is exactly the thing that was hard to use, so the
    same element becomes a dialog with a scrolling body and a footer that
    closes it. */
-.inv-rail { display: flex; flex-direction: column; gap: 6px; }
+/* The rail is a DIALOG at every width, never a column sitting on the
+   page. It was a side column on desktop and a sheet on mobile; asked for
+   plainly: a Filters button and a popup, and nothing on the page behind
+   it. One behaviour is also one thing to test. */
+.inv-rail { display: none; flex-direction: column; gap: 6px; }
 .inv-rail-body { display: flex; flex-direction: column; gap: 6px; }
 .inv-facet { padding: 0; margin: 0; }
 .inv-facet-head {
@@ -2788,49 +2828,15 @@ button.inv-card { border: 0; cursor: pointer; font: inherit; color: inherit; tex
    narrow-screen block at the end of the file means a new base rule can
    no longer silently outrank it. */
 @media (max-width: 760px) {
-  .inv-split { grid-template-columns: minmax(0, 1fr); }
-
-  .inv-filter-btn { display: inline-block; }
-  .inv-filter-btn.on { border-color: var(--accent); }
-
-  /* Out of the flow entirely when closed, so it cannot take height or
-     catch a tap. `display: none` rather than a transform: nothing here
-     animates, and a hidden element that still receives clicks is worse
-     than one that is simply gone. */
-  .inv-rail { display: none; }
+  /* On a phone the same dialog is a bottom sheet: easier to reach with a
+     thumb, and it does not float over content it is filtering. */
   .inv-rail.open {
-    display: flex;
-    position: fixed;
     inset: auto 0 0 0;
+    transform: none;
+    width: auto;
     max-height: 82vh;
-    z-index: 60;
     border-radius: 14px 14px 0 0;
-    background: var(--bg);
-    border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
-    box-shadow: 0 -8px 40px rgb(0 0 0 / .5);
-    gap: 0;
   }
-  .inv-scrim {
-    display: block;
-    position: fixed; inset: 0; z-index: 59;
-    background: rgb(0 0 0 / .55);
-  }
-  .inv-rail.open .inv-rail-head,
-  .inv-rail.open .inv-rail-foot {
-    display: flex; align-items: center; gap: 10px;
-    padding: 12px 14px;
-    flex: 0 0 auto;
-  }
-  .inv-rail.open .inv-rail-head { justify-content: space-between; border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent); }
-  .inv-rail.open .inv-rail-foot { justify-content: space-between; border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent); }
-  /* The body is the only thing that scrolls, and it says so by being the
-     only thing that moves. */
-  .inv-rail.open .inv-rail-body {
-    flex: 1 1 auto;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    padding: 10px 12px;
-    -webkit-overflow-scrolling: touch;
-  }
-  .inv-rail.open .inv-rail-foot .lab-primary { margin-left: auto; }
+  .inv-list-head, .inv-list-row { min-width: var(--inv-min, 560px); }
 }
+

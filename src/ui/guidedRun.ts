@@ -30,6 +30,10 @@ import { buildUpgradeActions } from '../nefty/upgradeExecute';
 import { buildClaimActions } from '../nefty/dropExecute';
 import { buildWaxdaoBlendActions } from '../waxdao/blendExecute';
 import { buildBlenderizerBlendActions } from '../blenderizer/blendExecute';
+import { listPackDesigns, pickOwnedPacks, loadPackRolls, type PackDesign } from '../nefty/packs';
+import { listNeftyPackDesigns } from '../nefty/neftyPacks';
+import { buildUnboxAnnounce } from '../nefty/packExecute';
+import { buildNeftyUnboxAnnounce } from '../nefty/neftyPackExecute';
 import type { BuiltAction } from '../chain/action';
 import { listBlends } from '../nefty/discover';
 import { listUpgrades, loadUpgradeById } from '../nefty/upgrades';
@@ -60,12 +64,17 @@ export const RECIPE_ACTIONS = [
   { key: 'drop', label: 'Claim a drop',
     blurb: 'Buy or claim a fresh mint',
     where: 'NeftyBlocks only' },
+  { key: 'unpack', label: 'Open a pack',
+    blurb: 'You already own it, see what is inside',
+    where: 'atomicpacksx and neftyblocksp, searched together' },
 ] as const;
 
 export type RecipeAction = typeof RECIPE_ACTIONS[number]['key'];
 
 /** Which contract a row actually came from. Step 4 needs this, people do not. */
-export type RecipeSource = 'blend' | 'waxdao' | 'blenderizer' | 'upgrade' | 'drop';
+export type RecipeSource =
+  | 'blend' | 'waxdao' | 'blenderizer' | 'upgrade' | 'drop'
+  | 'pack' | 'neftypack';
 
 export const SOURCE_INFO: Record<RecipeSource, { platform: string; contract: string }> = {
   blend: { platform: 'NeftyBlocks', contract: 'blend.nefty' },
@@ -73,6 +82,8 @@ export const SOURCE_INFO: Record<RecipeSource, { platform: string; contract: str
   blenderizer: { platform: 'Blenderizer', contract: 'blenderizerx' },
   upgrade: { platform: 'NeftyBlocks', contract: 'up.nefty' },
   drop: { platform: 'NeftyBlocks', contract: 'neftyblocksd' },
+  pack: { platform: 'AtomicHub packs', contract: 'atomicpacksx' },
+  neftypack: { platform: 'NeftyBlocks packs', contract: 'neftyblocksp' },
 };
 
 /** Every contract that can serve one action. */
@@ -80,6 +91,9 @@ const SOURCES_FOR: Record<RecipeAction, RecipeSource[]> = {
   blend: ['blend', 'waxdao', 'blenderizer'],
   upgrade: ['upgrade'],
   drop: ['drop'],
+  // Two pack contracts, and nobody should have to know which one their
+  // pack came from. Same reasoning as the three blend contracts.
+  unpack: ['pack', 'neftypack'],
 };
 
 /** The action a source belongs to, for a deep link that names only the source. */
@@ -192,6 +206,22 @@ async function listOneSource(
       live: u.status === 'active',
     }));
   }
+  if (source === 'pack' || source === 'neftypack') {
+    const designs = source === 'pack'
+      ? await listPackDesigns(c)
+      : await listNeftyPackDesigns(c);
+    return designs.map((d) => ({
+      source, raw: d, id: String(d.pack_id),
+      name: d.name || `Pack #${d.pack_id}`,
+      note: d.roll_counter > 0
+        ? `${d.roll_counter} card${d.roll_counter === 1 ? '' : 's'} inside`
+        : 'contents set by the contract',
+      // A pack with an unlock time in the future cannot be opened yet,
+      // and saying so in the list saves opening it to find out.
+      live: !d.unlock_time || d.unlock_time * 1000 <= Date.now(),
+    }));
+  }
+
   const { drops } = await listDrops({ collection: c, includeInactive: false });
   return drops.map((d) => ({
     source, raw: d, id: String(d.drop_id),
@@ -687,6 +717,61 @@ export function describeRecipe(
     };
   }
 
+  if (source === 'pack' || source === 'neftypack') {
+    const d = raw as PackDesign & { rolls?: { outcomes: { odds: number; template_id: number }[]; total_odds: number }[] };
+    // The "cost" of opening a pack is the pack itself. Owning one is the
+    // whole requirement, and the candidates are the copies in the wallet.
+    const mine = pickOwnedPacks(assets as never, [d]);
+    const locked = d.unlock_time && d.unlock_time * 1000 > Date.now();
+    const requirements: Requirement[] = [{
+      text: `1 x ${d.name || `pack #${d.pack_id}`}`,
+      need: 1,
+      have: known ? mine.length : undefined,
+      candidates: mine.map((m) => m.asset_id),
+      kind: 'nft',
+      role: 'burn',
+    }];
+    // Rolls are loaded separately and attached by the caller, because a
+    // pack's odds are a second read and the list screen does not need it.
+    //
+    // Collapsed by template, not listed per roll. A real pack made this
+    // necessary: darkcountryh #506 has 40 rolls over the same pool and
+    // would otherwise print 12,400 lines. The chance shown is the chance
+    // of that template on ONE roll, which is the number a person can
+    // actually use, and the roll count is stated beside it.
+    const byTemplate = new Map<number, number>();
+    let rollCount = 0;
+    for (const roll of d.rolls ?? []) {
+      rollCount += 1;
+      const total = Number(roll.total_odds) || 0;
+      if (total <= 0) continue;
+      for (const o of roll.outcomes ?? []) {
+        const pct = (Number(o.odds) / total) * 100;
+        // Across identical rolls the per-roll chance is the same, so the
+        // best of them is that chance rather than a sum that would climb
+        // past 100 and mean nothing.
+        byTemplate.set(o.template_id, Math.max(byTemplate.get(o.template_id) ?? 0, pct));
+      }
+    }
+    const rewards: Reward[] = [...byTemplate.entries()]
+      .sort((x, y) => y[1] - x[1])
+      .slice(0, 40)
+      .map(([tpl, pct]) => ({ text: `template #${tpl}`, odds: pct }));
+    const hidden = byTemplate.size - rewards.length;
+    const inside = rollCount
+      ? `${rollCount} draw${rollCount === 1 ? '' : 's'} from ${byTemplate.size} possible card${
+          byTemplate.size === 1 ? '' : 's'}${hidden > 0 ? `, the ${rewards.length} likeliest shown` : ''}. `
+        + 'Each percentage is the chance on a single draw.'
+      : 'This contract does not publish the odds, so what is inside is whatever it decides.';
+    return {
+      requirements, rewards, sure: false,
+      note: locked
+        ? `This pack cannot be opened until ${new Date(d.unlock_time * 1000).toLocaleString()}.`
+        : `${inside} Opening takes two transactions: one to hand the pack over, then one to `
+          + 'collect what the draw gave you, signed once the chain answers.',
+    };
+  }
+
   if (source === 'drop') {
     const d = raw as {
       listing_price?: string; is_free?: boolean;
@@ -752,10 +837,13 @@ export async function loadRecipeById(
       const u = await loadUpgradeById(id);
       return u ? wrap(u.name || `Upgrade #${id}`, u, u.status === 'active') : undefined;
     }
-    if (source === 'drop') {
+    // Drops and packs have no loader of their own, so the collection is
+    // listed and the id picked out of it. The link carries the collection
+    // for exactly this reason.
+    if (source === 'drop' || source === 'pack' || source === 'neftypack') {
       if (!collection) return undefined;
-      const { choices } = await listRecipes('drop', collection, actor);
-      return choices.find((c) => c.id === id);
+      const { choices } = await listRecipes(actionOf(source), collection, actor);
+      return choices.find((c) => c.id === id && c.source === source);
     }
   } catch { /* a link to something unreadable says so on screen */ }
   void info;
@@ -859,6 +947,14 @@ export async function buildRunActions(args: {
     });
   }
 
+  if (source === 'pack' || source === 'neftypack') {
+    const packAsset = requirements.flatMap((r, i) => (r.kind === 'nft' ? chosen(i) : []))[0];
+    if (!packAsset) throw new Error('Pick the pack you want to open.');
+    return source === 'pack'
+      ? buildUnboxAnnounce({ claimer: actor, pack_asset_id: packAsset })
+      : buildNeftyUnboxAnnounce({ claimer: actor, pack_asset_id: packAsset });
+  }
+
   return buildClaimActions({
     claimer: actor,
     drop: raw as Parameters<typeof buildClaimActions>[0]['drop'],
@@ -904,6 +1000,18 @@ export function whatIsMissing(reqs: Requirement[], picked: Record<number, string
     if (r.kind === 'other') out.push(`${r.text}: this page cannot pick this one for you`);
   });
   return out;
+}
+
+/**
+ * A pack's odds, which are a second read.
+ *
+ * Only atomicpacksx exposes them this way. A Nefty pack's contents live
+ * elsewhere, so it returns nothing rather than a wrong number, and the
+ * screen says the contract decides.
+ */
+export async function loadPackOdds(source: RecipeSource, packId: string) {
+  if (source !== 'pack') return [];
+  try { return await loadPackRolls(packId); } catch { return []; }
 }
 
 /** Which steps a person may jump to: never past one that is not answered. */

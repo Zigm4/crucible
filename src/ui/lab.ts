@@ -50,7 +50,7 @@ import {
   emptyRunState, loadRunAssets, requirementsOf, rewardsOf, canAfford,
   blendTitle, blendImage, listRecipes, collectionsOwned, describeRecipe, loadRecipeById,
   buildRunActions, autoPick, whatIsMissing,
-  RECIPE_ACTIONS, SOURCE_INFO, actionOf,
+  RECIPE_ACTIONS, SOURCE_INFO, actionOf, loadPackOdds,
   type RunState, type RunStep, type RecipeAction, type RecipeSource,
 } from './guidedRun';
 import { loadBlend as loadBlendRow } from '../nefty/blend';
@@ -2954,6 +2954,11 @@ function renderTemplateDetail(inv: InventoryState): string {
 
 function renderInventoryTool(): string {
   const inv = state.inv;
+  // The class lives on <body>, outside the subtree render() replaces, so
+  // it has to be reconciled here or a closed dialog leaves the page stuck.
+  try {
+    document.body.classList.toggle('inv-locked', inv.filtersOpen);
+  } catch { /* no document in the harness */ }
   // A detail view replaces the list rather than sitting under it, so the
   // way back is one control and never a scroll.
   if (inv.loadedFor && inv.openTemplate) return renderTemplateDetail(inv);
@@ -3220,6 +3225,11 @@ async function startRun(blendId: string): Promise<void> {
       if (!run.pickedRecipe) {
         run.error = `Could not read #${blendId} on ${SOURCE_INFO[run.source].contract}.`;
       }
+    }
+    // A pack's odds are a second read, only worth doing once one is open.
+    if ((run.source === 'pack' || run.source === 'neftypack') && run.pickedRecipe) {
+      const rolls = await loadPackOdds(run.source, blendId);
+      (run.pickedRecipe.raw as { rolls?: unknown }).rolls = rolls;
     }
     run.owner = state.actor;
     if (state.actor) await loadRunAssets(run, state.actor);
@@ -5342,9 +5352,13 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           break;
         case 'inv-filters':
           state.inv.filtersOpen = true;
+          // The page must not scroll under the dialog: it did, and a
+          // sheet pinned over a moving list is disorienting.
+          document.body.classList.add('inv-locked');
           break;
         case 'inv-filters-close':
           state.inv.filtersOpen = false;
+          document.body.classList.remove('inv-locked');
           break;
         case 'inv-size':
           state.inv.cardSize = clampCardSize(el.dataset.value);

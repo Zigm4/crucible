@@ -305,6 +305,76 @@ async function main() {
     say(!threw, 'every storage call is survivable when storage is not there');
   }
 
+  console.log('\n=== PHASE L - opening packs, on both pack contracts ===');
+  {
+    say(run.RECIPE_ACTIONS.some((a) => a.key === 'unpack'),
+        'opening a pack is offered as an action, like blending and claiming');
+    say(run.actionOf('pack') === 'unpack' && run.actionOf('neftypack') === 'unpack',
+        'both pack contracts map to the one action, so nobody picks between them');
+
+    // Six collections with deliberately different mixes: atomicpacksx
+    // only, neftyblocksp heavy, and both. A one-contract sample would
+    // pass while the other leg was broken.
+    const collections = ['underpunks55', 'cigalepixeld', 'captainshelm',
+                         'kaleidoscope', 'novopangeaio', 'darkcountryh'];
+    const sourcesSeen = new Set();
+    for (const c of collections) {
+      const r = await run.listRecipes('unpack', c, '');
+      if (!r.choices.length) { fails.push(`no packs found in ${c}, so it proved nothing`); continue; }
+      const mix = {};
+      for (const p of r.choices) { mix[p.source] = (mix[p.source] ?? 0) + 1; sourcesSeen.add(p.source); }
+      say(true, `${c}: ${r.choices.length} pack(s) ${JSON.stringify(mix)}`);
+
+      // One of each contract present in this collection, end to end.
+      for (const src of new Set(r.choices.map((x) => x.source))) {
+        const p = r.choices.find((x) => x.source === src);
+        p.raw.rolls = await run.loadPackOdds(src, p.id);
+        const owned = [{
+          asset_id: '555',
+          template: { template_id: String(p.raw.pack_template_id) },
+          collection: { collection_name: c }, schema: { schema_name: 'packs' }, data: {},
+        }];
+        const d = run.describeRecipe(src, p.raw, owned, true);
+        if (!d) { fails.push(`${c}/${src} #${p.id} produced no detail`); continue; }
+        // A real pack, darkcountryh #506, has 40 rolls over one pool and
+        // would print 12,400 reward lines uncollapsed.
+        if (d.rewards.length > 40) fails.push(`${c}/${src} #${p.id} would print ${d.rewards.length} reward lines`);
+        if (d.rewards.some((x) => x.odds !== undefined && (x.odds < 0 || x.odds > 100))) {
+          fails.push(`${c}/${src} #${p.id} has an odds figure outside 0..100`);
+        }
+        const picked = run.autoPick(d.requirements, {});
+        try {
+          const acts = await run.buildRunActions({
+            source: src, actor: 'zigm4.gm', id: p.id, raw: p.raw, requirements: d.requirements, picked,
+          });
+          say(acts.length === 1 && acts[0].account === 'atomicassets' && acts[0].name === 'transfer'
+              && acts[0].data.memo === 'unbox',
+              `${c}/${src} #${p.id} hands the pack over: ${acts.map((a) => `${a.account}::${a.name}`).join(', ')}`);
+          const to = acts[0]?.data?.to;
+          say(to === run.SOURCE_INFO[src].contract,
+              `  and to the right contract (${to})`);
+        } catch (e) { fails.push(`${c}/${src} #${p.id} would not build: ${e.message}`); }
+      }
+    }
+    say(sourcesSeen.has('pack') && sourcesSeen.has('neftypack'),
+        `both pack contracts were exercised: ${[...sourcesSeen].join(', ')}`);
+
+    // Not owning the pack must refuse, the same as any other short slot.
+    {
+      const r = await run.listRecipes('unpack', 'underpunks55', '');
+      const p = r.choices[0];
+      const d = run.describeRecipe(p.source, p.raw, [], true);
+      let refused = false;
+      try {
+        await run.buildRunActions({
+          source: p.source, actor: 'zigm4.gm', id: p.id, raw: p.raw,
+          requirements: d.requirements, picked: {},
+        });
+      } catch { refused = true; }
+      say(refused, 'a pack you do not own refuses to build rather than failing on chain');
+    }
+  }
+
   console.log('\n=== PHASE K - what the UX audit found, pinned ===');
   {
     const fs3 = await import('node:fs/promises');
@@ -591,8 +661,12 @@ async function main() {
 
       // The chooser asks what you want to DO, not which company hosts it.
       const actions = run.RECIPE_ACTIONS.map((a) => a.key);
-      say(actions.length === 3 && !actions.includes('waxdao') && !actions.includes('blenderizer'),
-          `three actions offered, no platform to choose: ${actions.join(', ')}`);
+      // The list grows as Crucible's own tabs are covered; what must not
+      // grow is the number of PLATFORMS a person has to choose between.
+      say(actions.length >= 3
+          && !actions.includes('waxdao') && !actions.includes('blenderizer')
+          && !actions.includes('pack') && !actions.includes('neftypack'),
+          `actions are things to do, not contracts to pick: ${actions.join(', ')}`);
       // ...and a blend search still reaches all three blend contracts.
       say(run.actionOf('waxdao') === 'blend' && run.actionOf('blenderizer') === 'blend'
           && run.actionOf('upgrade') === 'upgrade',
