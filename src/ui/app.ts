@@ -336,6 +336,10 @@ interface AppState {
    * recipe cannot work for anybody, whatever its status says.
    */
   contractAuthorized?: boolean;
+  /** True once blend.nefty's ABI matched what this build expects. */
+  abiChecked?: boolean;
+  /** Why it did not, when it did not. Shown rather than swallowed. */
+  abiError?: string;
   /** Which contract the flag above is about, for the message. */
   contractAuthorizedFor?: string;
   /** Top-level page: the normal app, or the standalone contract-status page. */
@@ -9041,12 +9045,26 @@ export async function mount() {
     if (r0.page === 'app') writeHashRoute(r0.platform, r0.view, r0.id);
     outsideClickAttached = true;
   }
-  setStatus('Verifying live blend.nefty ABI…', 'info');
+  // Paint FIRST, probe second.
+  //
+  // This used to await the ABI probe before the first render, so a cold
+  // load showed a completely blank page for as long as the chain took to
+  // answer, measured at 20 to 90 seconds, and showed a blank page forever
+  // if the probe failed, because the catch returned without rendering.
+  // Nothing on the first paint depends on the ABI: it is checked so that
+  // a changed contract cannot be signed against a stale shape, and that
+  // matters at signing time, not at boot.
+  setStatus('Reading blend.nefty…', 'info');
+  render();
   try {
     await loadBlendContractShape();
+    state.abiChecked = true;
   } catch (err) {
-    setStatus(`blend.nefty contract incompatible: ${(err as Error).message}`, 'err');
-    return;
+    // Said on the page, with the rest of the page still there, rather
+    // than swallowing the whole app.
+    state.abiError = (err as Error).message;
+    setStatus(`blend.nefty could not be read: ${state.abiError}`, 'err');
+    render();
   }
   await restoreSession();
   // Clear the boot status: no idle "Ready" line under Connect-wallet, and no

@@ -2764,6 +2764,20 @@ button.inv-card { border: 0; cursor: pointer; font: inherit; color: inherit; tex
 
 
 /* ─── inventory: the narrow-screen block ───────────────────────────────
+
+/* The box is reserved whether or not a picture resolves. Without this a
+   card with no artwork collapsed to 33px and the grid read as broken. */
+.inv-card .media-thumb, .inv-card .lab-noart {
+  width: 100%; aspect-ratio: 1; display: block;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.run-keep { background: color-mix(in srgb, var(--ok) 22%, transparent); }
+.run-burn { background: color-mix(in srgb, var(--err) 20%, transparent); }
+.run-odd-name { cursor: default; }
+
+
    Deliberately the LAST thing in this file.
 
    A media query carries no extra specificity, so a plain rule written

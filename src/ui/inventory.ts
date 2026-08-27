@@ -175,6 +175,35 @@ export function stringify(v: unknown): string {
   return String(v);
 }
 
+/**
+ * The artwork reference an asset carries, wherever the author put it.
+ *
+ * Looking only at `img` and `image` left most of a real wallet blank:
+ * 33 of 120 cards had a picture. Authors use `img2`, and one collection
+ * numbers its fields `1`, `2`, `3`. So instead of a fixed list of names,
+ * this takes the first value that LOOKS like artwork, which is a CID or
+ * an https URL, from the fields most likely to hold one first.
+ */
+export function artworkOf(a: AtomicAsset): string {
+  const data = a.data ?? {};
+  const looksLikeArt = (v: unknown) => {
+    const t = stringify(v).trim();
+    if (!t) return false;
+    return /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{20,})$/.test(t)
+      || /^ipfs:\/\//i.test(t)
+      || /^https?:\/\/\S+\.(png|jpe?g|gif|webp|avif|svg)(\?|$)/i.test(t);
+  };
+  // Named fields first, so an author who filled `img` still wins over a
+  // stray CID in some other attribute.
+  for (const k of ['img', 'image', 'video', 'img2', 'backimg', 'back_img']) {
+    if (looksLikeArt(data[k])) return stringify(data[k]);
+  }
+  for (const v of Object.values(data)) {
+    if (looksLikeArt(v)) return stringify(v);
+  }
+  return '';
+}
+
 /** The value of one facet key for one asset, or '' when it has none. */
 export function facetValue(a: AtomicAsset, key: string): string {
   if (key === 'collection') return a.collection?.collection_name ?? '';

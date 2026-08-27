@@ -212,12 +212,26 @@ export interface RecipeResults {
 
 export async function listRecipes(
   action: RecipeAction, collection: string, actor: string,
+  onProgress?: (contract: string) => void,
 ): Promise<RecipeResults> {
   const c = collection.trim().toLowerCase();
   if (!c) return { choices: [], unreachable: [] };
   const sources = SOURCES_FOR[action] ?? [];
+  // A per-source deadline. Without one, a hanging endpoint left "Reading
+  // the contracts" on screen forever with no way to tell whether it was
+  // slow or dead. A source that misses the deadline is reported as
+  // unreachable, exactly like one that threw.
+  const withTimeout = (p: Promise<RecipeChoice[]>, ms = 45_000) =>
+    Promise.race([
+      p,
+      new Promise<RecipeChoice[]>((_, rej) =>
+        setTimeout(() => rej(new Error('timed out')), ms)),
+    ]);
   const settled = await Promise.allSettled(
-    sources.map((src) => listOneSource(src, c, actor)),
+    sources.map(async (src) => {
+      onProgress?.(SOURCE_INFO[src].contract);
+      return withTimeout(listOneSource(src, c, actor));
+    }),
   );
   const choices: RecipeChoice[] = [];
   const unreachable: RecipeSource[] = [];
@@ -245,6 +259,10 @@ export interface RunState {
   unreachable: RecipeSource[];
   listing: boolean;
   listError: string;
+  /** True once a search has actually been run for this collection. */
+  searched: boolean;
+  /** Which contract is being read right now, for the waiting line. */
+  reading: string;
   /** The one they picked. */
   blendId: string;
   loading: boolean;
@@ -269,6 +287,7 @@ export interface RunState {
 export function emptyRunState(): RunState {
   return {
     action: '', source: '', collection: '', choices: [], listing: false, listError: '',
+    searched: false, reading: '',
     unreachable: [],
     blendId: '', loading: false, error: '', step: 1,
     owner: '', assets: [], assetsFor: '', picked: {}, signing: false, lastTrxId: '',

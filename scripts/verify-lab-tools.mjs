@@ -305,6 +305,51 @@ async function main() {
     say(!threw, 'every storage call is survivable when storage is not there');
   }
 
+  console.log('\n=== PHASE K - what the UX audit found, pinned ===');
+  {
+    const fs3 = await import('node:fs/promises');
+    const lab = await fs3.readFile(new URL('../src/ui/lab.ts', import.meta.url), 'utf8');
+    const app = await fs3.readFile(new URL('../src/ui/app.ts', import.meta.url), 'utf8');
+
+    // B1: the shell must paint before the chain is asked anything. It
+    // used to await the ABI probe first, so a cold load was blank for 20
+    // to 90 seconds and blank forever if the probe failed.
+    const mountIdx = app.indexOf('await loadBlendContractShape()');
+    const renderBefore = app.lastIndexOf('render();', mountIdx);
+    say(mountIdx > 0 && renderBefore > 0 && renderBefore < mountIdx,
+        'the page paints before the ABI probe, so a slow chain is not a blank screen');
+    say(!/loadBlendContractShape\(\);?\s*\}\s*catch[\s\S]{0,200}?return;/.test(app),
+        'a failed ABI probe no longer returns without rendering');
+
+    // B2: Continue must do the step's work, not increment blindly.
+    say(/case 'run-next':[\s\S]{0,900}?run-collection/.test(lab),
+        'Continue reads the collection field rather than throwing it away');
+    say(/case 'run-next':[\s\S]{0,900}?loadRunChoices\(\)/.test(lab),
+        'and starts the search, the same as the Find button');
+
+    // B3: three states, not one accusation.
+    say(/!run\.searched/.test(lab),
+        'step 3 tells "not searched yet" apart from "found nothing"');
+
+    // M1: the copy must not contradict the button.
+    say(!/Nothing here signs anything yet/.test(lab),
+        'the runner no longer says it signs nothing on the screen that signs');
+    say(/cannot be undone/.test(lab),
+        'and warns that burning is irreversible before the button that does it');
+
+    // M7: the share button copies the live hash.
+    say(/function labHref[\s\S]{0,600}?location\.hash/.test(lab),
+        'a shared lab link carries the wallet and the filters, not a bare tool name');
+
+    // M8: Save view gated on the name it needs, not on the filters.
+    say(!/data-lab="inv-save-view" \$\{active \? '' : 'disabled'\}/.test(lab),
+        'Save view is no longer greyed out for having no filter');
+
+    // B6: artwork found wherever the author put it.
+    say(/export function artworkOf/.test(await fs3.readFile(new URL('../src/ui/inventory.ts', import.meta.url), 'utf8')),
+        'artwork is resolved by shape rather than from a fixed list of field names');
+  }
+
   console.log('\n=== PHASE G - the narrow-screen block stays last ===');
   {
     // Not a unit test of behaviour, a guard against one specific mistake
@@ -423,6 +468,18 @@ async function main() {
       });
     } catch { refused = true; }
     say(refused, 'an unfilled slot refuses to build rather than signing something that would fail');
+
+    // The screen must not say it cannot do the thing it now does. The
+    // old copy survived below the new sign block for one commit, so the
+    // page carried a working "Run it" button and, underneath it, a
+    // sentence saying it stops before signing.
+    {
+      const fs2 = await import('node:fs/promises');
+      const lab = await fs2.readFile(new URL('../src/ui/lab.ts', import.meta.url), 'utf8');
+      say(lab.includes('renderSignBlock'), 'the runner has a sign block');
+      say(!/stops before signing/.test(lab),
+          'and nothing on the page still claims it stops before signing');
+    }
 
     let noWallet = false;
     try {

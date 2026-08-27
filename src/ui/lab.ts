@@ -40,7 +40,7 @@ import {
   emptyInventoryState, loadInventory, applyFilter, facetsOf, sortAssets,
   toggleFacet, clearFilters, activeFilterCount, facetValue, stringify,
   encodeInventoryView, decodeInventoryView, SORT_KEYS, ATTR_PREFIX,
-  CARD_SIZES, clampCardSize, loadTemplateOwners,
+  CARD_SIZES, clampCardSize, loadTemplateOwners, artworkOf,
   type InventoryState,
 } from './inventory';
 import {
@@ -1714,10 +1714,23 @@ function shareButton(scope: ShareScope, label: string): string {
  * things: the tool bar sends someone to the workbench, the auction row
  * sends them to one name already looked up.
  */
+/**
+ * The link a share button copies.
+ *
+ * It used to build `#/lab/<tool>` from scratch and drop everything else,
+ * so "link to this view" on a filtered inventory of somebody's wallet
+ * copied a bare `#/lab/inventory`: no wallet, no filters, two lines under
+ * a sentence promising the opposite. The hash the page already keeps up
+ * to date IS the answer, so the only special case left is a name lookup
+ * that has not been written yet.
+ */
 function labHref(scope: ShareScope): string {
   const base = location.href.split('#')[0];
-  const subject = scope === 'auction' && state.nameStatusFor ? `/${encodeSubject(state.nameStatusFor)}` : '';
-  return `${base}#/lab/${state.tool}${subject}`;
+  if (scope === 'auction' && state.nameStatusFor) {
+    return `${base}#/lab/names/${encodeSubject(state.nameStatusFor)}`;
+  }
+  const live = typeof location !== 'undefined' ? location.hash : '';
+  return live.startsWith('#/lab') ? `${base}${live}` : `${base}#/lab/${state.tool}`;
 }
 
 // A verdict is worth sharing even when the answer is "that is not a name",
@@ -2820,7 +2833,7 @@ function editTokenControl(): string {
  * which is exactly the wallet data this page refuses to keep. A named set
  * of filters and a sort is the same intent, stored as choices instead.
  */
-function renderSavedViews(active: number): string {
+function renderSavedViews(_active: number): string {
   if (!storageAvailable()) {
     return `<p class="lab-hint">Your browser will not let this page store anything, so views
       cannot be saved here. Everything else works; the address bar still carries the view.</p>`;
@@ -2831,7 +2844,7 @@ function renderSavedViews(active: number): string {
       <div class="lab-field inv-bar">
         <input id="inv-view-name" type="text" spellcheck="false" maxlength="48"
                placeholder="name this view, e.g. my combat tech" />
-        <button data-lab="inv-save-view" ${active ? '' : 'disabled'}>Save view</button>
+        <button data-lab="inv-save-view">Save view</button>
         ${views.length ? '<button data-lab="inv-forget">Forget my settings</button>' : ''}
       </div>
       ${views.length ? `<div class="lab-tools inv-chips">
@@ -2841,8 +2854,9 @@ function renderSavedViews(active: number): string {
             <button class="lab-x" data-lab="inv-drop-view" data-value="${esc(v.name)}" title="Forget this view">x</button>
           </span>`).join('')}
       </div>` : ''}
-      <p class="lab-hint">Saved in this browser only: the name you typed and the filters, nothing
-      else. No wallet, no NFT, no balance. It is never sent anywhere.</p>
+      <p class="lab-hint">Your view mode, sort and saved views stay in this browser. Only those:
+      the name you typed and the filters, never a wallet, an NFT or a balance, and never sent
+      anywhere.</p>
     </div>`;
 }
 
@@ -2870,7 +2884,7 @@ function renderAssetDetail(inv: InventoryState): string {
       <p class="lab-empty">No NFT with id <code>${esc(inv.openAsset)}</code> in this wallet.</p>
     </div>`;
   }
-  const img = (a.data ?? {}).img ?? (a.data ?? {}).image ?? (a.data ?? {}).video;
+  const img = artworkOf(a);
   const rows = Object.entries(a.data ?? {})
     .filter(([k]) => !['img', 'image', 'video'].includes(k.toLowerCase()));
   return `<div class="lab-panel">
@@ -2882,7 +2896,7 @@ function renderAssetDetail(inv: InventoryState): string {
         : '<span class="lab-hint">This NFT has no template, so it has no siblings.</span>'}
     </div>
     <div class="inv-detail">
-      ${img ? renderMediaThumb({ ref: stringify(img), alt: a.name ?? a.asset_id }) : '<span class="lab-noart"></span>'}
+      ${img ? renderMediaThumb({ ref: img, alt: a.name ?? a.asset_id }) : '<span class="lab-noart"></span>'}
       <div class="inv-detail-body">
         <h3>${esc(a.name || a.asset_id)}</h3>
         <p class="lab-hint">
@@ -3057,11 +3071,11 @@ function renderInventoryTool(): string {
       </div>`
     : `<div class="inv-grid" style="--inv-card:${inv.cardSize}px">
         ${shown.map((a) => {
-          const img = (a.data ?? {}).img ?? (a.data ?? {}).image ?? (a.data ?? {}).video;
+          const img = artworkOf(a);
           return `
           <button class="inv-card" data-lab="inv-open" data-value="${esc(a.asset_id)}"
                   title="${esc(a.asset_id)}">
-            ${img ? renderMediaThumb({ ref: stringify(img), alt: a.name ?? a.asset_id, className: 'media-thumb-sm' })
+            ${img ? renderMediaThumb({ ref: img, alt: a.name ?? a.asset_id, className: 'media-thumb-sm' })
                   : '<span class="lab-noart"></span>'}
             <span class="inv-card-name">${esc(a.name || a.asset_id)}</span>
             <span class="inv-card-sub">${esc(a.collection?.collection_name ?? '')}${a.template_mint ? ` · #${esc(a.template_mint)}` : ''}</span>
@@ -3165,10 +3179,15 @@ async function loadRunChoices(): Promise<void> {
   run.listError = '';
   run.choices = [];
   run.unreachable = [];
+  run.searched = true;
+  run.reading = '';
   rerender();
   const askedFor = `${run.action}::${run.collection}`;
   try {
-    const res = await listRecipes(run.action, run.collection, state.actor);
+    const res = await listRecipes(run.action, run.collection, state.actor, (contract) => {
+      run.reading = contract;
+      rerender();
+    });
     // A slow list must not land on a question somebody has moved past.
     if (`${run.action}::${run.collection}` !== askedFor) return;
     run.choices = res.choices;
@@ -3177,6 +3196,7 @@ async function loadRunChoices(): Promise<void> {
     run.listError = e instanceof Error ? e.message : String(e);
   } finally {
     run.listing = false;
+    run.reading = '';
     rerender();
   }
 }
@@ -3287,14 +3307,20 @@ function renderRunTool(): string {
     body = `
       <h4>Which one?</h4>
       ${run.listError ? `<p class="lab-warn">${esc(run.listError)}</p>` : ''}
-      ${run.listing ? '<p class="lab-hint">Reading the contracts.</p>' : ''}
+      ${run.listing ? `<p class="lab-hint">
+        Reading ${esc(run.reading || 'the contracts')}. Large collections take a moment.
+      </p>` : ''}
       ${run.unreachable.length ? `<p class="lab-warn">
         Could not reach ${run.unreachable.map((u) => esc(SOURCE_INFO[u].contract)).join(' and ')},
         so anything there is missing from this list.</p>` : ''}
-      ${!run.listing && !run.choices.length
-        ? `<p class="lab-empty">Nothing found in <code>${esc(run.collection)}</code>.
-           Check the spelling, or try another action on step 1.</p>`
-        : ''}
+      ${!run.listing && !run.choices.length ? (
+        !run.searched
+          ? '<p class="lab-hint">Pick a collection on the previous step.</p>'
+          : run.listError
+            ? '<p class="lab-warn">The search failed, so this list is empty for the wrong reason. Try again.</p>'
+            : `<p class="lab-empty">No ${esc(RECIPE_ACTIONS.find((a) => a.key === run.action)?.label.toLowerCase() ?? 'recipe')}
+               in <code>${esc(run.collection)}</code>. Check the spelling, or try another action on
+               step 1.</p>`) : ''}
       <div class="run-choices">
         ${run.choices.map((c) => `
           <button class="run-choice ${run.blendId === c.id && run.source === c.source ? 'on' : ''}"
@@ -3312,14 +3338,18 @@ function renderRunTool(): string {
   return `<div class="lab-panel">
     <h3>Run a recipe</h3>
     <p class="lab-hint">The player side of NeftyBlocks, WaxDAO and the Blenderizer, asked as
-    questions. Nothing here signs anything yet.</p>
+    questions. The last step signs a real transaction with your wallet, and burning an NFT
+    cannot be undone.</p>
     ${run.error ? `<p class="lab-warn">${esc(run.error)}</p>` : ''}
     ${rail}
     <div class="run-body">${body}</div>
     <div class="lab-row-actions run-nav">
       <button data-lab="run-back" ${run.step === 1 ? 'disabled' : ''}>Back</button>
       <span class="lab-step-of">Step ${run.step} of 4 · ${esc(RUN_STEPS[run.step - 1].q)}</span>
-      <button class="lab-primary" data-lab="run-next" ${run.step === 4 ? 'disabled' : ''}>Continue</button>
+      <button class="lab-primary" data-lab="run-next" ${
+        run.step === 4
+        || (run.step === 1 && !run.action)
+        || (run.step === 3 && !run.blendId) ? 'disabled' : ''}>Continue</button>
     </div>
   </div>`;
 }
@@ -3358,7 +3388,10 @@ function renderCostAndReward(
         <div class="run-slot-line">
           <span class="run-slot-text">
             ${esc(r.text)}
-            ${r.role === 'upgrade' ? '<span class="lab-tag">you keep this one</span>' : ''}
+            ${r.role === 'upgrade' ? '<span class="lab-tag run-keep">you keep this one</span>' : ''}
+            ${r.role === 'burn' && !/\(burned\)/.test(r.text)
+              ? '<span class="lab-tag run-burn">leaves your wallet</span>' : ''}
+            ${r.role === 'keep' ? '<span class="lab-tag run-keep">you keep this one</span>' : ''}
           </span>
           <span class="run-slot-have">${r.have === undefined
             ? '<span class="lab-hint">not checked</span>'
@@ -3393,7 +3426,7 @@ function renderCostAndReward(
     ${sure ? '' : '<p class="lab-hint">Drawn at random. The bars are the real odds from the contract.</p>'}
     ${rewards.length ? rewards.map((r) => `
       <div class="run-odd">
-        <span class="run-odd-name">${esc(r.text)}</span>
+        <span class="run-odd-name" title="${esc(r.text)}">${esc(r.text)}</span>
         ${r.odds === undefined ? '<span class="lab-hint">always</span>' : `
           <span class="run-odd-bar"><i style="width:${Math.max(2, (r.odds / max) * 100)}%"></i></span>
           <span class="run-odd-pct">${r.odds.toFixed(r.odds < 1 ? 2 : 1)}%</span>`}
@@ -3531,9 +3564,7 @@ function renderRunDetail(): string {
           ${detail.note ? `<p>${esc(detail.note)}</p>` : ''}
         </div>
       </div>
-      ${renderCostAndReward(detail.requirements, detail.rewards, detail.sure, known)}
-      <p class="lab-hint">This prototype stops before signing. The main app already builds the
-      real transaction for this one.</p>`;
+      ${renderCostAndReward(detail.requirements, detail.rewards, detail.sure, known)}`;
   }
 
   const b = run.blend;
@@ -3550,9 +3581,7 @@ function renderRunDetail(): string {
           ${esc(info?.platform ?? 'NeftyBlocks')} <code>${esc(info?.contract ?? 'blend.nefty')}</code></p>
       </div>
     </div>
-    ${renderCostAndReward(reqs, rewards, sure, known)}
-    <p class="lab-hint">This prototype stops before signing. The main app already builds the real
-    transaction for this blend.</p>`;
+    ${renderCostAndReward(reqs, rewards, sure, known)}`;
 }
 
 // ─── tool: WAX premium name auctions ────────────────────────────────────
@@ -5235,7 +5264,26 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           state.run.step = Number(el.dataset.value) as RunStep;
           break;
         case 'run-next':
-          state.run.step = Math.min(4, state.run.step + 1) as RunStep;
+          // Runs the step's real handler rather than incrementing.
+          // A blind increment let step 1 advance with no action chosen
+          // and threw away the collection somebody had just typed on
+          // step 2, which is the worst kind of button: one that looks
+          // like it worked.
+          if (state.run.step === 1) {
+            if (!state.run.action) return;
+            state.run.step = 2;
+          } else if (state.run.step === 2) {
+            const c = (root.querySelector<HTMLInputElement>('#run-collection')?.value ?? '')
+              .trim().toLowerCase();
+            if (!c) return;
+            state.run.collection = c;
+            state.run.step = 3;
+            void loadRunChoices();
+            return;
+          } else if (state.run.step === 3) {
+            if (!state.run.blendId) return;
+            state.run.step = 4;
+          }
           break;
         case 'run-swap':
           state.run.openSlot = state.run.openSlot === Number(el.dataset.idx)
@@ -5310,7 +5358,10 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           break;
         case 'inv-save-view': {
           const name = (root.querySelector<HTMLInputElement>('#inv-view-name')?.value ?? '').trim();
-          if (!name) return;
+          // Gated on the NAME, which is what it needs. It used to be
+          // greyed out when you had named a view but set no filter, and
+          // lit but silently inert when the name box was empty.
+          if (!name) { state.lastError = 'Name the view first, then press Save view.'; break; }
           const views = (readPrefs().savedViews ?? []).filter((v) => v.name !== name);
           patchPrefs({ savedViews: [...views, { name, view: encodeInventoryView(state.inv) }] });
           break;
