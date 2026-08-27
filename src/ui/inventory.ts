@@ -74,7 +74,7 @@ export function emptyInventoryState(): InventoryState {
   return {
     owner: '', loadedFor: '', loading: false, error: '', assets: [],
     q: '', include: {}, exclude: {}, view: 'grid',
-    sortKey: 'asset_id', sortDesc: true, cardSize: 96, limit: 120, openFacets: [],
+    sortKey: 'received', sortDesc: true, cardSize: 96, limit: 120, openFacets: [],
   };
 }
 
@@ -247,6 +247,10 @@ export function facetsOf(
 
 /** Sort keys that are not facets: the ones every asset always has. */
 export const SORT_KEYS: { key: string; label: string }[] = [
+  // First, and the default: the order things landed in the wallet. An
+  // inventory should open on what you just got.
+  { key: 'received', label: 'Recently received' },
+  { key: 'minted', label: 'Mint date' },
   { key: 'asset_id', label: 'Asset id' },
   { key: 'name', label: 'Name' },
   { key: 'template_mint', label: 'Mint number' },
@@ -262,17 +266,25 @@ export const SORT_KEYS: { key: string; label: string }[] = [
  * are 64 bit so they are compared as BigInt rather than as doubles, which
  * lose precision above 2^53 and would shuffle a whale's inventory.
  */
+/** The numeric fields, and where each one's value comes from. */
+const NUMERIC_SORT: Record<string, (a: AtomicAsset) => string> = {
+  asset_id: (a) => a.asset_id,
+  template_mint: (a) => a.template_mint ?? '',
+  template: (a) => a.template?.template_id ?? '',
+  received: (a) => a.transferred_at_time ?? '0',
+  minted: (a) => a.minted_at_time ?? '0',
+};
+
 export function sortAssets(assets: AtomicAsset[], key: string, desc: boolean): AtomicAsset[] {
-  const numeric = key === 'asset_id' || key === 'template_mint' || key === 'template';
+  const pick = NUMERIC_SORT[key];
   const out = [...assets].sort((a, b) => {
-    if (numeric) {
-      const av = key === 'asset_id' ? a.asset_id
-        : key === 'template_mint' ? (a.template_mint ?? '')
-          : (a.template?.template_id ?? '');
-      const bv = key === 'asset_id' ? b.asset_id
-        : key === 'template_mint' ? (b.template_mint ?? '')
-          : (b.template?.template_id ?? '');
-      const an = big(av); const bn = big(bv);
+    if (pick) {
+      // Compared as BigInt because asset ids are 64 bit and WAX issues
+      // them high enough to pass 2^53, where a double stops being exact.
+      // Millisecond timestamps sit around 1.8e12 and would be safe as
+      // numbers, but they go through the same path rather than growing a
+      // second one that could disagree with it.
+      const an = big(pick(a)); const bn = big(pick(b));
       return an === bn ? 0 : an < bn ? -1 : 1;
     }
     const av = key === 'name' ? (a.name ?? '') : facetValue(a, key);
@@ -356,7 +368,7 @@ export function encodeInventoryView(st: InventoryState): string {
   // Direction rides in its own key rather than after a colon in the sort
   // key. Attribute keys are `attr:rarity`, so `sort=attr:rarity:asc` was
   // being split at the FIRST colon and came back as a sort by `attr`.
-  if (st.sortKey !== 'asset_id') parts.push(`sort=${enc(st.sortKey)}`);
+  if (st.sortKey !== 'received') parts.push(`sort=${enc(st.sortKey)}`);
   if (!st.sortDesc) parts.push('asc=1');
   if (st.cardSize !== 96) parts.push(`size=${st.cardSize}`);
   return parts.join('~');
@@ -371,7 +383,7 @@ export function decodeInventoryView(text: string, st: InventoryState): void {
     const raw = chunk.slice(eq + 1);
     if (key === 'q') { st.q = decodeURIComponent(raw); continue; }
     if (key === 'view') { st.view = raw === 'list' ? 'list' : 'grid'; continue; }
-    if (key === 'sort') { st.sortKey = decodeURIComponent(raw) || 'asset_id'; continue; }
+    if (key === 'sort') { st.sortKey = decodeURIComponent(raw) || 'received'; continue; }
     if (key === 'asc') { st.sortDesc = raw !== '1'; continue; }
     if (key === 'size') { st.cardSize = clampCardSize(raw); continue; }
     for (const v of raw.split(',')) {

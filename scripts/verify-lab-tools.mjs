@@ -181,6 +181,35 @@ async function main() {
 
   console.log('\n=== PHASE D - sorting ===');
   {
+    // The default, and the one people see first. Receipt order is not
+    // mint order: a 2021 NFT bought yesterday has a low asset_id and
+    // belongs at the top of an inventory.
+    say(inv.emptyInventoryState().sortKey === 'received',
+        'an inventory opens on what arrived most recently');
+    const withTime = assets.filter((a) => a.transferred_at_time);
+    say(withTime.length > 0,
+        `${withTime.length}/${assets.length} real assets carry transferred_at_time`);
+    const recv = inv.sortAssets(withTime, 'received', true).map((a) => BigInt(a.transferred_at_time));
+    say(recv.every((v, i) => i === 0 || recv[i - 1] >= v),
+        'receipt order really is newest first');
+    // The reason the sort goes through BigInt at all: ids beyond 2^53
+    // are not exact as doubles, and two that differ only in their low
+    // digits would compare equal and shuffle. Checked with values chosen
+    // to collide under Number, which real rows do not conveniently do.
+    const huge = [
+      { asset_id: '9007199254740993' },
+      { asset_id: '9007199254740992' },
+    ];
+    const sortedHuge = inv.sortAssets(huge, 'asset_id', false).map((a) => a.asset_id);
+    say(JSON.stringify(sortedHuge) === JSON.stringify(['9007199254740992', '9007199254740993']),
+        'two ids that a double cannot tell apart still sort correctly');
+    say(Number('9007199254740993') === Number('9007199254740992'),
+        'and those two really are indistinguishable as doubles, so the check means something');
+    // Assets the indexer has no timestamp for must not throw or vanish.
+    const mixed = [{ asset_id: '1' }, { asset_id: '2', transferred_at_time: '1787776648500' }];
+    say(inv.sortAssets(mixed, 'received', true).length === 2,
+        'an asset with no receipt time still appears, rather than being dropped');
+
     const ids = inv.sortAssets(assets, 'asset_id', false).map((a) => BigInt(a.asset_id));
     say(ids.every((v, i) => i === 0 || ids[i - 1] <= v),
         'asset ids sort as 64 bit numbers, not as doubles or strings');

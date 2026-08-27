@@ -20,6 +20,16 @@ export interface AtomicAsset {
   name?: string;
   data?: Record<string, unknown>;
   template_mint?: string;
+  /**
+   * When this NFT last arrived in the current owner's wallet, in
+   * milliseconds. This is the only field that answers "what did I get
+   * most recently", which is the order people expect an inventory to open
+   * in: asset_id is mint order, and a two year old NFT bought yesterday
+   * has a low id and belongs at the top.
+   */
+  transferred_at_time?: string;
+  /** When it was minted, whoever owned it then. */
+  minted_at_time?: string;
 }
 
 const cache = new Map<string, AtomicAsset[]>();
