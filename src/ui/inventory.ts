@@ -30,6 +30,7 @@
  * or your NFTs is ever written, and a button clears the lot.
  */
 import { listAssetsForOwner, clearAssetsCache, type AtomicAsset } from '../atomic/assets';
+import { atomicFetch } from '../chain/rpc';
 
 export type InventoryView = 'grid' | 'list';
 
@@ -77,6 +78,18 @@ export interface InventoryState {
    * drawer happened to be open is not part of the view somebody shares.
    */
   filtersOpen: boolean;
+  /**
+   * The asset being looked at, if any. Carried in the URL like the rest
+   * of the view, so a link opens on the same NFT the sender was reading.
+   */
+  openAsset: string;
+  /**
+   * A template being looked at, and everyone who owns one. Kept apart
+   * from openAsset because you reach it FROM an asset and go back to it.
+   */
+  openTemplate: string;
+  templateOwners: { owner: string; count: number }[];
+  templateState: 'idle' | 'loading' | 'done' | 'error';
 }
 
 export function emptyInventoryState(): InventoryState {
@@ -84,6 +97,7 @@ export function emptyInventoryState(): InventoryState {
     owner: '', loadedFor: '', loading: false, error: '', assets: [],
     q: '', include: {}, exclude: {}, view: 'grid',
     sortKey: 'received', sortDesc: true, cardSize: 96, limit: 120, openFacets: [], filtersOpen: false,
+    openAsset: '', openTemplate: '', templateOwners: [], templateState: 'idle',
   };
 }
 
@@ -380,6 +394,10 @@ export function encodeInventoryView(st: InventoryState): string {
   if (st.sortKey !== 'received') parts.push(`sort=${enc(st.sortKey)}`);
   if (!st.sortDesc) parts.push('asc=1');
   if (st.cardSize !== 96) parts.push(`size=${st.cardSize}`);
+  // What is being looked at travels too: "look at this one" is the most
+  // obvious reason to send somebody an inventory link.
+  if (st.openAsset) parts.push(`asset=${enc(st.openAsset)}`);
+  if (st.openTemplate) parts.push(`tpl=${enc(st.openTemplate)}`);
   return parts.join('~');
 }
 
@@ -395,6 +413,8 @@ export function decodeInventoryView(text: string, st: InventoryState): void {
     if (key === 'sort') { st.sortKey = decodeURIComponent(raw) || 'received'; continue; }
     if (key === 'asc') { st.sortDesc = raw !== '1'; continue; }
     if (key === 'size') { st.cardSize = clampCardSize(raw); continue; }
+    if (key === 'asset') { st.openAsset = decodeURIComponent(raw); continue; }
+    if (key === 'tpl') { st.openTemplate = decodeURIComponent(raw); continue; }
     for (const v of raw.split(',')) {
       if (!v) continue;
       const excluded = v.startsWith('!');
@@ -403,6 +423,26 @@ export function decodeInventoryView(text: string, st: InventoryState): void {
       bag[key] = [...(bag[key] ?? []), value];
     }
   }
+}
+
+/**
+ * Everyone who owns a copy of one template.
+ *
+ * Answers "who else has this", the question that follows "what is this"
+ * and the one the standard explorer buries. Read from the AtomicAssets
+ * accounts endpoint rather than by paging every asset, so a template
+ * with thousands of copies costs one request rather than thousands.
+ */
+export async function loadTemplateOwners(
+  templateId: string,
+): Promise<{ owner: string; count: number }[]> {
+  if (!templateId) return [];
+  const rows = await atomicFetch<{ account: string; assets: string }[]>(
+    `/atomicassets/v1/accounts?template_id=${encodeURIComponent(templateId)}&limit=200`,
+  );
+  return (Array.isArray(rows) ? rows : [])
+    .map((r) => ({ owner: String(r.account), count: Number(r.assets) || 0 }))
+    .sort((a, b) => b.count - a.count || a.owner.localeCompare(b.owner));
 }
 
 /** Pulls the wallet's NFTs. One call, then everything else is local. */

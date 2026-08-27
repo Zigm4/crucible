@@ -335,6 +335,102 @@ async function main() {
           : 'no base .inv- rule sits below it, so it cannot be silently outranked');
   }
 
+  console.log('\n=== PHASE J - the prototype actually signs ===');
+  {
+    const blendMod2 = await import('./.build/blend.mjs');
+    // Fakes built FROM each recipe's own ingredients rather than guessed,
+    // because a guess that misses a schema slot proves nothing except
+    // that the guard works. (It does: the first version of this test hit
+    // "Pick 4 for 4 x any mapfragments NFT" and refused to build.)
+    const fakesFor = (reqs, collection) => {
+      const out = [];
+      reqs.forEach((r, i) => {
+        if (r.kind !== 'nft') return;
+        const tpl = /template #(\d+)/.exec(r.text)?.[1] ?? String(900000 + i);
+        const schema = /any ([a-z0-9.]+) NFT/.exec(r.text)?.[1] ?? 'any';
+        for (let k = 0; k < r.need; k += 1) {
+          out.push({
+            asset_id: `7${i}${k}`,
+            template: { template_id: tpl },
+            collection: { collection_name: collection },
+            schema: { schema_name: schema },
+            data: {},
+          });
+        }
+      });
+      return out;
+    };
+
+    const cases = [
+      { source: 'blend', id: '45780', collection: 'captainshelm' },
+      { source: 'waxdao', id: '1547', collection: 'underpunks55' },
+      { source: 'blenderizer', id: '', collection: 'underpunks55' },
+      { source: 'upgrade', id: '', collection: 'underpunks55' },
+    ];
+    for (const c of cases) {
+      let id = c.id;
+      if (!id) {
+        const listed = await run.listRecipes(run.actionOf(c.source), c.collection, '');
+        id = listed.choices.find((x) => x.source === c.source)?.id ?? '';
+        if (!id) { fails.push(`no ${c.source} sample, so signing was never checked for it`); continue; }
+      }
+      const rawRow = c.source === 'blend'
+        ? await blendMod2.loadBlend({ blend_id: id })
+        : (await run.loadRecipeById(c.source, id, c.collection, ''))?.raw;
+      if (!rawRow) { fails.push(`${c.source} #${id} could not be loaded`); continue; }
+
+      const bare = c.source === 'blend'
+        ? run.requirementsOf(rawRow, [], true)
+        : run.describeRecipe(c.source, rawRow, [], true).requirements;
+      const owned = fakesFor(bare, c.collection);
+      const reqs = c.source === 'blend'
+        ? run.requirementsOf(rawRow, owned, true)
+        : run.describeRecipe(c.source, rawRow, owned, true).requirements;
+
+      const picked = run.autoPick(reqs, {});
+      const missing = run.whatIsMissing(reqs, picked);
+      say(missing.length === 0,
+          `${c.source} #${id}: every slot filled automatically${missing.length ? ` — ${missing.join('; ')}` : ''}`);
+      if (missing.length) continue;
+
+      // No asset may fill two slots: the contract rejects the duplicate.
+      const all = Object.values(picked).flat();
+      say(new Set(all).size === all.length,
+          `${c.source} #${id}: no NFT is used twice across slots (${all.length} picked)`);
+
+      let actions;
+      try {
+        actions = await run.buildRunActions({
+          source: c.source, actor: 'zigm4.gm', id, raw: rawRow, requirements: reqs, picked,
+        });
+      } catch (e) { fails.push(`${c.source} #${id} would not build: ${e.message}`); continue; }
+      say(actions.length > 0 && actions.every((a) => a.account && a.name && a.authorization?.length),
+          `${c.source} #${id} builds ${actions.length} action(s): ${actions.map((a) => `${a.account}::${a.name}`).join(', ')}`);
+      // Every action must be signed by the person pressing the button.
+      say(actions.every((a) => a.authorization.every((au) => au.actor === 'zigm4.gm')),
+          `${c.source} #${id}: every action is authorised by the signer, nobody else`);
+    }
+
+    // A short slot must refuse to build rather than send a transaction
+    // the contract will reject. Costing somebody CPU to learn that is the
+    // failure this exists to prevent.
+    const b = await blendMod2.loadBlend({ blend_id: '45780' });
+    let refused = false;
+    try {
+      await run.buildRunActions({
+        source: 'blend', actor: 'zigm4.gm', id: '45780', raw: b,
+        requirements: run.requirementsOf(b, [], true), picked: {},
+      });
+    } catch { refused = true; }
+    say(refused, 'an unfilled slot refuses to build rather than signing something that would fail');
+
+    let noWallet = false;
+    try {
+      await run.buildRunActions({ source: 'blend', actor: '', id: '1', raw: b, requirements: [], picked: {} });
+    } catch { noWallet = true; }
+    say(noWallet, 'no wallet refuses to build at all');
+  }
+
   console.log('\n=== PHASE I - step 4 works for every contract, not just one ===');
   {
     // The prototype used to describe cost and reward only for

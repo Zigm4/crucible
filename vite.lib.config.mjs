@@ -14,6 +14,7 @@ export default defineConfig({
         createBlend: 'src/nefty/createBlend.ts',
         createUpgrade: 'src/nefty/createUpgrade.ts',
         upgradeGate: 'src/nefty/upgradeGate.ts',
+        blend: 'src/nefty/blend.ts',
         inventory: 'src/ui/inventory.ts',
         prefs: 'src/ui/prefs.ts',
         guidedRun: 'src/ui/guidedRun.ts',

@@ -25,6 +25,12 @@
 import type { BlendRow, IngredientVariant } from '../nefty/blend';
 import { isDeterministic, deterministicResults, poolDraws, oddsAreCertain } from '../nefty/blend';
 import { listAssetsForOwner, type AtomicAsset } from '../atomic/assets';
+import { buildBlendActions } from '../nefty/execute';
+import { buildUpgradeActions } from '../nefty/upgradeExecute';
+import { buildClaimActions } from '../nefty/dropExecute';
+import { buildWaxdaoBlendActions } from '../waxdao/blendExecute';
+import { buildBlenderizerBlendActions } from '../blenderizer/blendExecute';
+import type { BuiltAction } from '../chain/action';
 import { listBlends } from '../nefty/discover';
 import { listUpgrades, loadUpgradeById } from '../nefty/upgrades';
 import { listDrops } from '../nefty/drops';
@@ -97,6 +103,20 @@ export interface Requirement {
   /** Asset ids that satisfy this slot, for the picker in step 4. */
   candidates: string[];
   kind: 'nft' | 'token' | 'other';
+  /**
+   * What the contract does with what you put here. Not decoration: an
+   * upgrade's target NFT comes back to you and its cost NFTs do not, and
+   * a screen that called both "burned" would be lying about the one
+   * thing a player most wants to be sure of.
+   */
+  role: 'burn' | 'keep' | 'upgrade' | 'pay' | 'unknown';
+  /**
+   * The contract's own index for this slot, where it has one. WaxDAO and
+   * the Blenderizer both take a map keyed by it, so a picked asset has to
+   * find its way back to the right slot rather than to a position in our
+   * own list.
+   */
+  slot?: number;
 }
 
 export interface RecipeChoice {
@@ -238,6 +258,12 @@ export interface RunState {
   picked: Record<number, string[]>;
   /** The row they clicked on step 3, kept so step 4 needs no second read. */
   pickedRecipe?: RecipeChoice;
+  /** Which slot's candidate list is open, if any. */
+  openSlot?: number;
+  /** Set while a wallet dialog is open, so nothing double-signs. */
+  signing: boolean;
+  /** The transaction id, once one exists. */
+  lastTrxId: string;
 }
 
 export function emptyRunState(): RunState {
@@ -245,7 +271,7 @@ export function emptyRunState(): RunState {
     action: '', source: '', collection: '', choices: [], listing: false, listError: '',
     unreachable: [],
     blendId: '', loading: false, error: '', step: 1,
-    owner: '', assets: [], assetsFor: '', picked: {},
+    owner: '', assets: [], assetsFor: '', picked: {}, signing: false, lastTrxId: '',
   };
 }
 
@@ -343,16 +369,16 @@ export function requirementsOf(
       // Deliberately unchecked. A token balance lives on whichever
       // contract issues it, and guessing wrong here would tell someone
       // they cannot afford something they can.
-      return { text: `Pay ${p.quantity}`, need: 1, candidates: [], kind: 'token' as const };
+      return { text: `Pay ${p.quantity}`, need: 1, candidates: [], kind: 'token' as const, role: 'pay' as const };
     }
     if (kind === 'CHEST_INGREDIENT' || kind === 'BALANCE_INGREDIENT') {
       return {
         text: `Spend ${p.cost} from an NFT's ${p.attribute_name} balance`,
-        need: 1, candidates: [], kind: 'other' as const,
+        need: 1, candidates: [], kind: 'other' as const, role: 'unknown' as const,
       };
     }
     if (kind === 'COOLDOWN_INGREDIENT') {
-      return { text: 'Wait out this recipe’s cooldown', need: 1, candidates: [], kind: 'other' as const };
+      return { text: 'Wait out this recipe’s cooldown', need: 1, candidates: [], kind: 'other' as const, role: 'unknown' as const };
     }
 
     const candidates = assets.filter((a) => matches(a, ing)).map((a) => a.asset_id);
@@ -374,6 +400,12 @@ export function requirementsOf(
       text, need: amount, candidates,
       have: known ? candidates.length : undefined,
       kind: 'nft' as const,
+      // blend.nefty burns or transfers every NFT ingredient. Which of the
+      // two is in the ingredient's `effect`, which the row does not
+      // decode, so the honest word is the one that is always true: it
+      // leaves your wallet.
+      role: 'burn' as const,
+      slot: undefined,
     };
   });
 }
@@ -471,36 +503,54 @@ export function describeRecipe(
     const b = raw as {
       ingredients?: WaxdaoLike[]; results?: { nft_name?: string; template_id?: number; result_type?: string }[];
       blends_remaining?: number;
+      nftSlots?: { slot: number }[];
     };
+    // waxdaomarket takes a map keyed by ITS slot index, not by position
+    // in our list, so each NFT requirement carries the slot the contract
+    // gave it. nftSlots is pre-computed by the lister for exactly this.
+    const slots = (b.nftSlots ?? []).map((x) => x.slot);
+    let nftSeen = -1;
     const requirements: Requirement[] = (b.ingredients ?? []).map((ing) => {
       if (ing.kind === 'fungible') {
-        return { text: `Pay ${ing.quantity}`, need: 1, candidates: [], kind: 'token' as const };
+        return { text: `Pay ${ing.quantity}`, need: 1, candidates: [], kind: 'token' as const, role: 'pay' as const };
       }
+      nftSeen += 1;
+      const slot = slots[nftSeen];
       const amount = Number(ing.amount ?? 1) || 1;
       const fate = ing.burn === false ? 'kept' : 'burned';
+      const role = ing.burn === false ? ('keep' as const) : ('burn' as const);
       if (ing.kind === 'nft_template') {
         const n = countOwned(assets, (a) => String(a.template?.template_id ?? '') === String(ing.template_id));
+        const cands = assets.filter((a) => String(a.template?.template_id ?? '') === String(ing.template_id))
+          .map((a) => a.asset_id);
         return { text: `${amount} x template #${ing.template_id} (${fate})`, need: amount, have: have(n),
-                 candidates: [], kind: 'nft' as const };
+                 candidates: cands, kind: 'nft' as const, role, slot };
       }
       if (ing.kind === 'nft_schema') {
         const n = countOwned(assets, (a) => a.collection?.collection_name === ing.collection_name
           && a.schema?.schema_name === ing.schema_name);
+        const cands = assets.filter((a) => a.collection?.collection_name === ing.collection_name
+          && a.schema?.schema_name === ing.schema_name).map((a) => a.asset_id);
         return { text: `${amount} x any ${ing.schema_name} NFT (${fate})`, need: amount, have: have(n),
-                 candidates: [], kind: 'nft' as const };
+                 candidates: cands, kind: 'nft' as const, role, slot };
       }
       if (ing.kind === 'nft_collection') {
         const n = countOwned(assets, (a) => a.collection?.collection_name === ing.collection_name);
+        const cands = assets.filter((a) => a.collection?.collection_name === ing.collection_name)
+          .map((a) => a.asset_id);
         return { text: `${amount} x any NFT from ${ing.collection_name} (${fate})`, need: amount, have: have(n),
-                 candidates: [], kind: 'nft' as const };
+                 candidates: cands, kind: 'nft' as const, role, slot };
       }
       if (ing.kind === 'nft_attribute') {
         // The attribute conditions are not decoded by the lister, so the
         // count would be wrong. Left unchecked rather than guessed.
+        // The lister does not decode the attribute conditions, so we
+        // cannot say which NFTs qualify. Offering a guess here would
+        // build a transaction the contract rejects.
         return { text: `${amount} x ${ing.schema_name} matching this recipe's attribute rule`,
-                 need: amount, candidates: [], kind: 'other' as const };
+                 need: amount, candidates: [], kind: 'other' as const, role: 'unknown' as const, slot };
       }
-      return { text: 'An ingredient this page cannot read yet', need: 1, candidates: [], kind: 'other' as const };
+      return { text: 'An ingredient this page cannot read yet', need: 1, candidates: [], kind: 'other' as const, role: 'unknown' as const };
     });
     // nft_name is not trustworthy. Blend 1547 on underpunks55 carries the
     // literal string "name" there, which is the contract's placeholder,
@@ -518,14 +568,16 @@ export function describeRecipe(
 
   if (source === 'blenderizer') {
     const b = raw as {
-      slots?: { template_id: number; amount: number }[];
+      slots?: { index: number; template_id: number; amount: number }[];
       name?: string; target?: number; target_issued?: number; target_max?: number;
     };
     const requirements: Requirement[] = (b.slots ?? []).map((sl) => {
-      const n = countOwned(assets, (a) => String(a.template?.template_id ?? '') === String(sl.template_id));
+      const cands = assets.filter((a) => String(a.template?.template_id ?? '') === String(sl.template_id))
+        .map((a) => a.asset_id);
       const amount = Number(sl.amount ?? 1) || 1;
-      return { text: `${amount} x template #${sl.template_id} (burned)`, need: amount, have: have(n),
-               candidates: [], kind: 'nft' as const };
+      return { text: `${amount} x template #${sl.template_id} (burned)`, need: amount,
+               have: have(cands.length), candidates: cands, kind: 'nft' as const,
+               role: 'burn' as const, slot: sl.index };
     });
     const left = Number(b.target_max ?? 0) > 0
       ? `${Number(b.target_max) - Number(b.target_issued ?? 0)} left of ${b.target_max}`
@@ -543,35 +595,60 @@ export function describeRecipe(
       ingredients?: UpgradeLike[];
       specs?: { schema_name: string; results?: { attribute_name: string; immediate_value?: string | number; is_random?: boolean }[] }[];
       is_random?: boolean;
+      acceptedTemplateIds?: number[];
     };
-    const requirements: Requirement[] = (u.ingredients ?? []).map((ing) => {
+    // The NFT being upgraded is NOT an ingredient. up.nefty takes it in a
+    // field of its own and hands it back changed, so it needs a slot on
+    // this screen that the contract's ingredient list never mentions.
+    // Without it there is nothing to pick and nothing to sign.
+    const accepted = (u.acceptedTemplateIds ?? []).map(String);
+    const targets = accepted.length
+      ? assets.filter((a) => accepted.includes(String(a.template?.template_id ?? '')))
+      : [];
+    const targetReq: Requirement = {
+      text: accepted.length === 1
+        ? `The NFT to upgrade: template #${accepted[0]}`
+        : `The NFT to upgrade: any of ${accepted.length} accepted template(s)`,
+      need: 1,
+      have: known ? targets.length : undefined,
+      candidates: targets.map((a) => a.asset_id),
+      kind: 'nft',
+      role: 'upgrade',
+    };
+    const requirements: Requirement[] = [targetReq, ...(u.ingredients ?? []).map((ing) => {
       if (ing.kind === 'ft') {
-        return { text: `Pay ${ing.quantity}`, need: 1, candidates: [], kind: 'token' as const };
+        return { text: `Pay ${ing.quantity}`, need: 1, candidates: [], kind: 'token' as const, role: 'pay' as const };
       }
       const amount = Number(ing.amount ?? 1) || 1;
       if (ing.kind === 'template') {
         const n = countOwned(assets, (a) => String(a.template?.template_id ?? '') === String(ing.template_id));
+        const cands = assets.filter((a) => String(a.template?.template_id ?? '') === String(ing.template_id))
+          .map((a) => a.asset_id);
         return { text: `${amount} x template #${ing.template_id}`, need: amount, have: have(n),
-                 candidates: [], kind: 'nft' as const };
+                 candidates: cands, kind: 'nft' as const, role: 'burn' as const };
       }
       if (ing.kind === 'schema') {
         const n = countOwned(assets, (a) => a.collection?.collection_name === ing.collection_name
           && a.schema?.schema_name === ing.schema_name);
+        const cands = assets.filter((a) => a.collection?.collection_name === ing.collection_name
+          && a.schema?.schema_name === ing.schema_name).map((a) => a.asset_id);
         return { text: `${amount} x any ${ing.schema_name} NFT`, need: amount, have: have(n),
-                 candidates: [], kind: 'nft' as const };
+                 candidates: cands, kind: 'nft' as const, role: 'burn' as const };
       }
       if (ing.kind === 'collection') {
         const n = countOwned(assets, (a) => a.collection?.collection_name === ing.collection_name);
+        const cands = assets.filter((a) => a.collection?.collection_name === ing.collection_name)
+          .map((a) => a.asset_id);
         return { text: `${amount} x any NFT from ${ing.collection_name}`, need: amount, have: have(n),
-                 candidates: [], kind: 'nft' as const };
+                 candidates: cands, kind: 'nft' as const, role: 'burn' as const };
       }
       if (ing.kind === 'balance') {
         return { text: `Spend ${ing.cost} from an NFT's ${ing.attribute_name} balance`,
-                 need: 1, candidates: [], kind: 'other' as const };
+                 need: 1, candidates: [], kind: 'other' as const, role: 'unknown' as const };
       }
       return { text: `${amount} x ${ing.schema_name ?? 'an'} NFT matching this recipe's attribute rule`,
-               need: amount, candidates: [], kind: 'other' as const };
-    });
+               need: amount, candidates: [], kind: 'other' as const, role: 'unknown' as const };
+    })];
     // An attribute value can be an IPFS hash, which is a correct answer
     // and a useless one to read. Long opaque values are shortened rather
     // than printed whole; the attribute name is the part that matters.
@@ -600,7 +677,7 @@ export function describeRecipe(
     const paid = !d.is_free
       && /[1-9]/.test(String(d.listing_price ?? '').split(' ')[0].replace('.', ''));
     const requirements: Requirement[] = paid
-      ? [{ text: `Pay ${d.listing_price}`, need: 1, candidates: [], kind: 'token' as const }]
+      ? [{ text: `Pay ${d.listing_price}`, need: 1, candidates: [], kind: 'token' as const, role: 'pay' as const }]
       : [];
     const rewards: Reward[] = (d.assets_to_mint ?? []).map((m) => ({ text: `template #${m.template_id}` }));
     const cap = Number(d.max_claimable ?? 0) > 0
@@ -664,6 +741,150 @@ export async function loadRecipeById(
   } catch { /* a link to something unreadable says so on screen */ }
   void info;
   return undefined;
+}
+
+/**
+ * The transaction, for whichever contract the recipe lives on.
+ *
+ * Every builder here is the one the main app already signs with, and
+ * each is covered by its own byte-for-byte replay suite. Nothing new is
+ * constructed: this only routes the player's picks into the right shape
+ * for the right contract, which is the whole reason the picks carry a
+ * `slot` and a `role` rather than just an order.
+ *
+ * Throws with a sentence rather than returning an empty list. A caller
+ * that signed nothing would look like success.
+ */
+export async function buildRunActions(args: {
+  source: RecipeSource;
+  actor: string;
+  id: string;
+  raw: unknown;
+  requirements: Requirement[];
+  /** Asset ids the person picked, keyed by requirement index. */
+  picked: Record<number, string[]>;
+}): Promise<BuiltAction[]> {
+  const { source, actor, id, raw, requirements, picked } = args;
+  if (!actor) throw new Error('Connect a wallet first.');
+
+  const chosen = (i: number) => picked[i] ?? [];
+  const tokens = requirements.filter((r) => r.kind === 'token')
+    .map((r) => r.text.replace(/^Pay\s+/, '').trim());
+
+  // Every NFT slot has to be full. The contracts reject a short list, and
+  // finding that out from a failed transaction costs CPU and confidence.
+  requirements.forEach((r, i) => {
+    if (r.kind !== 'nft') return;
+    if (chosen(i).length !== r.need) {
+      throw new Error(`Pick ${r.need} for "${r.text}" (you picked ${chosen(i).length}).`);
+    }
+  });
+
+  if (source === 'blend') {
+    const b = raw as { security_id?: string | number };
+    const secure = Number(b?.security_id ?? 0) !== 0;
+    return buildBlendActions({
+      claimer: actor,
+      blend_id: id,
+      // Flat, in ingredient order: that is the order blend.nefty reads.
+      asset_ids: requirements.flatMap((r, i) => (r.kind === 'nft' ? chosen(i) : [])),
+      ft_payments: tokens,
+      secure,
+      // The plain no-op gate. A secure blend whose whitelist the wallet
+      // is not on fails on chain, which is the contract's answer to give,
+      // not ours to guess at.
+      security_check: { kind: 'whitelist', account_name: actor },
+    });
+  }
+
+  if (source === 'waxdao') {
+    const selection = new Map<number, string | string[]>();
+    requirements.forEach((r, i) => {
+      if (r.kind !== 'nft' || r.slot === undefined) return;
+      const ids = chosen(i);
+      selection.set(r.slot, ids.length === 1 ? ids[0] : ids);
+    });
+    return buildWaxdaoBlendActions({
+      claimer: actor,
+      blend: raw as Parameters<typeof buildWaxdaoBlendActions>[0]['blend'],
+      nftSelection: selection,
+    });
+  }
+
+  if (source === 'blenderizer') {
+    const selection = new Map<number, string[]>();
+    requirements.forEach((r, i) => {
+      if (r.kind !== 'nft' || r.slot === undefined) return;
+      selection.set(r.slot, chosen(i));
+    });
+    return buildBlenderizerBlendActions({
+      claimer: actor,
+      blend: raw as Parameters<typeof buildBlenderizerBlendActions>[0]['blend'],
+      selection,
+    });
+  }
+
+  if (source === 'upgrade') {
+    // The two roles go to two different fields. Mixing them would burn
+    // the NFT somebody meant to keep.
+    const target = requirements.flatMap((r, i) => (r.role === 'upgrade' ? chosen(i) : []));
+    const cost = requirements.flatMap((r, i) =>
+      (r.kind === 'nft' && r.role !== 'upgrade' ? chosen(i) : []));
+    if (!target.length) throw new Error('Pick the NFT you want to upgrade.');
+    return buildUpgradeActions({
+      claimer: actor,
+      upgrade_id: id,
+      assets_to_upgrade: target,
+      transferred_assets: cost,
+      ft_payments: tokens,
+    });
+  }
+
+  return buildClaimActions({
+    claimer: actor,
+    drop: raw as Parameters<typeof buildClaimActions>[0]['drop'],
+    amount: 1,
+    proof_asset_ids: requirements.flatMap((r, i) => (r.role === 'unknown' ? chosen(i) : [])),
+  });
+}
+
+/**
+ * Fills every NFT slot with the first matching NFTs the wallet holds.
+ *
+ * Somebody who owns exactly what a recipe asks for should be able to
+ * press one button, and most people do not care which of their four
+ * identical commons gets burned. Anyone who does can change it; this
+ * only ever picks where nothing was picked, so it never overrides a
+ * choice somebody made.
+ */
+export function autoPick(
+  reqs: Requirement[], picked: Record<number, string[]>,
+): Record<number, string[]> {
+  const next = { ...picked };
+  // Across slots, never the same asset twice: one NFT cannot fill two
+  // ingredients, and the contract would reject the duplicate.
+  const taken = new Set(Object.values(next).flat());
+  reqs.forEach((r, i) => {
+    if (r.kind !== 'nft' || next[i]?.length) return;
+    const free = r.candidates.filter((id) => !taken.has(id)).slice(0, r.need);
+    if (free.length) {
+      next[i] = free;
+      free.forEach((id) => taken.add(id));
+    }
+  });
+  return next;
+}
+
+/** Everything a slot still needs before this can be signed. */
+export function whatIsMissing(reqs: Requirement[], picked: Record<number, string[]>): string[] {
+  const out: string[] = [];
+  reqs.forEach((r, i) => {
+    if (r.kind === 'nft' && (picked[i]?.length ?? 0) !== r.need) {
+      out.push(`${r.text}: ${picked[i]?.length ?? 0} of ${r.need} picked`);
+    }
+    if (r.kind === 'other') out.push(`${r.text}: this page cannot pick this one for you`);
+  });
+  return out;
 }
 
 /** Which steps a person may jump to: never past one that is not answered. */

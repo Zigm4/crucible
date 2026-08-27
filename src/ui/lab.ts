@@ -40,7 +40,7 @@ import {
   emptyInventoryState, loadInventory, applyFilter, facetsOf, sortAssets,
   toggleFacet, clearFilters, activeFilterCount, facetValue, stringify,
   encodeInventoryView, decodeInventoryView, SORT_KEYS, ATTR_PREFIX,
-  CARD_SIZES, clampCardSize,
+  CARD_SIZES, clampCardSize, loadTemplateOwners,
   type InventoryState,
 } from './inventory';
 import {
@@ -49,6 +49,7 @@ import {
 import {
   emptyRunState, loadRunAssets, requirementsOf, rewardsOf, canAfford,
   blendTitle, blendImage, listRecipes, collectionsOwned, describeRecipe, loadRecipeById,
+  buildRunActions, autoPick, whatIsMissing,
   RECIPE_ACTIONS, SOURCE_INFO, actionOf,
   type RunState, type RunStep, type RecipeAction, type RecipeSource,
 } from './guidedRun';
@@ -2853,8 +2854,96 @@ function applyInventoryPrefs(inv: InventoryState): void {
   if (p.inventoryCardSize) inv.cardSize = clampCardSize(p.inventoryCardSize);
 }
 
+/**
+ * One NFT, everything it carries, and the way back.
+ *
+ * "Back" is a real control rather than the browser button, because the
+ * inventory behind it is a filtered view somebody built by hand and
+ * losing it would mean rebuilding it. Nothing is refetched to open this:
+ * the asset is already in memory from the one read at the start.
+ */
+function renderAssetDetail(inv: InventoryState): string {
+  const a = inv.assets.find((x) => x.asset_id === inv.openAsset);
+  if (!a) {
+    return `<div class="lab-panel">
+      <button data-lab="inv-close">Back to the inventory</button>
+      <p class="lab-empty">No NFT with id <code>${esc(inv.openAsset)}</code> in this wallet.</p>
+    </div>`;
+  }
+  const img = (a.data ?? {}).img ?? (a.data ?? {}).image ?? (a.data ?? {}).video;
+  const rows = Object.entries(a.data ?? {})
+    .filter(([k]) => !['img', 'image', 'video'].includes(k.toLowerCase()));
+  return `<div class="lab-panel">
+    <div class="inv-detail-nav">
+      <button data-lab="inv-close">← Back to the inventory</button>
+      ${a.template?.template_id
+        ? `<button class="lab-primary" data-lab="inv-template"
+                   data-value="${esc(a.template.template_id)}">See everyone who owns this</button>`
+        : '<span class="lab-hint">This NFT has no template, so it has no siblings.</span>'}
+    </div>
+    <div class="inv-detail">
+      ${img ? renderMediaThumb({ ref: stringify(img), alt: a.name ?? a.asset_id }) : '<span class="lab-noart"></span>'}
+      <div class="inv-detail-body">
+        <h3>${esc(a.name || a.asset_id)}</h3>
+        <p class="lab-hint">
+          ${esc(a.collection?.collection_name ?? '')} ·
+          ${esc(a.schema?.schema_name ?? '')} ·
+          template ${esc(a.template?.template_id ?? 'none')}
+          ${a.template_mint ? ` · mint #${esc(a.template_mint)}` : ''}
+        </p>
+        <p class="lab-hint">asset id <code>${esc(a.asset_id)}</code>
+          · <a target="_blank" rel="noreferrer"
+               href="https://neftyblocks.com/asset/${esc(a.asset_id)}">view on an explorer</a></p>
+        ${rows.length ? `<div class="inv-attrs">
+          ${rows.map(([k, v]) => `
+            <div class="inv-attr">
+              <span class="inv-attr-k">${esc(k)}</span>
+              <span class="inv-attr-v">${esc(stringify(v))}</span>
+            </div>`).join('')}
+        </div>` : '<p class="lab-hint">This NFT carries no attributes.</p>'}
+      </div>
+    </div>
+  </div>`;
+}
+
+/** Every wallet holding a copy of one template, biggest holder first. */
+function renderTemplateDetail(inv: InventoryState): string {
+  const owners = inv.templateOwners;
+  const total = owners.reduce((n, o) => n + o.count, 0);
+  const mine = owners.find((o) => o.owner === (inv.owner || state.actor));
+  return `<div class="lab-panel">
+    <div class="inv-detail-nav">
+      <button data-lab="inv-template-back">← Back to the NFT</button>
+      <button data-lab="inv-close">Back to the inventory</button>
+    </div>
+    <h3>Template ${esc(inv.openTemplate)}</h3>
+    ${inv.templateState === 'loading' ? '<p class="lab-hint">Reading the holders.</p>' : ''}
+    ${inv.templateState === 'error' ? '<p class="lab-warn">The holder list could not be read.</p>' : ''}
+    ${inv.templateState === 'done' ? `
+      <p class="lab-hint">
+        <strong>${total.toLocaleString('en-US')}</strong> in circulation across
+        <strong>${owners.length.toLocaleString('en-US')}</strong> wallet${owners.length === 1 ? '' : 's'}${
+          owners.length >= 200 ? ', showing the top 200' : ''}.
+        ${mine ? ` You hold ${mine.count}.` : ''}
+      </p>
+      <div class="inv-owners">
+        ${owners.map((o) => `
+          <button class="inv-owner ${o.owner === (inv.owner || state.actor) ? 'on' : ''}"
+                  data-lab="inv-owner" data-value="${esc(o.owner)}"
+                  title="Open this wallet's inventory">
+            <span class="inv-owner-name">${esc(o.owner)}</span>
+            <span class="lab-hint">${o.count}</span>
+          </button>`).join('')}
+      </div>` : ''}
+  </div>`;
+}
+
 function renderInventoryTool(): string {
   const inv = state.inv;
+  // A detail view replaces the list rather than sitting under it, so the
+  // way back is one control and never a scroll.
+  if (inv.loadedFor && inv.openTemplate) return renderTemplateDetail(inv);
+  if (inv.loadedFor && inv.openAsset) return renderAssetDetail(inv);
 
   const bar = `
     <div class="lab-field inv-bar">
@@ -2958,7 +3047,7 @@ function renderInventoryTool(): string {
           ${attrCols.map((c) => `<span>${esc(c.label)}</span>`).join('')}
         </div>
         ${shown.map((a) => `
-          <div class="inv-list-row">
+          <div class="inv-list-row" data-lab="inv-open" data-value="${esc(a.asset_id)}" role="button" tabindex="0">
             <span class="inv-name">${esc(a.name || a.asset_id)}</span>
             <span>${esc(a.collection?.collection_name ?? '')}</span>
             <span>${esc(a.template?.template_id ?? '')}</span>
@@ -2970,12 +3059,13 @@ function renderInventoryTool(): string {
         ${shown.map((a) => {
           const img = (a.data ?? {}).img ?? (a.data ?? {}).image ?? (a.data ?? {}).video;
           return `
-          <div class="inv-card" title="${esc(a.asset_id)}">
+          <button class="inv-card" data-lab="inv-open" data-value="${esc(a.asset_id)}"
+                  title="${esc(a.asset_id)}">
             ${img ? renderMediaThumb({ ref: stringify(img), alt: a.name ?? a.asset_id, className: 'media-thumb-sm' })
                   : '<span class="lab-noart"></span>'}
             <span class="inv-card-name">${esc(a.name || a.asset_id)}</span>
             <span class="inv-card-sub">${esc(a.collection?.collection_name ?? '')}${a.template_mint ? ` · #${esc(a.template_mint)}` : ''}</span>
-          </div>`;
+          </button>`;
         }).join('')}
       </div>`;
 
@@ -3113,6 +3203,11 @@ async function startRun(blendId: string): Promise<void> {
     }
     run.owner = state.actor;
     if (state.actor) await loadRunAssets(run, state.actor);
+    // Fill every slot the moment the NFTs are known, so somebody who
+    // owns what the recipe asks for can press one button. Anyone who
+    // cares which copy gets burned can change it; autoPick never
+    // overwrites a choice already made.
+    if (run.assetsFor) run.picked = autoPick(runRequirements(), run.picked);
   } catch (e) {
     run.error = e instanceof Error ? e.message : String(e);
   } finally {
@@ -3240,20 +3335,54 @@ function renderCostAndReward(
   reqs: ReturnType<typeof requirementsOf>, rewards: { text: string; odds?: number }[],
   sure: boolean, known: boolean,
 ): string {
+  const run = state.run;
   const afford = canAfford(reqs);
   const max = Math.max(1, ...rewards.map((r) => r.odds ?? 0));
+  const nameOf = (id: string) => {
+    const a = run.assets.find((x) => x.asset_id === id);
+    return a?.name ? `${a.name}${a.template_mint ? ` #${a.template_mint}` : ''}` : id;
+  };
   return `
     <h4>What it takes from you</h4>
     ${!known ? '<p class="lab-hint">Connect a wallet to see how much of this you already hold.</p>' : ''}
-    ${reqs.length ? reqs.map((r) => {
+    ${reqs.length ? reqs.map((r, i) => {
       const short = r.have !== undefined && r.have < r.need;
+      const mine = run.picked[i] ?? [];
+      const full = mine.length === r.need;
+      // The picker only appears where there is a real choice to make. A
+      // slot with exactly enough NFTs has already been filled, and asking
+      // somebody to confirm the only possible answer is friction.
+      const choosable = r.kind === 'nft' && known && r.candidates.length > r.need;
       return `
-      <div class="run-slot ${short ? 'run-short' : r.have !== undefined ? 'run-ok' : ''}">
-        <span class="run-slot-text">${esc(r.text)}</span>
-        <span class="run-slot-have">${r.have === undefined
-          ? '<span class="lab-hint">not checked</span>'
-          : short ? `<strong>you have ${r.have}</strong>, ${r.need - r.have} short`
-            : `you have ${r.have}`}</span>
+      <div class="run-slot ${short ? 'run-short' : full ? 'run-ok' : r.have !== undefined ? '' : ''}">
+        <div class="run-slot-line">
+          <span class="run-slot-text">
+            ${esc(r.text)}
+            ${r.role === 'upgrade' ? '<span class="lab-tag">you keep this one</span>' : ''}
+          </span>
+          <span class="run-slot-have">${r.have === undefined
+            ? '<span class="lab-hint">not checked</span>'
+            : short ? `<strong>you have ${r.have}</strong>, ${r.need - r.have} short`
+              : full ? `${mine.length} of ${r.need} picked`
+                : `you have ${r.have}, none picked`}</span>
+        </div>
+        ${r.kind === 'nft' && known && !short ? `
+          <div class="run-pick-row">
+            ${mine.map((id) => `<span class="lab-tag run-chosen">${esc(nameOf(id))}</span>`).join('')}
+            ${choosable
+              ? `<button class="run-swap" data-lab="run-swap" data-idx="${i}">change</button>`
+              : ''}
+          </div>` : ''}
+        ${choosable && run.openSlot === i ? `
+          <div class="run-candidates">
+            ${r.candidates.slice(0, 60).map((id) => `
+              <button class="run-cand ${mine.includes(id) ? 'on' : ''}"
+                      data-lab="run-cand" data-idx="${i}" data-value="${esc(id)}">
+                ${esc(nameOf(id))}
+              </button>`).join('')}
+            ${r.candidates.length > 60
+              ? `<span class="lab-hint">${r.candidates.length - 60} more not listed</span>` : ''}
+          </div>` : ''}
       </div>`;
     }).join('') : '<p class="lab-hint">Nothing. This one is free.</p>'}
     ${known && reqs.some((r) => r.have !== undefined) ? (afford
@@ -3268,7 +3397,106 @@ function renderCostAndReward(
         ${r.odds === undefined ? '<span class="lab-hint">always</span>' : `
           <span class="run-odd-bar"><i style="width:${Math.max(2, (r.odds / max) * 100)}%"></i></span>
           <span class="run-odd-pct">${r.odds.toFixed(r.odds < 1 ? 2 : 1)}%</span>`}
-      </div>`).join('') : '<p class="lab-hint">The contract lists no outcome.</p>'}`;
+      </div>`).join('') : '<p class="lab-hint">The contract lists no outcome.</p>'}
+
+    ${renderSignBlock(reqs, known)}`;
+}
+
+/**
+ * The last thing on the page, and the only one that costs anything.
+ *
+ * Deliberately not reachable until every slot is full: the contracts
+ * reject a short list, and finding that out from a failed transaction
+ * costs CPU and confidence. What is still missing is named, rather than
+ * the button simply being grey for no stated reason.
+ */
+function renderSignBlock(reqs: ReturnType<typeof requirementsOf>, known: boolean): string {
+  const run = state.run;
+  if (!state.actor) {
+    return `<p class="lab-hint">Connect a wallet to run this.</p>`;
+  }
+  if (!known) return `<p class="lab-hint">Reading your NFTs before this can be built.</p>`;
+  const missing = whatIsMissing(reqs, run.picked);
+  return `
+    <div class="run-sign">
+      ${missing.length ? `
+        <ul class="run-missing">
+          ${missing.map((m) => `<li>${esc(m)}</li>`).join('')}
+        </ul>` : '<p class="lab-ok">Everything is picked. This is ready to sign.</p>'}
+      <div class="lab-row-actions">
+        <button data-lab="run-autopick" ${run.signing ? 'disabled' : ''}>Pick for me</button>
+        <button class="lab-primary" data-lab="run-sign"
+                ${missing.length || run.signing ? 'disabled' : ''}>
+          ${run.signing ? 'Waiting for your wallet' : 'Run it'}
+        </button>
+      </div>
+      ${run.lastTrxId ? `<p class="lab-ok">Signed.
+        <a target="_blank" rel="noreferrer"
+           href="https://waxblock.io/transaction/${esc(run.lastTrxId)}">view it on waxblock</a></p>` : ''}
+    </div>`;
+}
+
+/**
+ * The requirements for whatever is on screen, computed the same way the
+ * detail renders them.
+ *
+ * Shared rather than recomputed differently in the handlers, because a
+ * picker keyed on one list and a builder keyed on another is how a
+ * transaction ends up burning the wrong NFT.
+ */
+function runRequirements(): ReturnType<typeof requirementsOf> {
+  const run = state.run;
+  const known = Boolean(run.assetsFor);
+  if (run.blend) return requirementsOf(run.blend, run.assets, known);
+  if (run.source && run.pickedRecipe) {
+    return describeRecipe(run.source, run.pickedRecipe.raw, run.assets, known)?.requirements ?? [];
+  }
+  return [];
+}
+
+/** Signs the recipe on screen, through the contract it actually lives on. */
+async function onRunSign(): Promise<void> {
+  const run = state.run;
+  const session = getCurrentSession();
+  if (!session) { state.lastError = 'Connect a wallet first.'; rerender(); return; }
+  const actor = String(session.actor);
+  // The wallet can change between reading the NFTs and pressing the
+  // button. Signing one account's picks from another's wallet is the
+  // failure this guard exists for.
+  if (run.assetsFor && run.assetsFor !== actor) {
+    state.lastError = 'The wallet changed since this was read. Reopening before anything is signed.';
+    run.assetsFor = '';
+    void loadRunAssets(run, actor).then(rerender);
+    rerender();
+    return;
+  }
+  run.signing = true;
+  state.lastError = '';
+  run.lastTrxId = '';
+  rerender();
+  try {
+    const actions = await buildRunActions({
+      source: (run.source || 'blend') as RecipeSource,
+      actor,
+      id: run.blendId,
+      raw: run.blend ?? run.pickedRecipe?.raw,
+      requirements: runRequirements(),
+      picked: run.picked,
+    });
+    const result = await session.transact({ actions });
+    run.lastTrxId = (result.response as { transaction_id?: string } | undefined)?.transaction_id
+      ?? String(result.resolved?.transaction.id ?? '');
+    // What the wallet holds just changed, so the counts on screen are
+    // already stale.
+    run.assetsFor = '';
+    run.picked = {};
+    void loadRunAssets(run, actor).then(rerender);
+  } catch (err) {
+    state.lastError = (err as Error).message;
+  } finally {
+    run.signing = false;
+    rerender();
+  }
 }
 
 /** Step 4: everything about the one recipe they chose. */
@@ -5009,6 +5237,31 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'run-next':
           state.run.step = Math.min(4, state.run.step + 1) as RunStep;
           break;
+        case 'run-swap':
+          state.run.openSlot = state.run.openSlot === Number(el.dataset.idx)
+            ? undefined : Number(el.dataset.idx);
+          break;
+        case 'run-cand': {
+          const i = Number(el.dataset.idx);
+          const id = el.dataset.value ?? '';
+          const cur = state.run.picked[i] ?? [];
+          const need = runRequirements().at(i)?.need ?? 1;
+          if (cur.includes(id)) {
+            state.run.picked[i] = cur.filter((x) => x !== id);
+          } else {
+            // A full slot swaps its oldest pick out rather than refusing
+            // the click. Refusing would make somebody deselect first,
+            // which is a step nobody wants to discover.
+            state.run.picked[i] = [...cur, id].slice(-need);
+          }
+          break;
+        }
+        case 'run-autopick':
+          state.run.picked = autoPick(runRequirements(), state.run.picked);
+          break;
+        case 'run-sign':
+          void onRunSign();
+          return;
         case 'run-back':
           state.run.step = Math.max(1, state.run.step - 1) as RunStep;
           break;
@@ -5084,6 +5337,51 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
             savedViews: (readPrefs().savedViews ?? []).filter((v) => v.name !== (el.dataset.value ?? '')),
           });
           break;
+        case 'inv-open':
+          state.inv.openAsset = el.dataset.value ?? '';
+          state.inv.openTemplate = '';
+          writeLabHash();
+          break;
+        case 'inv-close':
+          state.inv.openAsset = '';
+          state.inv.openTemplate = '';
+          writeLabHash();
+          break;
+        case 'inv-template': {
+          const tpl = el.dataset.value ?? '';
+          state.inv.openTemplate = tpl;
+          state.inv.templateState = 'loading';
+          state.inv.templateOwners = [];
+          writeLabHash();
+          void loadTemplateOwners(tpl).then((o) => {
+            // Only paint if this is still the template on screen.
+            if (state.inv.openTemplate !== tpl) return;
+            state.inv.templateOwners = o;
+            state.inv.templateState = 'done';
+            render();
+          }).catch(() => {
+            if (state.inv.openTemplate !== tpl) return;
+            state.inv.templateState = 'error';
+            render();
+          });
+          break;
+        }
+        case 'inv-template-back':
+          state.inv.openTemplate = '';
+          writeLabHash();
+          break;
+        case 'inv-owner': {
+          // Opening someone else's inventory is a fresh read of a
+          // different wallet, so the filters and the asset in view go
+          // with the old one.
+          const who = el.dataset.value ?? '';
+          if (!who) return;
+          state.inv = emptyInventoryState();
+          applyInventoryPrefs(state.inv);
+          state.inv.owner = who;
+          void loadInventory(state.inv, who).then(() => { writeLabHash(); render(); });
+          break;
+        }
         case 'inv-forget':
           forgetPrefs();
           break;
