@@ -2972,24 +2972,32 @@ function warmInventoryRecipes(): void {
 
   const actor = state.actor;
   let next = 0;
+  // The state object this pass belongs to, not whatever state.inv happens
+  // to be when a worker wakes up. Every write used to go to the live
+  // state.inv while the guard checked a field on it, so a worker left
+  // over from a previous wallet wrote "loading" into the NEW inventory
+  // and then abandoned it: two collections read "Reading the recipes of 2
+  // more collections" for the rest of the session, on the live site,
+  // which is where I saw it.
+  const mine = inv;
   const worker = async (): Promise<void> => {
     for (;;) {
       const i = next; next += 1;
       if (i >= order.length) return;
       const collection = order[i];
       // Somebody moved on. Nothing here is worth reading for a screen
-      // that is gone.
-      if (state.inv.matchersFor !== owner) return;
-      state.inv.matchers[collection] = 'loading';
+      // that is gone, and nothing may be written to the one that replaced it.
+      if (state.inv !== mine || mine.matchersFor !== owner) return;
+      mine.matchers[collection] = 'loading';
       rerender();
+      let result: import('./bridge').Matcher | 'failed';
       try {
-        const m = await usableIndex(collection, actor);
-        if (state.inv.matchersFor !== owner) return;
-        state.inv.matchers[collection] = m;
+        result = await usableIndex(collection, actor);
       } catch {
-        if (state.inv.matchersFor !== owner) return;
-        state.inv.matchers[collection] = 'failed';
+        result = 'failed';
       }
+      if (state.inv !== mine || mine.matchersFor !== owner) return;
+      mine.matchers[collection] = result;
       rerender();
     }
   };
@@ -5987,17 +5995,17 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
             // Rebuilt, not dropped. Deleting it left every USE mark in
             // that collection gone for the rest of the session, and with
             // the toggle on it emptied the grid with no way back.
-            state.inv.matchers[c] = 'loading';
-            const owner = state.inv.matchersFor;
-            void usableIndex(c, state.actor).then((m) => {
-              if (state.inv.matchersFor !== owner) return;
-              state.inv.matchers[c] = m;
+            const mine = state.inv;
+            const owner = mine.matchersFor;
+            mine.matchers[c] = 'loading';
+            const settle = (v: import('./bridge').Matcher | 'failed') => {
+              // Same rule as the warm pass: write only into the state
+              // this started for, or leave a permanent "loading" behind.
+              if (state.inv !== mine || mine.matchersFor !== owner) return;
+              mine.matchers[c] = v;
               rerender();
-            }).catch(() => {
-              if (state.inv.matchersFor !== owner) return;
-              state.inv.matchers[c] = 'failed';
-              rerender();
-            });
+            };
+            void usableIndex(c, state.actor).then(settle, () => settle('failed'));
           }
           startUsesLookup();
           break;
