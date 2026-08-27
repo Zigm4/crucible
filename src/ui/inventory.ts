@@ -57,6 +57,13 @@ export interface InventoryState {
   view: InventoryView;
   sortKey: string;
   sortDesc: boolean;
+  /**
+   * The narrowest a grid card may be, in pixels. The grid packs in as
+   * many columns as fit, so this is really "how big do you want the
+   * artwork", and the column count follows from it and the screen. One
+   * control that means the right thing on a phone and on a monitor.
+   */
+  cardSize: number;
   /** How many rows are on screen. Raised by the "show more" control. */
   limit: number;
   /** Facet panels the reader has opened. */
@@ -67,7 +74,7 @@ export function emptyInventoryState(): InventoryState {
   return {
     owner: '', loadedFor: '', loading: false, error: '', assets: [],
     q: '', include: {}, exclude: {}, view: 'grid',
-    sortKey: 'asset_id', sortDesc: true, limit: 120, openFacets: [],
+    sortKey: 'asset_id', sortDesc: true, cardSize: 96, limit: 120, openFacets: [],
   };
 }
 
@@ -75,6 +82,30 @@ export function emptyInventoryState(): InventoryState {
 export const CORE_FACETS = ['collection', 'schema', 'template'] as const;
 
 export const ATTR_PREFIX = 'attr:';
+
+/**
+ * The offered card widths.
+ *
+ * Deliberately a short list rather than a slider: a slider invites
+ * fiddling and stores an arbitrary number, and four steps already cover
+ * "cram in as many as possible" through "let me actually see the art".
+ */
+export const CARD_SIZES: { px: number; label: string }[] = [
+  { px: 64, label: 'XS' },
+  { px: 96, label: 'S' },
+  { px: 140, label: 'M' },
+  { px: 200, label: 'L' },
+];
+
+/** A stored or shared size, held to the offered range. */
+export function clampCardSize(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 96;
+  // Snapped to an offered step rather than merely clamped, so a hand
+  // edited URL cannot produce a layout nobody designed.
+  return CARD_SIZES.reduce((best, s) =>
+    Math.abs(s.px - n) < Math.abs(best - n) ? s.px : best, 96);
+}
 
 /**
  * Attributes that are never worth faceting on.
@@ -297,21 +328,37 @@ export function activeFilterCount(st: InventoryState): number {
  * Keys are separated by `~`, values inside a key by `,`, and an excluded
  * value is prefixed with `!`.
  */
+/**
+ * Percent-encoding, plus the two characters this format uses as
+ * separators.
+ *
+ * encodeURIComponent leaves `~` alone, because it is an unreserved mark
+ * in the URI spec. That is fine for a URL and fatal here: a schema named
+ * `x~y` would split its own chunk in half and the filter would come back
+ * as two broken ones. Found by the harness, not by reading the code.
+ */
+function enc(v: string): string {
+  return encodeURIComponent(v).replace(/~/g, '%7E');
+}
+
 export function encodeInventoryView(st: InventoryState): string {
   const parts: string[] = [];
-  if (st.q.trim()) parts.push(`q=${encodeURIComponent(st.q.trim())}`);
+  if (st.q.trim()) parts.push(`q=${enc(st.q.trim())}`);
   const pack = (r: Record<string, string[]>, bang: string) => {
     for (const [k, vals] of Object.entries(r)) {
       if (!vals.length) continue;
-      parts.push(`${encodeURIComponent(k)}=${vals.map((v) => bang + encodeURIComponent(v)).join(',')}`);
+      parts.push(`${enc(k)}=${vals.map((v) => bang + enc(v)).join(',')}`);
     }
   };
   pack(st.include, '');
   pack(st.exclude, '!');
   if (st.view !== 'grid') parts.push(`view=${st.view}`);
-  if (st.sortKey !== 'asset_id' || !st.sortDesc) {
-    parts.push(`sort=${encodeURIComponent(st.sortKey)}${st.sortDesc ? '' : ':asc'}`);
-  }
+  // Direction rides in its own key rather than after a colon in the sort
+  // key. Attribute keys are `attr:rarity`, so `sort=attr:rarity:asc` was
+  // being split at the FIRST colon and came back as a sort by `attr`.
+  if (st.sortKey !== 'asset_id') parts.push(`sort=${enc(st.sortKey)}`);
+  if (!st.sortDesc) parts.push('asc=1');
+  if (st.cardSize !== 96) parts.push(`size=${st.cardSize}`);
   return parts.join('~');
 }
 
@@ -324,12 +371,9 @@ export function decodeInventoryView(text: string, st: InventoryState): void {
     const raw = chunk.slice(eq + 1);
     if (key === 'q') { st.q = decodeURIComponent(raw); continue; }
     if (key === 'view') { st.view = raw === 'list' ? 'list' : 'grid'; continue; }
-    if (key === 'sort') {
-      const [k, order] = decodeURIComponent(raw).split(':');
-      st.sortKey = k || 'asset_id';
-      st.sortDesc = order !== 'asc';
-      continue;
-    }
+    if (key === 'sort') { st.sortKey = decodeURIComponent(raw) || 'asset_id'; continue; }
+    if (key === 'asc') { st.sortDesc = raw !== '1'; continue; }
+    if (key === 'size') { st.cardSize = clampCardSize(raw); continue; }
     for (const v of raw.split(',')) {
       if (!v) continue;
       const excluded = v.startsWith('!');

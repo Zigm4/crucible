@@ -35,6 +35,8 @@ export interface Prefs {
   inventoryView?: string;
   inventorySort?: string;
   inventorySortDesc?: boolean;
+  /** Grid card width in pixels. A choice about display, nothing more. */
+  inventoryCardSize?: number;
   savedViews?: SavedView[];
 }
 
@@ -70,6 +72,13 @@ function sanitize(raw: unknown): Prefs {
   }
   if (typeof p.inventorySortDesc === 'boolean') {
     out.inventorySortDesc = p.inventorySortDesc;
+  }
+  // Bounded here as well as at the caller: a hand edited blob must not be
+  // able to set a 90,000 pixel column.
+  if (typeof p.inventoryCardSize === 'number'
+      && Number.isFinite(p.inventoryCardSize)
+      && p.inventoryCardSize >= 32 && p.inventoryCardSize <= 400) {
+    out.inventoryCardSize = Math.round(p.inventoryCardSize);
   }
   if (Array.isArray(p.savedViews)) {
     out.savedViews = p.savedViews
