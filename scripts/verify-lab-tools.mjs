@@ -50,6 +50,17 @@ function freshState(patch = {}) {
   return { ...inv.emptyInventoryState(), ...patch };
 }
 
+/** One table read, for the handful of facts this suite checks directly. */
+async function rpcTableRows(params) {
+  const r = await fetch('https://wax.greymass.com/v1/chain/get_table_rows', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ json: true, limit: 100, ...params }),
+  });
+  if (!r.ok) throw new Error(`get_table_rows ${r.status}`);
+  return (await r.json()).rows ?? [];
+}
+
 async function main() {
   console.log('=== PHASE A - filtering and faceting on a real inventory ===');
   const assets = await atomic(`/atomicassets/v1/assets?owner=${OWNER}&limit=1000`);
@@ -305,6 +316,123 @@ async function main() {
     say(!threw, 'every storage call is survivable when storage is not there');
   }
 
+  console.log('\n=== PHASE O - each thing the review caught, pinned ===');
+  {
+    const w = await import('./.build/wallet.mjs');
+    const tk = await import('./.build/tokens.mjs');
+    const bridge = await import('./.build/bridge.mjs');
+    const fs = await import('node:fs/promises');
+    const src = (f) => fs.readFile(new URL(`../src/${f}`, import.meta.url), 'utf8');
+
+    // 1. get_tokens defaults to 50 rows and says nothing about the rest.
+    // fees.nefty holds balances on 156 issuers; the first version of this
+    // feature would have shown a third of them under a footer claiming
+    // the list had been confirmed.
+    const heavy = await w.listWalletTokens('fees.nefty');
+    say(heavy.tokens.length > 150,
+        `a wallet with hundreds of tokens gets them all (${heavy.tokens.length}, was 50 unpaged)`);
+    say(heavy.tokens.some((t) => t.symbol === 'WAX' && t.contract === 'eosio.token'),
+        'and WAX is there, which the alphabetical cut could have dropped');
+
+    // 2. A read that fails is not a balance of zero and not an absence.
+    say('unread' in heavy && 'truncated' in heavy && 'skipped' in heavy,
+        'the result counts what it could not read instead of hiding it');
+    say(!/confirmed against each contract/.test(await src('ui/lab.ts')),
+        'and the sheet no longer claims every contract was confirmed');
+
+    // 3. Each cause names itself. "Not every indexer answered" was printed
+    // when every indexer had answered and the issuer cap was the cause.
+    const capped = { sources: 4, cappedSources: 0, skipped: 20, unread: 0, truncated: 0 };
+    const note = w.completenessNote(capped);
+    say(!/indexer/.test(note) && /skipped/.test(note),
+        `a cap reports itself as a cap: ${JSON.stringify(note)}`);
+    say(/No history indexer answered/.test(w.completenessNote({ sources: 0 })),
+        'and a total indexer failure is stated rather than rendered as a one-token wallet');
+    say(w.completenessNote({ sources: 4, cappedSources: 0, skipped: 0, unread: 0, truncated: 0 }) === '',
+        'and a complete read says nothing at all');
+
+    // 4. The badge was computed from blend.nefty alone, so a token only
+    // up.nefty or neftyblocksd registers was labelled "not a recipe token".
+    say(!/not a recipe token/.test(await src('ui/lab.ts')),
+        'the false negative badge is gone: a WaxDAO blend can name any token');
+    const light = await w.listWalletTokens('zigm4.gm');
+    say(light.registryKnown, 'the registries were read, so the marks mean something');
+    // Proof that one registry was not enough, straight off the chain:
+    // neftyblocksd accepts tokens blend.nefty has never heard of, and the
+    // badge was computed from blend.nefty alone.
+    const reg = async (code, symKey, contractKey) => {
+      const rows = await rpcTableRows({ code, scope: code, table: 'config', limit: 1 });
+      return new Set((rows[0].supported_tokens ?? []).map(
+        (t) => `${t[contractKey]}/${String(t[symKey]).split(',')[1]}`));
+    };
+    const blendReg = await reg('blend.nefty', 'sym', 'contract');
+    const dropReg = await reg('neftyblocksd', 'token_symbol', 'token_contract');
+    const onlyDrops = [...dropReg].filter((k) => !blendReg.has(k));
+    say(onlyDrops.length > 0,
+        `neftyblocksd accepts ${onlyDrops.length} token(s) blend.nefty does not, e.g. ${onlyDrops[0]}`);
+    const walletSrc = await src('nefty/wallet.ts');
+    say(['blend.nefty', 'up.nefty', 'neftyblocksd'].every((c) => walletSrc.includes(`'${c}'`)),
+        'and all three registries are consulted, so those tokens are marked');
+
+    // 5. Exact strings, compared as integers. The screen once rendered
+    // "you have 32 UPMAX, not enough" for a wallet holding 31.99999999.
+    say(tk.covers('32.00000000 UPMAX', '32.00000000 UPMAX') === true, 'exactly enough is enough');
+    say(tk.covers('31.99999999 UPMAX', '32.00000000 UPMAX') === false, 'and one unit short is not');
+    say(tk.covers('1000.0000 GOLD', '999.9996 GOLD') === true, 'a coarser precision still compares');
+    say(tk.covers('0.0001 KENN', '0.0001 KENN') === true, 'and so does a balance that rounds to zero');
+    say(w.displayBalance('0.0001 KENN') === '0.0001',
+        'which is also what gets shown, rather than the "0" toLocaleString gave');
+    // Comments stripped first: the branch explains the bug it fixed, and
+    // the explanation names the thing the check is looking for.
+    const costBranch = ((await src('ui/lab.ts'))
+      .split("if (r.kind === 'token') {")[1]?.split("if (r.have === undefined)")[0] ?? '')
+      .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    say(costBranch.length > 0 && !/toLocaleString/.test(costBranch),
+        'and no chain amount reaches the screen through a float formatter');
+    say(/displayBalance\(t\.haveRaw\)/.test(costBranch),
+        'the balance shown is derived from the exact string the chain returned');
+
+    // 6. The link under an NFT ingredient. `tpl=` opens the template
+    // screen, which by URL renders empty; `template=` is the filter.
+    const labSrc = await src('ui/lab.ts');
+    const seeMine = labSrc.split('run-see-mine')[0].slice(-900) + labSrc.split('run-see-mine')[1]?.slice(0, 300);
+    say(/~template=/.test(seeMine) && !/~tpl=\$\{tpl\}/.test(seeMine),
+        'see-the-ones-you-hold filters the inventory instead of opening an empty template page');
+
+    // 7. Typing in the wallet field must not be the same value the
+    // in-flight read uses as its identity guard.
+    const invSrc = await src('ui/inventory.ts');
+    say(/ownerDraft/.test(invSrc) && /bind\('inv-owner', \(v\) => \{ state\.inv\.ownerDraft = v; \}\)/.test(labSrc),
+        'the typed wallet name is a draft, so correcting it mid-read cannot wedge the read');
+
+    // 8. The backdrop existed in the DOM and not on the screen.
+    const css = await src('ui/components.css');
+    const scrims = css.match(/^\.inv-scrim\s*\{[^}]*\}/gm) ?? [];
+    say(scrims.length === 1 && /display:\s*block/.test(scrims[0]),
+        `the scrim is declared once and actually renders: ${scrims[0] ?? 'MISSING'}`);
+
+    // 9. The panel said only the collection limited the search.
+    say(/Not searched: WaxDAO and Blenderizer/.test(labSrc),
+        'the uses panel names the contracts it does NOT read');
+
+    // 10. Upgrades matching through an attribute rule were dropped.
+    const bridgeSrc = await src('ui/bridge.ts');
+    say(/'attribute' \|\| ing\.kind === 'typed_attribute'/.test(bridgeSrc),
+        'an upgrade that takes this NFT by attribute is matched, not silently skipped');
+    say(/unreadable/.test(bridgeSrc), 'and a rule shape we cannot read is counted');
+
+    // 11. Two identical pack rows, one of which transfers to the wrong
+    // contract irreversibly.
+    const packUses = await bridge.whatUsesThis({
+      asset_id: '1', template: { template_id: '281765' },
+      collection: { collection_name: 'play2metamon' }, schema: { schema_name: 'packs' }, data: {},
+    }, '');
+    const packs = packUses.uses.filter((u) => u.kind === 'pack');
+    say(packs.length < 2 || new Set(packs.map((p) => p.label)).size === packs.length,
+        `a template on both pack contracts gives ${packs.length} row(s), each naming its contract`);
+    if (packs.length) say(/atomicpacksx|neftyblocksp/.test(packs[0].label), `e.g. ${packs[0].label}`);
+  }
+
   console.log('\n=== PHASE N - the wallet has tokens too ===');
   {
     const w = await import('./.build/wallet.mjs');
@@ -427,13 +555,22 @@ async function main() {
     // The token check: the runner used to print "not checked" beside
     // every cost, which is the one question that screen exists to answer.
     const t = await bridge.checkTokenCost('zigm4.gm', '32.00000000 UPMAX');
-    say(t && t.symbol === 'UPMAX' && t.need === 32 && typeof t.have === 'number',
-        t ? `a token cost is measured: need ${t.need} ${t.symbol}, wallet holds ${t.have}` : 'token check returned nothing');
+    say(t && t.symbol === 'UPMAX' && t.needRaw === '32.00000000 UPMAX' && typeof t.haveRaw === 'string',
+        t ? `a token cost is measured: need ${t.needRaw}, wallet holds ${t.haveRaw}` : 'token check returned nothing');
+    say(t && /^[0-9]+\.[0-9]{8} UPMAX$/.test(t.haveRaw ?? ''),
+        'and the balance is the chain\'s exact string, not a parsed float');
+    say(t && t.enough === true, 'and the verdict is computed, not left to the screen');
+
+    // An unresolvable token is "we could not read it", never "you have
+    // none". The old shape returned undefined and the screen said "not
+    // checked", which reads the same as a balance nobody asked about.
     const unknown = await bridge.checkTokenCost('zigm4.gm', '1.0000 ZZZZNOPE');
-    say(unknown === undefined,
-        'an unregistered token returns nothing rather than guessing a contract and a balance');
+    say(unknown && unknown.haveRaw === undefined && unknown.enough === undefined,
+        'an unregistered token says the balance is unknown rather than guessing at it');
     say((await bridge.checkTokenCost('', '32.00000000 UPMAX')) === undefined,
         'and no wallet asks the chain nothing');
+    say((await bridge.checkTokenCost('zigm4.gm', 'not an asset')) === undefined,
+        'and a cost that is not an asset string is refused rather than parsed');
   }
 
   console.log('\n=== PHASE L - opening packs, on both pack contracts ===');

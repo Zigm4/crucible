@@ -28,7 +28,9 @@ import { listBlends } from '../nefty/discover';
 import { listUpgrades } from '../nefty/upgrades';
 import { listPackDesigns } from '../nefty/packs';
 import { listNeftyPackDesigns } from '../nefty/neftyPacks';
-import { resolveTokenContract, readTokenBalance, symbolFromQuantity } from '../nefty/tokens';
+import {
+  resolveTokenContract, readTokenBalanceRaw, symbolFromQuantity, covers,
+} from '../nefty/tokens';
 import type { IngredientVariant } from '../nefty/blend';
 
 /** One thing this NFT can be fed to, and where to go to do it. */
@@ -47,8 +49,10 @@ export interface Uses {
   uses: Use[];
   /** Collections actually read, so the screen can say what it looked at. */
   scanned: string;
-  /** True while the answer is still incomplete. */
+  /** True when a contract did not answer, so the list may be short. */
   partial: boolean;
+  /** Recipes whose ingredient shape this could not evaluate. */
+  unreadable: number;
 }
 
 /** Does one blend ingredient accept this asset? Same rule the runner uses. */
@@ -99,7 +103,8 @@ function reasonFor(a: AtomicAsset, ing: IngredientVariant): string {
  */
 export async function whatUsesThis(a: AtomicAsset, actor = ''): Promise<Uses> {
   const collection = a.collection?.collection_name ?? '';
-  if (!collection) return { uses: [], scanned: '', partial: false };
+  if (!collection) return { uses: [], scanned: '', partial: false, unreadable: 0 };
+  let unreadable = 0;
   const tpl = String(a.template?.template_id ?? '');
 
   const [blends, upgrades, packs, neftyPacks] = await Promise.allSettled([
@@ -118,12 +123,18 @@ export async function whatUsesThis(a: AtomicAsset, actor = ''): Promise<Uses> {
     for (const d of res.value) {
       if (String(d.pack_template_id) !== tpl) continue;
       const locked = Boolean(d.unlock_time) && d.unlock_time * 1000 > Date.now();
+      // The contract is part of the label, not decoration. The same pack
+      // template is registered on BOTH contracts for some collections
+      // (play2metamon 281765 is one), and two rows reading exactly "Open
+      // it: Regular pack" gave no way to tell which one to press, while
+      // opening on the wrong contract transfers the NFT irreversibly.
+      const where = source === 'pack' ? 'atomicpacksx' : 'neftyblocksp';
       uses.push({
         kind: 'pack',
         link: `${source}~${collection}~${d.pack_id}`,
-        label: `Open it: ${d.name || `pack #${d.pack_id}`}`,
+        label: `Open it: ${d.name || `pack #${d.pack_id}`} (${where})`,
         because: locked
-          ? `this NFT is that pack, but it does not open until ${new Date(d.unlock_time * 1000).toLocaleDateString()}`
+          ? `this NFT is that pack, but it does not open until ${new Date(d.unlock_time * 1000).toLocaleString()}`
           : 'this NFT is that pack',
         live: !locked,
       });
@@ -149,6 +160,13 @@ export async function whatUsesThis(a: AtomicAsset, actor = ''): Promise<Uses> {
       // An upgrade can want this NFT in two different roles, and which
       // one decides whether you keep it. Worth saying which.
       const isTarget = (u.acceptedTemplateIds ?? []).map(String).includes(tpl);
+      // An upgrade can want this NFT through an attribute rule as well as
+      // by template, schema or collection. Returning false for those
+      // dropped real upgrades while the panel went on saying the whole
+      // collection had been searched, so they are matched here and the
+      // ones whose shape we cannot evaluate are counted instead of
+      // quietly discarded.
+      let unsure = false;
       const asCost = (u.ingredients ?? []).some((ing) => {
         if (ing.kind === 'template') return String(ing.template_id) === tpl;
         if (ing.kind === 'schema') {
@@ -156,8 +174,27 @@ export async function whatUsesThis(a: AtomicAsset, actor = ''): Promise<Uses> {
             && a.schema?.schema_name === ing.schema_name;
         }
         if (ing.kind === 'collection') return a.collection?.collection_name === ing.collection_name;
+        if (ing.kind === 'attribute' || ing.kind === 'typed_attribute') {
+          const spec = ing as unknown as {
+            collection_name?: string; schema_name?: string;
+            attributes?: { attribute_name: string; allowed_values?: unknown[] }[];
+          };
+          if (spec.collection_name && a.collection?.collection_name !== spec.collection_name) return false;
+          if (spec.schema_name && a.schema?.schema_name !== spec.schema_name) return false;
+          const rules = spec.attributes ?? [];
+          if (!rules.length) { unsure = true; return false; }
+          return rules.every((att) => {
+            const v = (a.data ?? {})[att.attribute_name];
+            const allowed = (att.allowed_values ?? []).map(String);
+            if (!allowed.length) { unsure = true; return false; }
+            return allowed.includes(String(v));
+          });
+        }
+        if (ing.kind === 'ft') return false;      // a token cost, not this NFT
+        unsure = true;                            // a shape we do not read
         return false;
       });
+      if (unsure) unreadable += 1;
       if (!isTarget && !asCost) continue;
       uses.push({
         kind: 'upgrade',
@@ -181,31 +218,65 @@ export async function whatUsesThis(a: AtomicAsset, actor = ''): Promise<Uses> {
   // would try them in.
   const rank = (u: Use) => (u.live ? 0 : 10) + (u.kind === 'pack' ? 0 : 1);
   unique.sort((x, y) => rank(x) - rank(y) || x.label.localeCompare(y.label));
-  return { uses: unique, scanned: collection, partial };
+  return { uses: unique, scanned: collection, partial, unreadable };
 }
 
 /**
  * Whether a wallet holds enough of a token cost.
  *
- * The runner used to print "not checked" beside every token, which is
+ * The run screen used to print "not checked" beside every token, which is
  * honest and useless: the whole question on that screen is whether you
- * can afford this. It stays undefined when the token is not in
- * blend.nefty's registry, because then we genuinely cannot resolve which
- * contract issues it and a guess could tell somebody they cannot afford
- * something they can.
+ * can afford this. Getting the answer right needed three fixes over the
+ * first version, each of which had produced a sentence that was false:
+ *
+ *   - the issuer is taken from the recipe when the recipe knows it.
+ *     Resolving every cost through blend.nefty's registry meant a WaxDAO
+ *     blend priced in a token that registry has never heard of was
+ *     measured against the wrong contract, or not at all.
+ *   - a failed read is not a balance. readTokenBalance returned 0 for
+ *     both, so an RPC hiccup told somebody holding 500 UPMAX that they
+ *     had none.
+ *   - the comparison is on integers. 31.99999999 against 32.00000000 as
+ *     floats, printed through toLocaleString, rendered as "you have 32,
+ *     not enough".
  */
+export interface TokenCost {
+  /** The exact balance string, or undefined when the read failed. */
+  haveRaw?: string;
+  /** The exact cost string, as the recipe states it. */
+  needRaw: string;
+  symbol: string;
+  /** Undefined when the balance could not be read. */
+  enough?: boolean;
+}
+
 export async function checkTokenCost(
-  owner: string, quantity: string,
-): Promise<{ have: number; need: number; symbol: string } | undefined> {
+  owner: string, quantity: string, contract?: string,
+): Promise<TokenCost | undefined> {
   if (!owner || !quantity) return undefined;
+  let sym: string;
+  let code: string;
   try {
-    const contract = await resolveTokenContract(quantity);
-    const sym = symbolFromQuantity(quantity);          // e.g. "8,UPMAX"
-    const code = sym.split(',')[1] ?? sym;
-    const have = await readTokenBalance({ owner, contract, symbolCode: code });
-    const need = Number(String(quantity).trim().split(/\s+/)[0]) || 0;
-    return { have, need, symbol: code };
+    sym = symbolFromQuantity(quantity);          // e.g. "8,UPMAX"
+    code = sym.split(',')[1] ?? sym;
   } catch {
-    return undefined;
+    return undefined;                            // not an asset string
   }
+  let issuer = contract;
+  if (!issuer) {
+    try {
+      issuer = await resolveTokenContract(quantity);
+    } catch {
+      // Not in any registry we can read and the recipe did not say. We
+      // genuinely cannot tell which contract issues it, and guessing
+      // could tell somebody they cannot afford something they can.
+      return { needRaw: quantity, symbol: code };
+    }
+  }
+  const raw = await readTokenBalanceRaw({ owner, contract: issuer, symbolCode: code });
+  if (raw === undefined) return { needRaw: quantity, symbol: code };
+  // No row on the contract is a true zero, expressed at the cost's own
+  // precision so the two are comparable and the screen can show it.
+  const haveRaw = raw ?? `${(0).toFixed(Number(sym.split(',')[0]) || 0)} ${code}`;
+  return { haveRaw, needRaw: quantity, symbol: code, enough: covers(haveRaw, quantity) };
 }

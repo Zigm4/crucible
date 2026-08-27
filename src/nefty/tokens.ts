@@ -136,6 +136,73 @@ export async function readTokenBalance(args: {
   }
 }
 
+/**
+ * The exact balance string, or a clear answer about why there is none.
+ *
+ * `readTokenBalance` above returns 0 both for "you hold none" and for
+ * "the read failed", which is how the run screen came to tell somebody
+ * holding 500 UPMAX that they had 0 and could not afford a 10 UPMAX
+ * blend. Three outcomes, so a caller can tell them apart:
+ *
+ *   string    - the exact asset string the contract stores
+ *   null      - the contract answered and there is no row: a true zero
+ *   undefined - the read failed and nothing is known
+ */
+export async function readTokenBalanceRaw(args: {
+  owner: string;
+  contract: string;
+  symbolCode: string;
+}): Promise<string | null | undefined> {
+  try {
+    const rows = await getTableRows<{ balance: string }>({
+      code: args.contract,
+      scope: args.owner,
+      table: 'accounts',
+      limit: 1000,
+    });
+    const suffix = ` ${args.symbolCode}`;
+    const row = rows.find((r) => String(r.balance ?? '').trim().endsWith(suffix));
+    return row ? String(row.balance).trim() : null;
+  } catch (err) {
+    // A contract with no `accounts` table cannot hold a balance for you,
+    // which is a true zero rather than a failure.
+    const message = err instanceof Error ? err.message : String(err);
+    if (/contract table query exception/i.test(message)) return null;
+    return undefined;
+  }
+}
+
+/**
+ * An asset string as an integer count of its smallest unit.
+ *
+ * Comparing "31.99999999 UPMAX" against "32.00000000 UPMAX" as floats is
+ * the kind of thing that decides whether somebody is told they can afford
+ * a blend, so it is done on integers. Returns undefined for anything that
+ * is not an asset string rather than guessing a number out of it.
+ */
+export function minorUnits(quantity: string): { units: bigint; precision: number } | undefined {
+  const parts = String(quantity).trim().split(/\s+/);
+  if (parts.length !== 2) return undefined;
+  const [amount] = parts;
+  if (!/^-?[0-9]+(\.[0-9]+)?$/.test(amount)) return undefined;
+  const neg = amount.startsWith('-');
+  const bare = neg ? amount.slice(1) : amount;
+  const [whole, frac = ''] = bare.split('.');
+  const units = BigInt(whole + frac) * (neg ? -1n : 1n);
+  return { units, precision: frac.length };
+}
+
+/** True when `have` covers `need`, compared as integers at one scale. */
+export function covers(have: string, need: string): boolean | undefined {
+  const h = minorUnits(have);
+  const n = minorUnits(need);
+  if (!h || !n) return undefined;
+  const scale = Math.max(h.precision, n.precision);
+  const lift = (v: { units: bigint; precision: number }) =>
+    v.units * 10n ** BigInt(scale - v.precision);
+  return lift(h) >= lift(n);
+}
+
 export function parseAssetAmount(quantity: string): number {
   return Number(quantity.trim().split(/\s+/)[0]) || 0;
 }

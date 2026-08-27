@@ -198,7 +198,7 @@ import {
   toggleCatalogGroup,
   type CatalogGrouping,
 } from './catalog';
-import { renderLabPage, attachLabHandlers, applyLabRoute } from './lab';
+import { syncInventoryLock, renderLabPage, attachLabHandlers, applyLabRoute } from './lab';
 import {
   emptyStakingState, loadStaking, censusPool, isUnprovenPool, tokenContractFor, refundDelayFor,
   buildClaimFor, buildUnstakeFor, buildRefundFor, poolShortfall,
@@ -7910,6 +7910,11 @@ function render() {
 function performRender() {
   renderScheduled = false;
   const snap = captureRenderSnapshot();
+
+  // The lab's sheets lock body scrolling. Leaving the lab with one open
+  // never reached the lab's own renderer again, so the lock stayed on and
+  // the rest of the site could not be scrolled until a reload.
+  if (state.page !== 'lab') syncInventoryLock(false);
 
   // Standalone contract-status page: a full-page view outside the platform
   // tabs. Works with no wallet; it only ever reads the chain.

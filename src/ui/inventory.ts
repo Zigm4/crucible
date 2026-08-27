@@ -45,6 +45,17 @@ export interface Facet {
 
 export interface InventoryState {
   owner: string;
+  /**
+   * What is typed in the Wallet field right now, which is not the same
+   * thing as the wallet being shown.
+   *
+   * These were briefly the same field, so that a typed name would survive
+   * a re-render. It did, and it also broke the read it was meant to help:
+   * `loadInventory` uses `owner` as its in-flight identity guard, so
+   * correcting a character mid-read made the finished read discard itself
+   * and leave `loading` true for good. A draft is a draft.
+   */
+  ownerDraft: string;
   loadedFor: string;
   loading: boolean;
   error: string;
@@ -115,7 +126,7 @@ export interface InventoryState {
 
 export function emptyInventoryState(): InventoryState {
   return {
-    owner: '', loadedFor: '', loading: false, error: '', assets: [],
+    owner: '', ownerDraft: '', loadedFor: '', loading: false, error: '', assets: [],
     q: '', include: {}, exclude: {}, view: 'grid',
     sortKey: 'received', sortDesc: true, cardSize: 96, limit: 120, openFacets: [], filtersOpen: false,
     openAsset: '', openTemplate: '', templateOwners: [], templateState: 'idle',

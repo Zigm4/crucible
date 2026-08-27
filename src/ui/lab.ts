@@ -37,7 +37,10 @@ import {
 import { atomicFetch } from '../chain/rpc';
 import { SUGGESTED_COLLECTIONS } from './collections';
 import { whatUsesThis, checkTokenCost } from './bridge';
-import { listWalletTokens, filterWalletTokens, emptyCount } from '../nefty/wallet';
+import {
+  listWalletTokens, filterWalletTokens, emptyCount, displayBalance,
+  completenessNote, provenanceNote,
+} from '../nefty/wallet';
 import {
   emptyInventoryState, loadInventory, applyFilter, facetsOf, sortAssets,
   toggleFacet, clearFilters, activeFilterCount, facetValue, stringify,
@@ -1630,6 +1633,20 @@ async function onSwitchAccount(actor: string, permission: string) {
     state.claimExtraOwner = ''; state.claimExtraActive = '';
     await loadCollections();
     if (state.tool === 'names') { state.myBidsState = 'idle'; void loadMyBids(); }
+    // Balances belong to a wallet, so the ones on screen belong to the
+    // wallet that just stopped being the one signing.
+    state.run.tokenHave = {}; state.run.tokenState = 'idle';
+    if (state.tool === 'run' && state.run.blendId) {
+      void loadRunAssets(state.run, state.actor).then(rerender);
+      void loadTokenCosts().then(rerender);
+    }
+    // Same for the token sheet, which is titled with a wallet name.
+    if (state.inv.tokensFor && state.inv.tokensFor !== state.actor) {
+      state.inv.tokens = undefined;
+      state.inv.tokensState = 'idle';
+      state.inv.tokensFor = '';
+      state.inv.tokensOpen = false;
+    }
     // The verdict said "you" about somebody else, so ask the chain again.
     if (state.nameStatusFor) { state.nameQuery = state.nameStatusFor; void onCheckName(); }
   } catch (err) {
@@ -1658,6 +1675,12 @@ async function onLabLogin() {
       state.myBidsState = 'idle';
       void loadMyBids();
     }
+    // Someone following a shared recipe link arrives signed out, so the
+    // costs were never measured. They are measurable now.
+    if (state.tool === 'run' && state.actor && state.run.blendId) {
+      void loadRunAssets(state.run, state.actor).then(rerender);
+      void loadTokenCosts().then(rerender);
+    }
     await refreshSessions();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1671,6 +1694,8 @@ async function onLabLogin() {
 async function onLabLogout() {
   await logout().catch(() => {});
   state.actor = '';
+  // A balance is about a wallet, and there is no wallet now.
+  state.run.tokenHave = {}; state.run.tokenState = 'idle';
   state.collections = [];
   state.collectionsState = 'idle';
   // Whose keys these were is no longer on screen, so they must not sit in
@@ -1815,6 +1840,7 @@ export function applyLabRoute(tool: string, subject: string): void {
     state.inv = emptyInventoryState();
     applyInventoryPrefs(state.inv);
     state.inv.owner = owner.trim().toLowerCase();
+    state.inv.ownerDraft = state.inv.owner;
     // After the preferences, so a link that names a view or a sort wins.
     // The sender's screen is the point of sharing one.
     decodeInventoryView(rest.join('~'), state.inv);
@@ -2836,6 +2862,48 @@ function editTokenControl(): string {
  * of filters and a sort is the same intent, stored as choices instead.
  */
 /**
+ * How a token requirement is keyed in `run.tokenHave`.
+ *
+ * Quantity AND issuer, because a recipe can ask for two tokens that share
+ * a ticker, and because scraping the key back out of the sentence in
+ * `text` broke the moment the sentence changed.
+ */
+function tokenKey(r: { tokenQuantity?: string; tokenContract?: string; text: string }): string {
+  const qty = r.tokenQuantity ?? r.text.replace(/^Pay\s+/, '').trim();
+  return `${r.tokenContract ?? ''}|${qty}`;
+}
+
+/**
+ * Measures every token cost of the open recipe against the wallet.
+ *
+ * Pulled out of startRun so it can run again, which it has to: the costs
+ * used to be read once, only there, and only when a wallet was already
+ * connected. Somebody opening a shared link and connecting afterwards
+ * never got an answer, and after signing, the balance on screen was the
+ * one from before the transaction spent it.
+ */
+async function loadTokenCosts(): Promise<void> {
+  const run = state.run;
+  const actor = state.actor;
+  if (!actor) { run.tokenHave = {}; run.tokenState = 'idle'; return; }
+  const costs = runRequirements().filter((r) => r.kind === 'token');
+  if (!costs.length) { run.tokenState = 'idle'; return; }
+  run.tokenState = 'loading';
+  const asked = run.blendId;
+  const next: Record<string, import('./bridge').TokenCost> = {};
+  await Promise.all(costs.map(async (r) => {
+    const qty = r.tokenQuantity ?? r.text.replace(/^Pay\s+/, '').trim();
+    const res = await checkTokenCost(actor, qty, r.tokenContract);
+    if (res) next[tokenKey(r)] = res;
+  }));
+  // A recipe change while this was in flight means these figures belong
+  // to a screen nobody is looking at any more.
+  if (run.blendId !== asked || state.actor !== actor) return;
+  run.tokenHave = next;
+  run.tokenState = 'done';
+}
+
+/**
  * Fetches the wallet's tokens, once per wallet.
  *
  * Guarded on the wallet it was asked for: opening the sheet, closing it
@@ -2888,6 +2956,14 @@ function renderTokensDialog(inv: InventoryState): string {
 
   const done = `<button class="lab-primary" data-lab="inv-tokens-close">Done</button>`;
 
+  // Pressing Tokens with nothing in the Wallet field used to render the
+  // error state, which asserts as fact that every indexer refused when no
+  // request had been made, and whose Try again button then did nothing.
+  if (!inv.tokensFor) {
+    return shell(
+      `<p class="lab-hint">Put a wallet name in the field first, then press Tokens.</p>`,
+      done);
+  }
   if (inv.tokensState === 'loading') {
     return shell(
       `<p class="lab-hint">Asking the history indexers which contracts have ever
@@ -2896,8 +2972,7 @@ function renderTokensDialog(inv: InventoryState): string {
   }
   if (inv.tokensState === 'error' || !inv.tokens) {
     return shell(
-      `<p class="lab-warn">Could not read the token list. Every public history
-        indexer refused or timed out.</p>
+      `<p class="lab-warn">Could not read the token list.</p>
        <button data-lab="inv-tokens-reload">Try again</button>`,
       done);
   }
@@ -2909,6 +2984,7 @@ function renderTokensDialog(inv: InventoryState): string {
   // and then showed nothing, because none of the four were WAX tokens.
   // A control that does nothing is worse than one that is not there.
   const hidden = emptyCount(filterWalletTokens(all, inv.tokensQ, true));
+  const gaps = completenessNote(inv.tokens);
 
   const body = `
     <div class="tok-search">
@@ -2920,18 +2996,22 @@ function renderTokensDialog(inv: InventoryState): string {
         <span class="tok-sym">${esc(t.symbol)}</span>
         <span class="tok-amt">${esc(t.display)}</span>
         <span class="tok-src">${esc(t.contract)}</span>
-        ${t.usableInRecipes
-          ? '<span class="tok-tag" title="blend.nefty knows this token, so a blend or an upgrade is allowed to ask for it">recipes accept it</span>'
-          : '<span class="tok-tag off" title="No Nefty recipe can ask for this token: it is not in blend.nefty\'s registry">not a recipe token</span>'}
+        ${/* Only ever a positive claim. The old negative badge, "not a
+              recipe token", was false twice over: it was computed from
+              blend.nefty alone while up.nefty and neftyblocksd keep their
+              own registries, and a WaxDAO blend can name any token at all,
+              so no absence from any registry proves a no. */''}
+        ${inv.tokens && inv.tokens.registryKnown && t.usableInRecipes
+          ? '<span class="tok-tag" title="A NeftyBlocks contract registers this token, so a blend, an upgrade or a drop is allowed to ask for it">recipes accept it</span>'
+          : '<span class="tok-tag"></span>'}
       </div>`).join('')}</div>`
       : `<p class="lab-empty">${inv.tokensQ ? 'No token matches that.' : 'This wallet holds no tokens.'}</p>`}
     <p class="lab-hint">
-      Read from ${inv.tokens.sources} history indexer${inv.tokens.sources === 1 ? '' : 's'},
-      then confirmed against each contract.
-      ${inv.tokens.partial
-        ? `<strong>Not every indexer answered, so a token could be missing.</strong>
-           ${inv.tokens.skipped ? `${inv.tokens.skipped} issuer${inv.tokens.skipped === 1 ? ' was' : 's were'} skipped.` : ''}`
-        : ''}
+      ${esc(provenanceNote(inv.tokens))}
+      ${gaps ? `<strong>${esc(gaps)}</strong>` : ''}
+      ${inv.tokens.registryKnown
+        ? 'The green mark means a NeftyBlocks contract accepts that token. A WaxDAO blend can ask for any token, so no mark is not a no.'
+        : 'The recipe registries could not be read, so no token is marked.'}
     </p>`;
 
   const foot = `
@@ -3048,10 +3128,26 @@ function renderUses(inv: InventoryState): string {
     return '<p class="lab-hint">Reading the recipes in this collection.</p>';
   }
   const u = inv.uses;
+  // What was actually read, stated once and used by both branches. The
+  // first version said only "Only <collection> was searched", which
+  // named the collection limit and quietly implied everything inside it
+  // had been looked at. It had not: this reads the two NeftyBlocks pack
+  // contracts, blend.nefty and up.nefty, and never waxdaomarket or
+  // blenderizerx, both of which run recipes on the same collections.
+  const scope = (x: typeof u) => `
+    <p class="lab-hint">
+      Searched: NeftyBlocks blends, upgrades and packs in
+      <code>${esc(x?.scanned ?? '')}</code>.
+      Not searched: WaxDAO and Blenderizer recipes, and every other collection.
+      ${x?.unreadable ? `${x.unreadable} recipe${x.unreadable === 1 ? '' : 's'} in this collection ${x.unreadable === 1 ? 'has an ingredient rule' : 'have ingredient rules'} this page cannot read.` : ''}
+    </p>`;
+
   if (!u || !u.uses.length) {
-    return `<p class="lab-hint">Nothing in <code>${esc(u?.scanned ?? '')}</code> takes this NFT
-      right now.${u?.partial ? ' One of the contracts did not answer, so this may be incomplete.' : ''}
-      Recipes in other collections are not searched.</p>`;
+    return `<div class="inv-uses">
+      <p class="lab-hint">Nothing in the recipes that were searched takes this NFT right now.</p>
+      ${u?.partial ? '<p class="lab-warn">A contract did not answer, so even that is not certain.</p>' : ''}
+      ${scope(u)}
+    </div>`;
   }
   return `<div class="inv-uses">
     <h4>What you can do with it</h4>
@@ -3062,8 +3158,7 @@ function renderUses(inv: InventoryState): string {
         <span class="lab-tag">${esc(x.kind)}</span>
         <span class="lab-hint">${esc(x.because)}${x.live ? '' : ' · not running'}</span>
       </a>`).join('')}
-    <p class="lab-hint">Only <code>${esc(u.scanned)}</code> was searched. A recipe in another
-    collection can still name this template.</p>
+    ${scope(u)}
   </div>`;
 }
 
@@ -3101,13 +3196,6 @@ function renderTemplateDetail(inv: InventoryState): string {
 
 function renderInventoryTool(): string {
   const inv = state.inv;
-  // The class lives on <body>, outside the subtree render() replaces, so
-  // it has to be reconciled here or a closed dialog leaves the page stuck.
-  // Both sheets count: reconciling only the filter one silently unlocked
-  // the page underneath the token sheet.
-  try {
-    document.body.classList.toggle('inv-locked', inv.filtersOpen || inv.tokensOpen);
-  } catch { /* no document in the harness */ }
   // The token sheet belongs to the wallet, not to any one screen, so it
   // is rendered outside them and floats above whichever is showing: the
   // empty state before a read, the list, one NFT, one template. It used
@@ -3127,7 +3215,7 @@ function renderInventoryScreen(inv: InventoryState): string {
     <div class="lab-field inv-bar">
       <label for="inv-owner">Wallet</label>
       <input id="inv-owner" type="text" spellcheck="false" autocapitalize="off"
-             placeholder="account name" value="${esc(inv.owner)}" />
+             placeholder="account name" value="${esc(inv.ownerDraft)}" />
       <button data-lab="inv-load" ${inv.loading ? 'disabled' : ''}>
         ${inv.loading ? 'Reading' : 'Read inventory'}
       </button>
@@ -3408,14 +3496,7 @@ async function startRun(blendId: string): Promise<void> {
     if (run.assetsFor) run.picked = autoPick(runRequirements(), run.picked);
     // And what the token costs actually mean for this wallet. Read after
     // the requirements exist, because that is where the quantities are.
-    if (state.actor) {
-      const costs = runRequirements().filter((r) => r.kind === 'token');
-      await Promise.all(costs.map(async (r) => {
-        const qty = r.text.replace(/^Pay\s+/, '').trim();
-        const res = await checkTokenCost(state.actor, qty);
-        if (res) run.tokenHave[qty] = res;
-      }));
-    }
+    if (state.actor) await loadTokenCosts();
   } catch (e) {
     run.error = e instanceof Error ? e.message : String(e);
   } finally {
@@ -3583,12 +3664,28 @@ function renderCostAndReward(
           </span>
           <span class="run-slot-have">${(() => {
             if (r.kind === 'token') {
-              const qty = r.text.replace(/^Pay\s+/, '').trim();
-              const t = run.tokenHave[qty];
-              if (!t) return '<span class="lab-hint">balance not readable</span>';
-              return t.have >= t.need
-                ? `<span class="lab-ok">you have ${t.have.toLocaleString('en-US')} ${esc(t.symbol)}</span>`
-                : `<strong class="lab-warn">you have ${t.have.toLocaleString('en-US')} ${esc(t.symbol)}</strong>, not enough`;
+              // Three different silences, and they used to read as one
+              // sentence claiming a failed read. No wallet is "not
+              // checked", like the NFT rows beside it; a wallet with an
+              // unreadable balance says so; and a balance that IS known
+              // is printed from the chain's own string, never from a
+              // float run through toLocaleString, which rounds to three
+              // decimals and once rendered "you have 32 UPMAX, not
+              // enough" for a wallet holding 31.99999999.
+              if (!state.actor) return '<span class="lab-hint">not checked</span>';
+              const t = run.tokenHave[tokenKey(r)];
+              if (!t) {
+                return run.tokenState === 'loading'
+                  ? '<span class="lab-hint">checking your balance</span>'
+                  : '<span class="lab-hint">not checked</span>';
+              }
+              if (t.haveRaw === undefined || t.enough === undefined) {
+                return '<span class="lab-hint">balance could not be read</span>';
+              }
+              const shown = `${esc(displayBalance(t.haveRaw))} ${esc(t.symbol)}`;
+              return t.enough
+                ? `<span class="lab-ok">you have ${shown}</span>`
+                : `<strong class="lab-warn">you have ${shown}</strong>, not enough`;
             }
             if (r.have === undefined) return '<span class="lab-hint">not checked</span>';
             if (short) return `<strong>you have ${r.have}</strong>, ${r.need - r.have} short`;
@@ -3597,10 +3694,13 @@ function renderCostAndReward(
         </div>
         ${r.kind === 'nft' && state.actor ? (() => {
           // The other half of the bridge: from an ingredient, straight to
-          // the ones you hold. `tpl=` is the filter the inventory already
-          // understands, so this is a link and not a new feature.
+          // the ones you hold. `template=` is an include FILTER, which is
+          // what this needs. The first version wrote `tpl=`, which the
+          // inventory reads as "open the template screen", so the link
+          // landed on an empty page about the template with none of your
+          // NFTs on it.
           const tpl = /template #(\d+)/.exec(r.text)?.[1];
-          const view = tpl ? `~tpl=${tpl}` : '';
+          const view = tpl ? `~template=${tpl}` : '';
           return `<a class="run-see-mine" href="#/lab/inventory/${esc(state.actor)}${view}">
             see the ones you hold</a>`;
         })() : ''}
@@ -3729,6 +3829,10 @@ async function onRunSign(): Promise<void> {
     run.assetsFor = '';
     run.picked = {};
     void loadRunAssets(run, actor).then(rerender);
+    // The token costs were paid out of the same wallet. Re-reading the
+    // NFTs and not the balances left "you have 15 UPMAX" on screen above
+    // a Run button, after 10 of them had just been spent.
+    void loadTokenCosts().then(rerender);
   } catch (err) {
     state.lastError = (err as Error).message;
   } finally {
@@ -4843,7 +4947,24 @@ function standingsList(): string {
 
 // ─── page ───────────────────────────────────────────────────────────────
 
+/**
+ * Reconciles the scroll lock the sheets put on <body>.
+ *
+ * The class lives outside the subtree a render replaces, so it has to be
+ * driven from state rather than toggled by whoever opened the sheet. It
+ * was reconciled inside the inventory tool's own renderer, which is not
+ * reached at all once you switch tool or leave the lab: doing either with
+ * a sheet open left the whole site unable to scroll until a reload.
+ */
+export function syncInventoryLock(active: boolean): void {
+  try {
+    document.body.classList.toggle('inv-locked', active);
+  } catch { /* no document in the harness */ }
+}
+
 export function renderLabPage(): string {
+  syncInventoryLock(state.tool === 'inventory'
+    && (state.inv.filtersOpen || state.inv.tokensOpen));
   const blockers = stepProblems(state.step);
   const body = state.step === 0
     ? stepCollection()
@@ -5418,7 +5539,10 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'tool-inventory':
           state.tool = 'inventory';
           if (!state.inv.loadedFor) applyInventoryPrefs(state.inv);
-          if (!state.inv.owner && state.actor) state.inv.owner = state.actor;
+          if (!state.inv.owner && state.actor) {
+            state.inv.owner = state.actor;
+            state.inv.ownerDraft = state.actor;
+          }
           if (state.inv.owner && state.inv.loadedFor !== state.inv.owner && !state.inv.loading) {
             void loadInventory(state.inv, state.inv.owner).then(render);
           }
@@ -5528,16 +5652,18 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         // ── inventory ────────────────────────────────────────────────
         case 'inv-load':
         case 'inv-reload': {
-          const who = (root.querySelector<HTMLInputElement>('#inv-owner')?.value ?? state.inv.owner)
-            .trim().toLowerCase();
+          const who = (root.querySelector<HTMLInputElement>('#inv-owner')?.value
+            ?? state.inv.ownerDraft ?? state.inv.owner).trim().toLowerCase();
           if (!who) return;
           state.inv.owner = who;
+          state.inv.ownerDraft = who;
           void loadInventory(state.inv, who, kind === 'inv-reload').then(() => { writeLabHash(); render(); });
           render();
           return;
         }
         case 'inv-me':
           state.inv.owner = state.actor;
+          state.inv.ownerDraft = state.actor;
           void loadInventory(state.inv, state.actor).then(() => { writeLabHash(); render(); });
           break;
         case 'inv-view':
@@ -5563,8 +5689,8 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           document.body.classList.add('inv-locked');
           // The field, not the loaded wallet: somebody can type a name and
           // ask what it holds without waiting for its NFTs to be read.
-          const who = (root.querySelector<HTMLInputElement>('#inv-owner')?.value
-            ?? state.inv.owner).trim().toLowerCase() || state.inv.owner || state.actor;
+          const who = ((root.querySelector<HTMLInputElement>('#inv-owner')?.value
+            ?? state.inv.ownerDraft).trim().toLowerCase()) || state.inv.owner || state.actor;
           // Re-read only when there is nothing to show for THIS wallet.
           // Reopening the sheet on the same wallet should be instant.
           if (who && (state.inv.tokensFor !== who || state.inv.tokensState === 'error')) {
@@ -5614,6 +5740,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           // A saved view is a set of filters, not a wallet. Whoever is on
           // screen stays on screen, and their NFTs are not re-fetched.
           state.inv.owner = owner;
+          state.inv.ownerDraft = owner;
           state.inv.assets = assets;
           state.inv.loadedFor = loadedFor;
           writeLabHash();
@@ -5687,6 +5814,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           state.inv = emptyInventoryState();
           applyInventoryPrefs(state.inv);
           state.inv.owner = who;
+          state.inv.ownerDraft = who;
           void loadInventory(state.inv, who).then(() => { writeLabHash(); render(); });
           break;
         }
@@ -5820,7 +5948,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   // lives only in the DOM is lost the moment anything else re-renders,
   // which is what happened the first time Tokens was pressed before
   // Read inventory: the field emptied itself and nothing opened.
-  bind('inv-owner', (v) => { state.inv.owner = v.trim().toLowerCase(); });
+  bind('inv-owner', (v) => { state.inv.ownerDraft = v; });
   bind('inv-sort', (v) => { state.inv.sortKey = v; patchPrefs({ inventorySort: v }); writeLabHash(); });
   bind('lab-search', (v) => { state.search = v; }, 'live');
   bind('lab-token-search', (v) => { state.tokenSearch = v; }, 'live');

@@ -118,6 +118,13 @@ export interface Requirement {
   candidates: string[];
   kind: 'nft' | 'token' | 'other';
   /**
+   * The cost, exactly as the recipe states it, and the issuer when the
+   * recipe names one. Read off the requirement rather than scraped back
+   * out of `text`, which is a sentence and not a data field.
+   */
+  tokenQuantity?: string;
+  tokenContract?: string;
+  /**
    * What the contract does with what you put here. Not decoration: an
    * upgrade's target NFT comes back to you and its cost NFTs do not, and
    * a screen that called both "burned" would be lying about the one
@@ -314,7 +321,9 @@ export interface RunState {
    * this screen is whether you can afford it, and "not checked" is an
    * honest non-answer.
    */
-  tokenHave: Record<string, { have: number; need: number; symbol: string }>;
+  tokenHave: Record<string, import('./bridge').TokenCost>;
+  /** Whether the balances behind tokenHave have been asked for yet. */
+  tokenState: 'idle' | 'loading' | 'done';
   /** Set while a wallet dialog is open, so nothing double-signs. */
   signing: boolean;
   /** The transaction id, once one exists. */
@@ -327,7 +336,7 @@ export function emptyRunState(): RunState {
     searched: false, reading: '',
     unreachable: [],
     blendId: '', loading: false, error: '', step: 1,
-    owner: '', assets: [], assetsFor: '', picked: {}, tokenHave: {},
+    owner: '', assets: [], assetsFor: '', picked: {}, tokenHave: {}, tokenState: 'idle',
     signing: false, lastTrxId: '',
   };
 }
@@ -423,10 +432,10 @@ export function requirementsOf(
   return (b.ingredients ?? []).map((ing) => {
     const [kind, p] = ing;
     if (kind === 'FT_INGREDIENT') {
-      // Deliberately unchecked. A token balance lives on whichever
-      // contract issues it, and guessing wrong here would tell someone
-      // they cannot afford something they can.
-      return { text: `Pay ${p.quantity}`, need: 1, candidates: [], kind: 'token' as const, role: 'pay' as const };
+      // The issuer is not on the ingredient, but blend.nefty only accepts
+      // tokens in its own registry, so it can be resolved from there.
+      return { text: `Pay ${p.quantity}`, need: 1, candidates: [], kind: 'token' as const,
+               role: 'pay' as const, tokenQuantity: p.quantity };
     }
     if (kind === 'CHEST_INGREDIENT' || kind === 'BALANCE_INGREDIENT') {
       return {
@@ -569,7 +578,13 @@ export function describeRecipe(
     let nftSeen = -1;
     const requirements: Requirement[] = (b.ingredients ?? []).map((ing) => {
       if (ing.kind === 'fungible') {
-        return { text: `Pay ${ing.quantity}`, need: 1, candidates: [], kind: 'token' as const, role: 'pay' as const };
+        // WaxDAO states the issuer on the ingredient itself. Carrying it
+        // matters: resolving every cost through blend.nefty's registry
+        // measured a WaxDAO cost against the wrong contract whenever the
+        // two happened to share a ticker, and against nothing at all
+        // when that registry had never heard of the token.
+        return { text: `Pay ${ing.quantity}`, need: 1, candidates: [], kind: 'token' as const,
+                 role: 'pay' as const, tokenQuantity: ing.quantity, tokenContract: ing.contract };
       }
       nftSeen += 1;
       const slot = slots[nftSeen];
@@ -674,7 +689,8 @@ export function describeRecipe(
     };
     const requirements: Requirement[] = [targetReq, ...(u.ingredients ?? []).map((ing) => {
       if (ing.kind === 'ft') {
-        return { text: `Pay ${ing.quantity}`, need: 1, candidates: [], kind: 'token' as const, role: 'pay' as const };
+        return { text: `Pay ${ing.quantity}`, need: 1, candidates: [], kind: 'token' as const,
+                 role: 'pay' as const, tokenQuantity: ing.quantity };
       }
       const amount = Number(ing.amount ?? 1) || 1;
       if (ing.kind === 'template') {
@@ -789,7 +805,8 @@ export function describeRecipe(
     const paid = !d.is_free
       && /[1-9]/.test(String(d.listing_price ?? '').split(' ')[0].replace('.', ''));
     const requirements: Requirement[] = paid
-      ? [{ text: `Pay ${d.listing_price}`, need: 1, candidates: [], kind: 'token' as const, role: 'pay' as const }]
+      ? [{ text: `Pay ${d.listing_price}`, need: 1, candidates: [], kind: 'token' as const,
+           role: 'pay' as const, tokenQuantity: String(d.listing_price ?? '') }]
       : [];
     const rewards: Reward[] = (d.assets_to_mint ?? []).map((m) => ({ text: `template #${m.template_id}` }));
     const cap = Number(d.max_claimable ?? 0) > 0
@@ -809,6 +826,8 @@ export function describeRecipe(
 type WaxdaoLike = {
   kind: string; quantity?: string; amount?: number; burn?: boolean;
   template_id?: number; schema_name?: string; collection_name?: string;
+  /** The issuing contract, which WaxDAO states on the ingredient. */
+  contract?: string;
 };
 type UpgradeLike = {
   kind: string; quantity?: string; amount?: number; template_id?: number;
