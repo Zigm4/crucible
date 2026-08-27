@@ -317,10 +317,18 @@ async function main() {
     const css = await fs.readFile(new URL('../src/ui/components.css', import.meta.url), 'utf8');
     const at = css.indexOf('@media (max-width: 760px) {');
     say(at >= 0, 'the inventory narrow-screen block exists');
-    const after = css.slice(at);
-    // Any base rule for an inventory class, at the start of a line, after
-    // the block opens. Rules nested inside the block are indented.
-    const offenders = [...after.matchAll(/^\.inv-[a-z-]*[^{]*\{/gm)].map((m) => m[0].trim());
+    // Brace matched rather than indentation matched. Relying on the
+    // leading whitespace would make this guard the next thing to break
+    // silently, which is exactly what it exists to prevent.
+    let i = css.indexOf('{', at) + 1;
+    let depth = 1;
+    while (i < css.length && depth > 0) {
+      if (css[i] === '{') depth += 1;
+      else if (css[i] === '}') depth -= 1;
+      i += 1;
+    }
+    const after = css.slice(i);
+    const offenders = [...after.matchAll(/(?<![\w-])(\.inv-[a-z-]*)[^{}]*\{/g)].map((m) => m[1]);
     say(offenders.length === 0,
         offenders.length
           ? `these base rules sit BELOW the narrow-screen block and will override it: ${offenders.join(' ')}`
