@@ -35,6 +35,11 @@ import {
   type KnownSession,
 } from '../chain/session';
 import { atomicFetch } from '../chain/rpc';
+import {
+  emptyRunState, loadRunAssets, requirementsOf, rewardsOf, canAfford,
+  blendTitle, blendImage, type RunState, type RunStep,
+} from './guidedRun';
+import { loadBlend as loadBlendRow } from '../nefty/blend';
 import { listAuthorizedCollections, isContractAuthorized } from '../atomic/collections';
 import { readCollectionSecurities, executeAdminAction } from '../nefty/admin';
 import { clearDiscoverCache } from '../nefty/discover';
@@ -149,7 +154,7 @@ type LabMode = 'create' | 'edit';
  * the WAX premium-name auction reader and bidder. They share nothing but
  * the wallet, so each keeps its own state.
  */
-type LabTool = 'recipes' | 'names' | 'crucible';
+type LabTool = 'recipes' | 'names' | 'crucible' | 'run';
 /** Which of the two share buttons a copy came from. */
 type ShareScope = 'tool' | 'auction';
 
@@ -276,6 +281,8 @@ export interface LabForm {
 /** LabForm plus everything that only exists to drive the screen. */
 interface LabState extends LabForm {
   tool: LabTool;
+  /** The guided runner, a prototype of the consumer side. */
+  run: RunState;
   mode: LabMode;
   /** Edit mode: what exists in this collection, and what is being changed. */
   existing: LabExisting[];
@@ -400,6 +407,7 @@ interface LabState extends LabForm {
 
 const state: LabState = {
   tool: 'recipes',
+  run: emptyRunState(),
   mode: 'create',
   existing: [],
   existingState: 'idle',
@@ -1744,7 +1752,11 @@ async function onCopyLabLink(scope: ShareScope) {
 function writeLabHash() {
   try {
     if (!location.hash.startsWith('#/lab')) return;
-    const subject = state.tool === 'names' && state.nameStatusFor ? `/${encodeSubject(state.nameStatusFor)}` : '';
+    const subject = state.tool === 'names' && state.nameStatusFor
+      ? `/${encodeSubject(state.nameStatusFor)}`
+      : state.tool === 'run' && state.run.blendId
+        ? `/${encodeSubject(state.run.blendId)}`
+        : '';
     const target = `#/lab/${state.tool}${subject}`;
     if (location.hash === target) return;
     history.replaceState(null, '', target);
@@ -1757,7 +1769,13 @@ function writeLabHash() {
  * in the same place.
  */
 export function applyLabRoute(tool: string, subject: string): void {
-  if (tool === 'names' || tool === 'recipes' || tool === 'crucible') state.tool = tool;
+  if (tool === 'names' || tool === 'recipes' || tool === 'crucible' || tool === 'run') {
+    state.tool = tool;
+  }
+  if (state.tool === 'run' && subject) {
+    const id = decodeSubject(subject).trim();
+    if (id && id !== state.run.blendId) { state.run = emptyRunState(); void startRun(id); }
+  }
   const wanted = state.tool === 'names' ? decodeSubject(subject).trim().toLowerCase() : '';
   // A bare #/lab is not a link anyone can share back, so fill it in. Not
   // when a name is still being looked up: that would write the previous
@@ -2729,6 +2747,176 @@ function editTokenControl(): string {
       </div>
       <button class="lab-ghost" data-lab="token-close">Cancel</button>
     </div>`;
+}
+
+// ─── tool: run a recipe, guided ─────────────────────────────────────────
+
+/** Pulls one blend and the wallet's NFTs, then opens the runner on it. */
+async function startRun(blendId: string): Promise<void> {
+  const run = state.run;
+  run.blendId = blendId;
+  run.loading = true;
+  run.error = '';
+  run.blend = undefined;
+  run.step = 1;
+  run.picked = {};
+  rerender();
+  try {
+    run.blend = await loadBlendRow({ blend_id: blendId });
+    run.owner = state.actor;
+    // Ownership counts are what make step 2 worth showing, but a missing
+    // wallet must not block the rest: the recipe is still worth reading.
+    if (state.actor) await loadRunAssets(run, state.actor);
+  } catch (e) {
+    run.error = e instanceof Error ? e.message : String(e);
+  } finally {
+    run.loading = false;
+    writeLabHash();
+    rerender();
+  }
+}
+
+const RUN_STEPS: { n: RunStep; title: string; q: string }[] = [
+  { n: 1, title: 'The recipe', q: 'What is this?' },
+  { n: 2, title: 'Your side', q: 'What does it cost me?' },
+  { n: 3, title: 'Their side', q: 'What do I get?' },
+  { n: 4, title: 'Review', q: 'Ready?' },
+];
+
+function renderRunTool(): string {
+  const run = state.run;
+
+  const finder = `
+    <div class="lab-field inv-bar">
+      <label for="run-id">Blend id</label>
+      <input id="run-id" type="text" spellcheck="false" inputmode="numeric"
+             placeholder="e.g. 45780" value="${esc(run.blendId)}" />
+      <button data-lab="run-load" ${run.loading ? 'disabled' : ''}>
+        ${run.loading ? 'Reading' : 'Open it'}
+      </button>
+    </div>`;
+
+  if (!run.blend) {
+    return `<div class="lab-panel">
+      <h3>Run a recipe</h3>
+      <p class="lab-hint">The same shape as the creator on the other tab, pointed the other way:
+      one question per screen, and the two a player actually asks first. What does this take from
+      me, and what do I get. Paste a blend id to see it.</p>
+      ${finder}
+      ${run.error ? `<p class="lab-warn">${esc(run.error)}</p>` : ''}
+    </div>`;
+  }
+
+  const b = run.blend;
+  const known = Boolean(run.assetsFor);
+  const reqs = requirementsOf(b, run.assets, known);
+  const { sure, rewards } = rewardsOf(b);
+  const afford = canAfford(reqs);
+  const art = blendImage(b);
+
+  const rail = `
+    <div class="run-rail">
+      ${RUN_STEPS.map((s) => `
+        <button class="run-step ${run.step === s.n ? 'on' : ''} ${run.step > s.n ? 'done' : ''}"
+                data-lab="run-step" data-value="${s.n}">
+          <span class="run-dot">${s.n}</span>
+          <span class="run-step-text">
+            <strong>${s.title}</strong>
+            <small>${s.q}</small>
+          </span>
+        </button>`).join('')}
+    </div>`;
+
+  const slot = (r: ReturnType<typeof requirementsOf>[number]) => {
+    const short = r.have !== undefined && r.have < r.need;
+    return `
+      <div class="run-slot ${short ? 'run-short' : r.have !== undefined ? 'run-ok' : ''}">
+        <span class="run-slot-text">${esc(r.text)}</span>
+        <span class="run-slot-have">
+          ${r.have === undefined
+            ? '<span class="lab-hint">not checked</span>'
+            : short
+              ? `<strong>you have ${r.have}</strong>, ${r.need - r.have} short`
+              : `you have ${r.have}`}
+        </span>
+      </div>`;
+  };
+
+  let body = '';
+  if (run.step === 1) {
+    body = `
+      <div class="run-head">
+        ${art ? renderMediaThumb({ ref: art, alt: blendTitle(b) }) : ''}
+        <div>
+          <h4>${esc(blendTitle(b))}</h4>
+          <p class="lab-hint">${esc(String(b.collection_name))} · blend #${esc(String(b.blend_id))}</p>
+          <p>${sure
+            ? 'This is a <strong>sure thing</strong>. Every run produces the same result.'
+            : 'This is a <strong>gamble</strong>. What you get is drawn when you run it.'}</p>
+          <p class="lab-hint">
+            ${Number(b.max) > 0
+              ? `Used ${esc(String(b.use_count))} of ${esc(String(b.max))} times.`
+              : `Used ${esc(String(b.use_count))} times, with no cap.`}
+            ${Number(b.security_id ?? 0) ? ' Entry is gated by a whitelist.' : ''}
+          </p>
+        </div>
+      </div>`;
+  } else if (run.step === 2) {
+    body = `
+      <h4>What it takes from you</h4>
+      ${!known ? '<p class="lab-hint">Connect a wallet to see how much of this you already hold.</p>' : ''}
+      ${reqs.length ? reqs.map(slot).join('') : '<p class="lab-hint">Nothing. This recipe is free.</p>'}
+      ${known && !afford
+        ? '<p class="lab-warn">You are short on at least one ingredient, so this would fail.</p>'
+        : known ? '<p class="lab-ok">You hold everything this needs.</p>' : ''}`;
+  } else if (run.step === 3) {
+    const max = Math.max(1, ...rewards.map((r) => r.odds ?? 0));
+    body = `
+      <h4>What it gives back</h4>
+      ${sure
+        ? '<p class="lab-hint">One outcome, every time.</p>'
+        : '<p class="lab-hint">Drawn at random. The bars are the real odds from the contract.</p>'}
+      ${rewards.length ? rewards.map((r) => `
+        <div class="run-odd">
+          <span class="run-odd-name">${esc(r.text)}</span>
+          ${r.odds === undefined ? '<span class="lab-hint">always</span>' : `
+            <span class="run-odd-bar"><i style="width:${Math.max(2, (r.odds / max) * 100)}%"></i></span>
+            <span class="run-odd-pct">${r.odds.toFixed(r.odds < 1 ? 2 : 1)}%</span>`}
+        </div>`).join('') : '<p class="lab-hint">The contract lists no outcome for this recipe.</p>'}`;
+  } else {
+    body = `
+      <h4>Before you sign</h4>
+      <div class="run-review">
+        <div>
+          <h5>You give</h5>
+          ${reqs.length ? reqs.map((r) => `<p>${esc(r.text)}</p>`).join('') : '<p>Nothing</p>'}
+        </div>
+        <div>
+          <h5>You get</h5>
+          ${sure
+            ? rewards.map((r) => `<p>${esc(r.text)}</p>`).join('')
+            : `<p>One of ${rewards.length} outcome${rewards.length === 1 ? '' : 's'}, drawn at random.</p>`}
+        </div>
+      </div>
+      ${known && !afford
+        ? '<p class="lab-warn">You are short on an ingredient. Signing this would fail on chain.</p>'
+        : ''}
+      <p class="lab-hint">This prototype stops here. Signing still runs through the main app,
+      which already builds the real transaction.</p>`;
+  }
+
+  return `<div class="lab-panel">
+    <h3>Run a recipe</h3>
+    ${finder}
+    ${run.error ? `<p class="lab-warn">${esc(run.error)}</p>` : ''}
+    ${rail}
+    <div class="run-body">${body}</div>
+    <div class="lab-row-actions run-nav">
+      <button data-lab="run-back" ${run.step === 1 ? 'disabled' : ''}>Back</button>
+      <span class="lab-step-of">Step ${run.step} of 4 · ${esc(RUN_STEPS[run.step - 1].q)}</span>
+      <button class="lab-primary" data-lab="run-next" ${run.step === 4 ? 'disabled' : ''}>Continue</button>
+    </div>
+  </div>`;
 }
 
 // ─── tool: WAX premium name auctions ────────────────────────────────────
@@ -3810,6 +3998,9 @@ export function renderLabPage(): string {
       <button class="${state.tool === 'crucible' ? 'on' : ''}" data-lab="tool-crucible">
         Crucible Contracts<small>our own engine, in preview</small>
       </button>
+      <button class="${state.tool === 'run' ? 'on' : ''}" data-lab="tool-run">
+        Run a recipe<small>the player side, guided</small>
+      </button>
       ${shareButton('tool', 'link to this tool')}
     </div>`;
 
@@ -3820,6 +4011,16 @@ export function renderLabPage(): string {
         ${toolBar}
         ${walletBar()}
         ${renderCrucibleTool()}
+      </section>`;
+  }
+
+  if (state.tool === 'run') {
+    return `
+      <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
+      <section class="lab">
+        ${toolBar}
+        ${walletBar()}
+        ${renderRunTool()}
       </section>`;
   }
 
@@ -4132,6 +4333,12 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     void loadCollections();
   }
   if (actor && !state.sessions.length) void refreshSessions();
+  // A shared #/lab/run/<id> link opens before the wallet is restored, so
+  // the ownership counts have to be filled in once an actor appears.
+  if (state.tool === 'run' && actor && state.run.blend && state.run.assetsFor !== actor) {
+    state.run.owner = actor;
+    void loadRunAssets(state.run, actor).then(render);
+  }
 
   const idx = (el: HTMLElement) => Number(el.dataset.idx);
 
@@ -4323,6 +4530,21 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
 
         case 'tool-recipes': state.tool = 'recipes'; writeLabHash(); break;
         case 'tool-crucible': state.tool = 'crucible'; writeLabHash(); break;
+        case 'tool-run': state.tool = 'run'; writeLabHash(); break;
+        case 'run-load': {
+          const id = (root.querySelector<HTMLInputElement>('#run-id')?.value ?? '').trim();
+          if (id) void startRun(id);
+          return;
+        }
+        case 'run-step':
+          state.run.step = Number(el.dataset.value) as RunStep;
+          break;
+        case 'run-next':
+          state.run.step = Math.min(4, state.run.step + 1) as RunStep;
+          break;
+        case 'run-back':
+          state.run.step = Math.max(1, state.run.step - 1) as RunStep;
+          break;
         case 'tool-names':
           state.tool = 'names';
           state.lastTx = ''; state.lastError = '';
