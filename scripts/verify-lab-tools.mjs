@@ -305,6 +305,28 @@ async function main() {
     say(!threw, 'every storage call is survivable when storage is not there');
   }
 
+  console.log('\n=== PHASE G - the narrow-screen block stays last ===');
+  {
+    // Not a unit test of behaviour, a guard against one specific mistake
+    // that shipped twice: a media query carries no extra specificity, so
+    // a plain `.inv-*` rule written below it wins on source order and
+    // silently undoes the mobile layout. First the Filters button
+    // vanished at 375px, then the facet rail stayed on the page beside
+    // its own popup. Both were reported by a person, not by a test.
+    const fs = await import('node:fs/promises');
+    const css = await fs.readFile(new URL('../src/ui/components.css', import.meta.url), 'utf8');
+    const at = css.indexOf('@media (max-width: 760px) {');
+    say(at >= 0, 'the inventory narrow-screen block exists');
+    const after = css.slice(at);
+    // Any base rule for an inventory class, at the start of a line, after
+    // the block opens. Rules nested inside the block are indented.
+    const offenders = [...after.matchAll(/^\.inv-[a-z-]*[^{]*\{/gm)].map((m) => m[0].trim());
+    say(offenders.length === 0,
+        offenders.length
+          ? `these base rules sit BELOW the narrow-screen block and will override it: ${offenders.join(' ')}`
+          : 'no base .inv- rule sits below it, so it cannot be silently outranked');
+  }
+
   console.log('\n=== PHASE F - the runner, against a live blend ===');
   {
     const BLEND = '45780';
