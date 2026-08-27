@@ -448,6 +448,32 @@ async function main() {
         offenders.length
           ? `these base rules sit BELOW the narrow-screen block and will override it: ${offenders.join(' ')}`
           : 'no base .inv- rule sits below it, so it cannot be silently outranked');
+
+    // Being last is worth nothing if the block never reaches the browser.
+    // The header comment above it was left unterminated: its closing
+    // marker landed nine lines down, everything between became the
+    // prelude of an invalid selector, and the browser dropped the entire
+    // media query. Source order was perfect and the phone layout was
+    // dead, on the deployed site, for as long as it took a person to
+    // notice. So: strip comments the way a CSS tokenizer does, then check
+    // that the last thing before the block is the end of a rule.
+    let stripped = ''; let k = 0; let unterminated = false;
+    while (k < css.length) {
+      if (css.startsWith('/*', k)) {
+        const close = css.indexOf('*/', k + 2);
+        if (close === -1) { unterminated = true; break; }
+        k = close + 2;
+      } else { stripped += css[k]; k += 1; }
+    }
+    say(!unterminated, 'every comment in the file is closed');
+    say(!stripped.includes('*/'),
+        'no stray comment terminator survives, which would start an invalid selector');
+    const blockAt = stripped.indexOf('@media (max-width: 760px)');
+    const before = stripped.slice(0, blockAt).trimEnd();
+    say(before.endsWith('}'),
+        before.endsWith('}')
+          ? 'the block starts on a clean boundary, so a browser actually applies it'
+          : `loose text sits between the last rule and the block, so it parses as a selector: ...${JSON.stringify(before.slice(-70))}`);
   }
 
   console.log('\n=== PHASE J - the prototype actually signs ===');

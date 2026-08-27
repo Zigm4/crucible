@@ -2803,8 +2803,6 @@ button.inv-card { border: 0; cursor: pointer; font: inherit; color: inherit; tex
 .inv-list-row[role="button"]:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
 
-/* ─── inventory: the narrow-screen block ───────────────────────────────
-
 /* The box is reserved whether or not a picture resolves. Without this a
    card with no artwork collapsed to 33px and the grid read as broken. */
 .inv-card .media-thumb, .inv-card .lab-noart {
@@ -2818,6 +2816,8 @@ button.inv-card { border: 0; cursor: pointer; font: inherit; color: inherit; tex
 .run-odd-name { cursor: default; }
 
 
+/* ─── inventory: the narrow-screen block ───────────────────────────────
+
    Deliberately the LAST thing in this file.
 
    A media query carries no extra specificity, so a plain rule written
@@ -2826,7 +2826,14 @@ button.inv-card { border: 0; cursor: pointer; font: inherit; color: inherit; tex
    the facet rail stayed on the page beside its own popup. Both times the
    cause was a base `.inv-*` rule added underneath. Keeping the whole
    narrow-screen block at the end of the file means a new base rule can
-   no longer silently outrank it. */
+   no longer silently outrank it.
+
+   It also has to PARSE. This header comment was once left unterminated,
+   its closing marker landed nine lines lower, and everything between
+   became the prelude of an invalid selector: the browser dropped the
+   whole media query and the phone layout below shipped dead. The guard
+   in verify-lab-tools now strips comments the way a browser does and
+   checks that a `}` is the last thing before this block. */
 @media (max-width: 760px) {
   /* On a phone the same dialog is a bottom sheet: easier to reach with a
      thumb, and it does not float over content it is filtering. */
