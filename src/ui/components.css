@@ -2458,13 +2458,71 @@ input.lab-inline { max-width: 190px; }
    it and the whole card overflowed. This is the fix, and it has to be on
    every level between the grid and the scroller. */
 .inv-split > *, .inv-body { min-width: 0; }
+
+/* These three are the wide-screen defaults, and they MUST sit above the
+   narrow-screen block below. A media query carries no extra specificity,
+   so a plain rule written after it wins and the control it hides never
+   comes back. That is exactly what happened: the Filters button computed
+   to display:none at 375px until these moved up here. */
+.inv-rail-head, .inv-rail-foot { display: none; }
+.inv-filter-btn { display: none; }
+.inv-scrim { display: none; }
+
 @media (max-width: 760px) {
-  /* The rail goes above rather than beside: a 200px column beside a grid
-     leaves neither enough room to be useful on a phone. */
   .inv-split { grid-template-columns: minmax(0, 1fr); }
-  .inv-rail { max-height: 260px; overflow-y: auto; }
+
+  .inv-filter-btn { display: inline-block; }
+  .inv-filter-btn.on { border-color: var(--accent); }
+
+  /* Out of the flow entirely when closed, so it cannot take height or
+     catch a tap. `display: none` rather than a transform: nothing here
+     animates, and a hidden element that still receives clicks is worse
+     than one that is simply gone. */
+  .inv-rail { display: none; }
+  .inv-rail.open {
+    display: flex;
+    position: fixed;
+    inset: auto 0 0 0;
+    max-height: 82vh;
+    z-index: 60;
+    border-radius: 14px 14px 0 0;
+    background: var(--bg);
+    border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+    box-shadow: 0 -8px 40px rgb(0 0 0 / .5);
+    gap: 0;
+  }
+  .inv-scrim {
+    display: block;
+    position: fixed; inset: 0; z-index: 59;
+    background: rgb(0 0 0 / .55);
+  }
+  .inv-rail.open .inv-rail-head,
+  .inv-rail.open .inv-rail-foot {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px;
+    flex: 0 0 auto;
+  }
+  .inv-rail.open .inv-rail-head { justify-content: space-between; border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent); }
+  .inv-rail.open .inv-rail-foot { justify-content: space-between; border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent); }
+  /* The body is the only thing that scrolls, and it says so by being the
+     only thing that moves. */
+  .inv-rail.open .inv-rail-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 10px 12px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .inv-rail.open .inv-rail-foot .lab-primary { margin-left: auto; }
 }
+/* One piece of markup, two presentations. On a wide screen the facets
+   are a column beside the results, which is where you want them while
+   refining. On a phone that column is a 200px box with its own hidden
+   scrollbar, which is exactly the thing that was hard to use, so the
+   same element becomes a dialog with a scrolling body and a footer that
+   closes it. */
 .inv-rail { display: flex; flex-direction: column; gap: 6px; }
+.inv-rail-body { display: flex; flex-direction: column; gap: 6px; }
 .inv-facet { padding: 0; margin: 0; }
 .inv-facet-head {
   display: grid;

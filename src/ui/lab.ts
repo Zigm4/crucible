@@ -2976,6 +2976,9 @@ function renderInventoryTool(): string {
           .map((k) => `<option value="${esc(k.key)}" ${inv.sortKey === k.key ? 'selected' : ''}>sort by ${esc(k.label)}</option>`).join('')}
       </select>
       <button data-lab="inv-order">${inv.sortDesc ? 'desc' : 'asc'}</button>
+      <button class="inv-filter-btn ${active ? 'on' : ''}" data-lab="inv-filters">
+        Filters${active ? ` (${active})` : ''}
+      </button>
       ${active ? `<button data-lab="inv-clear">clear ${active} filter${active === 1 ? '' : 's'}</button>` : ''}
       ${shareButton('tool', 'link to this view')}
     </div>
@@ -2991,8 +2994,20 @@ function renderInventoryTool(): string {
     </p>
 
     <div class="inv-split">
-      <aside class="inv-rail">
-        ${rail || '<p class="lab-hint">Nothing left to narrow by.</p>'}
+      ${inv.filtersOpen ? '<div class="inv-scrim" data-lab="inv-filters-close"></div>' : ''}
+      <aside class="inv-rail ${inv.filtersOpen ? 'open' : ''}">
+        <div class="inv-rail-head">
+          <strong>Filters</strong>
+          <button class="lab-x" data-lab="inv-filters-close" aria-label="Close">x</button>
+        </div>
+        <div class="inv-rail-body">
+          ${rail || '<p class="lab-hint">Nothing left to narrow by.</p>'}
+        </div>
+        <div class="inv-rail-foot">
+          <button data-lab="inv-clear" ${active ? '' : 'disabled'}>Reset</button>
+          <span class="lab-hint">${filtered.length.toLocaleString('en-US')} match</span>
+          <button class="lab-primary" data-lab="inv-filters-close">Apply</button>
+        </div>
       </aside>
       <div class="inv-body">
         ${filtered.length ? body : '<p class="lab-empty">Nothing matches. Loosen a filter.</p>'}
@@ -4851,6 +4866,12 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           patchPrefs({ inventoryView: state.inv.view });
           writeLabHash();
           break;
+        case 'inv-filters':
+          state.inv.filtersOpen = true;
+          break;
+        case 'inv-filters-close':
+          state.inv.filtersOpen = false;
+          break;
         case 'inv-size':
           state.inv.cardSize = clampCardSize(el.dataset.value);
           patchPrefs({ inventoryCardSize: state.inv.cardSize });
@@ -4895,6 +4916,8 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           break;
         case 'inv-clear':
           clearFilters(state.inv);
+          // Left open: on a phone this button lives in the panel, and
+          // closing it would hide the counts that just changed.
           writeLabHash();
           break;
         case 'inv-more':

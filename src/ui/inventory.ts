@@ -68,13 +68,22 @@ export interface InventoryState {
   limit: number;
   /** Facet panels the reader has opened. */
   openFacets: string[];
+  /**
+   * Whether the filter panel is showing.
+   *
+   * Only meaningful on a narrow screen, where the panel is a dialog. On a
+   * wide one the same markup is a column beside the results and is always
+   * there, so this is ignored. Not stored and not in the URL: whether a
+   * drawer happened to be open is not part of the view somebody shares.
+   */
+  filtersOpen: boolean;
 }
 
 export function emptyInventoryState(): InventoryState {
   return {
     owner: '', loadedFor: '', loading: false, error: '', assets: [],
     q: '', include: {}, exclude: {}, view: 'grid',
-    sortKey: 'received', sortDesc: true, cardSize: 96, limit: 120, openFacets: [],
+    sortKey: 'received', sortDesc: true, cardSize: 96, limit: 120, openFacets: [], filtersOpen: false,
   };
 }
 
