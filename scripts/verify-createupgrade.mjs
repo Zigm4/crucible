@@ -488,15 +488,18 @@ log('\n=== the up.nefty staking gate ===');
 
     // The sentence has to appear exactly when the recipe would be rejected,
     // and never otherwise. A false warning on a good recipe is its own bug.
-    const tooFew = gateMod.upgradeGateProblem(gate, gate.minIngredients - 1);
-    const enough = gateMod.upgradeGateProblem(gate, gate.minIngredients);
-    if (gate.minIngredients > 1 && !tooFew) { log(`   ✗ ${name}: a 1-ingredient recipe would abort and we say nothing`); failures += 1; }
-    if (enough) { log(`   ✗ ${name}: warned about a recipe the chain accepts`); failures += 1; }
+    // What the chain accepts was settled by simulation: verify-upgrade-fee.mjs.
+    const own = { quantity: '1.00000000 WAX', to: 'someone.wam' };
+    const lone = gateMod.upgradeGateProblem(gate, [own]);
+    const twoNoFee = gateMod.upgradeGateProblem(gate, [own, { quantity: '0.01000000 WAX', to: 'someone.wam' }]);
+    const paid = gateMod.upgradeGateProblem(gate, [gateMod.feeLine(gate), own]);
+    if (gate.feeRequired && (!lone || !twoNoFee)) { log(`   ✗ ${name}: an upgrade without the fee line would abort and we say nothing`); failures += 1; }
+    if (paid || (!gate.feeRequired && lone)) { log(`   ✗ ${name}: warned about a recipe the chain accepts`); failures += 1; }
   }
 
   // A failed read must stay silent rather than invent a warning.
   const dead = await gateMod.readUpgradeGate('collection..x', 'no.such.acct');
-  if (dead.known || gateMod.upgradeGateProblem(dead, 1)) {
+  if (dead.known || gateMod.upgradeGateProblem(dead, [{}])) {
     log('   ✗ an unreadable collection produced a warning instead of silence'); failures += 1;
   } else {
     log('   ok   an unreadable collection stays silent rather than guessing');

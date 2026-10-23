@@ -83,16 +83,32 @@ import { listUpgrades, type DiscoveredUpgrade } from '../nefty/upgrades';
 import { listDrops, type DiscoveredDrop } from '../nefty/drops';
 import {
   buildSetBlendHide, buildSetBlendTime, buildSetBlendMax, buildSetBlendLim,
-  buildSetBlendData, buildSetBlendCat, buildSetBlendSec, buildDelBlend,
+  buildSetBlendData, buildSetBlendCat, buildSetBlendSec, buildDelBlend, buildSetBlendMix,
 } from '../nefty/admin';
 import {
   buildSetUpgradeHide, buildSetUpgradeTime, buildSetUpgradeMax,
-  buildSetUpgradeData, buildSetUpgradeCat, buildSetUpgradeSec, buildDelUpgrade,
+  buildSetUpgradeData, buildSetUpgradeCat, buildSetUpgradeSec, buildDelUpgrade, buildSetUpgradeMix,
 } from '../nefty/upgradeAdmin';
 import {
+  readEditable, displayText, mergeDisplayData, decodeIngredients, ingredientsChanged, type EditableRecipe,
+} from '../nefty/editable';
+import {
   buildSetDropHidden, buildSetDropTimes, buildSetDropMax, buildSetDropLimit,
-  buildSetDropData, buildSetDropPrice, buildEraseDrop,
+  buildSetDropData, buildSetDropPrice, buildEraseDrop, buildSetDropAuth,
 } from '../nefty/dropAdmin';
+import { buildAddWhitelist, buildClearWhitelist } from '../nefty/admin';
+import {
+  parseAccountList, findMissingAccounts, planListChange, packTransactions,
+  readCollectionListMembers, readDropListEntries, nextCollectionListId, nextDropId,
+  addToCollectionList, removeFromCollectionList, addToDropList, removeFromDropList,
+  RAM_BYTES_PER_ACCOUNT, ACCOUNTS_PER_TRANSACTION,
+} from '../nefty/accessLists';
+import type { BuiltAction } from '../chain/action';
+import {
+  encodeGroup, describeGroup, groupProblems, symbolOf, tokenDecimals, readCollectionRule, readDropRule,
+  buildAddHolderGate, buildSetHolderGate, buildDeleteHolderGate, buildDeleteList, buildSetDropRule, buildDelDropRule,
+  TOKEN_OPS, MAX_GATE_NAME, type HolderGroup, type HolderRule,
+} from '../nefty/holderGates';
 import { dryRunActions } from './dryrun';
 import {
   choiceFromBlendRow, emptyCheckContext, gateOf, headline, loadCheckContext, signStops, verdictFor,
@@ -110,7 +126,7 @@ import { hubLinks, renderVerdictPanel } from './verdictView';
 import { pickImageRef } from '../atomic/image';
 import {
   buildCreateBlendAction,
-  executeCreateBlend,
+  encodeIngredient,
   validateNewBlend,
   type CreateBlendArgs,
   type NewIngredient,
@@ -119,7 +135,6 @@ import {
 } from '../nefty/createBlend';
 import {
   buildCreateUpgradeAction,
-  executeCreateUpgrade,
   validateNewUpgrade,
   UPGRADE_OP,
   type CreateUpgradeArgs,
@@ -127,7 +142,8 @@ import {
   type NewUpgradeResult,
 } from '../nefty/createUpgrade';
 import {
-  readUpgradeGate, upgradeGateProblem, type UpgradeGate,
+  readUpgradeGate, upgradeGateProblem, isFeeLine, feeLine,
+  type UpgradeGate, type GateIngredient,
 } from '../nefty/upgradeGate';
 import {
   buildCreateDrop,
@@ -208,17 +224,105 @@ interface LabExisting {
   description: string;
   image: string;
   category: string;
+  /** The secure.nefty gate, '' for none, 'new' for a list made on save. */
   securityId: string;
   /** Drops only. */
   free: boolean;
   priceAmount: string;
   priceToken: string;
+  /** Drops only: whether a claim has to pass the drop's own list or proof. */
+  authRequired: boolean;
+  /** Read from the recipe's own row once it is opened (loadEditing); the list rows know too little. */
+  loaded: boolean;
+  /** The dates as the contract holds them, sent back as they are when their field is not touched. */
+  startRaw: number;
+  endRaw: number;
+  /** display_data as the contract holds it, so a save replaces only what was edited. */
+  display: Record<string, unknown>;
+  /** Blends and upgrades: the ingredients as the contract holds them. */
+  ingredientsRaw: unknown[];
+  /** The same, as the editor's rows, when they can be written back exactly. */
+  ingredients?: LabIngredient[];
+  /** Why they cannot be edited here; '' when they can. */
+  ingredientsWhy: string;
+}
+
+/**
+ * An account list being written: what was pasted, what the chain says of
+ * those accounts, and what the list holds now. One draft serves creation
+ * and Change, and is emptied whenever the recipe or the list it is about
+ * changes (resetListDraft), so a paste can never land on the wrong list.
+ */
+interface ListDraft {
+  /** Accounts pasted to add, as typed. */
+  addText: string;
+  /** Change: accounts pasted to take off. */
+  removeText: string;
+  /** Change: members taken off one by one, from the member list. */
+  removing: string[];
+  /** Change: take everyone off first. */
+  clear: boolean;
+  /** The name of a list made along the way. */
+  newName: string;
+  /** What `addText` held when its accounts were last looked up. */
+  checkedText: string;
+  checkState: LoadState;
+  checkDone: number;
+  /** Valid names that are not accounts: both contracts refuse the whole action for one. */
+  missing: string[];
+  checkError: string;
+  /** Which list `members` is: `sec:<id>` or `drop:<id>`. */
+  membersFor: string;
+  membersState: LoadState;
+  members: string[];
+  /** Drops: each member's own claim limit, 0 for none. */
+  limits: Record<string, number>;
+  memberQuery: string;
+  /** Drops: the claim limit given to the accounts added, '' for none (see accessLists.ts). */
+  limit: string;
+}
+
+/**
+ * A holder rule being written: for a gate made along the way (`sec:new`),
+ * an existing gate (`sec:<id>`), or a drop (`drop:new`, `drop:<id>`). Like
+ * the list draft it names what it is about, and is replaced whenever that
+ * changes (ensureRule), so an edit never lands on another rule.
+ */
+interface RuleDraft {
+  for: string;
+  state: LoadState;
+  group: HolderGroup;
+  /** The rule as the contract holds it, in canonical JSON; '' when there is none. */
+  original: string;
+  /** Drops: whether the drop is to have a rule at all. */
+  on: boolean;
+  /** The name of a gate made along the way. */
+  name: string;
+  /** Set when the rule on chain uses something the editor does not offer: it is shown, never rewritten. */
+  readOnly: string;
+  error: string;
+}
+
+/** What the collection's gates are used by and hold, for the gate list in Change. */
+interface GatesInfo {
+  for: string;
+  state: LoadState;
+  /** security id -> the recipes behind it, e.g. "blend #44526". */
+  users: Record<string, string[]>;
+  /** Lists: how many accounts. */
+  counts: Record<string, number>;
+  /** Holder gates: the rule in a sentence. */
+  rules: Record<string, string>;
+  /** Unused gates: '' when the chain would delete it, else why not. Asked before a button is shown. */
+  deletable: Record<string, string>;
+  error: string;
 }
 
 /** What a player hands over. Mirrors the NewIngredient variants worth a UI. */
 type LabIngredient =
   | { kind: 'template'; template_id: number; amount: number; sendTo: string }
-  | { kind: 'schema'; schema_name: string; amount: number; sendTo: string }
+  /** `display_data` is the contract's text for the slot, kept as read so a save does not drop it. */
+  | { kind: 'schema'; schema_name: string; amount: number; sendTo: string; display_data?: string }
   | {
       kind: 'attribute';
       schema_name: string;
@@ -226,6 +330,7 @@ type LabIngredient =
       values: string;
       amount: number;
       sendTo: string;
+      display_data?: string;
     }
   | { kind: 'collection'; amount: number; sendTo: string }
   | { kind: 'token'; quantity: string; to: string };
@@ -337,7 +442,22 @@ interface LabState extends LabForm {
   dataState: LoadState;
   dataError: string;
   truncated: boolean;
-  securities: { id: string; name: string }[];
+  /** The collection's secure.nefty gates. Type 0 is a list of accounts, 1 a proof of holding. */
+  securities: { id: string; name: string; type: number }[];
+  list: ListDraft;
+  rule: RuleDraft;
+  gates: GatesInfo;
+  /**
+   * The ids a list and a drop made in this transaction will get, read from
+   * their contracts' counters right before simulating or signing
+   * (resolveNewIds). Empty until then.
+   */
+  newListId: string;
+  newDropId: string;
+  /** While a change goes out as several transactions: which one is being signed. */
+  signing?: { at: number; of: number };
+  /** Every transaction the last create or save signed, in order. */
+  signedTxs: string[];
   /**
    * Can the contract we are about to create on actually mint into this
    * collection? undefined = unknown. false = whatever gets created here
@@ -462,6 +582,13 @@ const state: LabState = {
   dataError: '',
   truncated: false,
   securities: [],
+  list: emptyListDraft(),
+  rule: emptyRuleDraft(''),
+  gates: { for: '', state: 'idle', users: {}, counts: {}, rules: {}, deletable: {}, error: '' },
+  newListId: '',
+  newDropId: '',
+  signing: undefined,
+  signedTxs: [],
   name: '',
   description: '',
   image: '',
@@ -843,7 +970,7 @@ async function loadCollectionData() {
       };
     });
 
-    state.securities = (securities ?? []).map((r) => ({ id: String(r.id), name: r.name }));
+    state.securities = (securities ?? []).map((r) => ({ id: String(r.id), name: r.name, type: Number(r.type) }));
     // Checked here rather than at review time: an author who learns this
     // on the last screen has already done all the work.
     void refreshCreateAuth(collection);
@@ -860,8 +987,17 @@ async function loadCollectionData() {
 
 // ─── edit mode: read what exists, write what changed ───────────────────
 
-const unixToLocal = (t: number) =>
-  t ? new Date(t * 1000).toISOString().slice(0, 16) : '';
+/**
+ * Unix seconds to what a datetime-local field shows: local wall time, the
+ * same clock toUnix reads it back on. It used to print UTC, so a date the
+ * author never touched moved by their timezone offset on the next save.
+ */
+function unixToLocal(t: number): string {
+  if (!t) return '';
+  const d = new Date(t * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 /**
  * Lists what this collection already has, for the kind being edited. Reads
@@ -898,14 +1034,19 @@ async function loadExisting() {
 const BLANK_EXISTING = {
   hidden: false, startTime: '', endTime: '', maxUses: '', accountLimit: '',
   cooldown: '', description: '', image: '', category: '', securityId: '',
-  free: true, priceAmount: '', priceToken: '',
+  free: true, priceAmount: '', priceToken: '', authRequired: false,
+  loaded: false, startRaw: 0, endRaw: 0, display: {}, ingredientsRaw: [], ingredients: undefined, ingredientsWhy: '',
 };
+
+/** '' for no gate. The editor used to start every recipe on '', and so showed a gated one as open to everyone. */
+const gateId = (id: string | undefined) => (id && id !== '0' ? String(id) : '');
 
 function fromBlend(b: DiscoveredBlend): LabExisting {
   return {
     ...BLANK_EXISTING,
     id: String(b.blend_id), kind: 'blend', name: b.name || `blend ${b.blend_id}`,
     status: String(b.status),
+    securityId: gateId(b.security_id),
   };
 }
 
@@ -914,6 +1055,7 @@ function fromUpgrade(u: DiscoveredUpgrade): LabExisting {
     ...BLANK_EXISTING,
     id: String(u.upgrade_id), kind: 'upgrade', name: u.name || `upgrade ${u.upgrade_id}`,
     status: String(u.status),
+    securityId: gateId(u.security_id),
     description: u.description ?? '', image: u.image ?? '',
     startTime: unixToLocal(u.start_time), endTime: unixToLocal(u.end_time),
     maxUses: u.max ? String(u.max) : '',
@@ -934,7 +1076,107 @@ function fromDrop(d: DiscoveredDrop): LabExisting {
     free: Boolean(d.is_free),
     priceAmount: d.is_free ? '' : (amount ?? ''),
     priceToken: d.is_free ? '' : (ticker ?? ''),
+    authRequired: d.auth.kind !== 'public',
   };
+}
+
+/** The editor's row for a contract ingredient, or what keeps it from having one. */
+function labIngredientOf(n: NewIngredient, collection: string): LabIngredient | string {
+  if ('collection_name' in n && n.collection_name !== collection) return `an NFT from another collection (${n.collection_name})`;
+  const sendTo = 'transfer_to' in n && n.transfer_to ? n.transfer_to : '';
+  switch (n.kind) {
+    case 'template':   return { kind: 'template', template_id: n.template_id, amount: n.amount, sendTo };
+    case 'collection': return { kind: 'collection', amount: n.amount, sendTo };
+    case 'ft':         return { kind: 'token', quantity: n.quantity, to: n.to ?? '' };
+    case 'schema':
+      return { kind: 'schema', schema_name: n.schema_name, amount: n.amount, sendTo, ...(n.display_data ? { display_data: n.display_data } : {}) };
+    case 'attribute': {
+      // The editor matches one attribute per row; several would be rewritten as one.
+      if (n.attributes.length !== 1) return 'NFTs matched on several attributes at once';
+      const [a] = n.attributes;
+      return {
+        kind: 'attribute', schema_name: n.schema_name, attribute_name: a.attribute_name,
+        values: a.allowed_values.join(' | '), amount: n.amount, sendTo,
+        ...(n.display_data ? { display_data: n.display_data } : {}),
+      };
+    }
+    default: return 'a time gate';
+  }
+}
+
+/**
+ * A recipe as Change shows it, from its own row. Its ingredients become
+ * editable rows only when those rows write back exactly what the contract
+ * holds: anything else would be changed by a save that never touched them.
+ */
+function fromEditable(picked: LabExisting, r: EditableRecipe): LabExisting {
+  const [amount, ticker] = r.listingPrice.split(' ');
+  const free = !(Number(amount) > 0) || ticker === 'NULL';
+  const e: LabExisting = {
+    ...picked,
+    loaded: true,
+    hidden: r.hidden,
+    startTime: unixToLocal(r.startTime), endTime: unixToLocal(r.endTime),
+    startRaw: r.startTime, endRaw: r.endTime,
+    maxUses: r.max ? String(r.max) : '',
+    accountLimit: r.accountLimit ? String(r.accountLimit) : '',
+    cooldown: r.cooldown ? String(r.cooldown) : '',
+    name: displayText(r.display, 'name'),
+    description: displayText(r.display, 'description'),
+    image: displayText(r.display, 'image'),
+    category: r.category,
+    securityId: r.securityId,
+    authRequired: r.authRequired,
+    display: r.display,
+    ...(r.kind === 'drop' ? { free, priceAmount: free ? '' : amount ?? '', priceToken: free ? '' : ticker ?? '' } : {}),
+    ingredientsRaw: r.ingredients, ingredients: undefined, ingredientsWhy: '',
+  };
+  if (r.kind === 'drop') return e;
+  const decoded = decodeIngredients(r.ingredients);
+  if (!decoded.ok) { e.ingredientsWhy = decoded.reason; return e; }
+  const rows = decoded.list.map((n) => labIngredientOf(n, r.collection));
+  const odd = rows.find((x): x is string => typeof x === 'string');
+  if (odd) { e.ingredientsWhy = `it uses ${odd}`; return e; }
+  const list = rows as LabIngredient[];
+  if (ingredientsChanged(r.ingredients, list.map(toIngredient))) {
+    e.ingredientsWhy = 'one of its ingredients would not be written back exactly as it is';
+    return e;
+  }
+  e.ingredients = list;
+  return e;
+}
+
+const copyRecipe = (e: LabExisting): LabExisting => ({ ...e, ingredients: e.ingredients?.map((i) => ({ ...i })) });
+
+/** Reads the opened recipe's own row. Until it lands the form says so and nothing can be saved. */
+async function loadEditing(picked: LabExisting): Promise<void> {
+  const still = () => state.editing?.id === picked.id && state.editing.kind === picked.kind;
+  try {
+    const row = await readEditable(picked.kind, picked.id);
+    if (!still()) return;
+    if (!row) {
+      state.lastError = `${picked.kind} #${picked.id} is no longer on chain.`;
+    } else {
+      const e = fromEditable(picked, row);
+      state.editing = e;
+      state.editingOriginal = copyRecipe(e);
+    }
+  } catch (err) {
+    if (!still()) return;
+    state.lastError = `Could not read it from the chain: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  rerender();
+}
+
+/**
+ * After a save, what was signed is what the contract holds: the editor's
+ * copy of the raw row moves to it, so the next save diffs against it.
+ */
+function settleEditing(e: LabExisting, o: LabExisting): void {
+  e.display = JSON.parse(mergeDisplayData(e.display, { name: e.name, description: e.description, image: e.image })) as Record<string, unknown>;
+  if (e.startTime !== o.startTime) e.startRaw = toUnix(e.startTime);
+  if (e.endTime !== o.endTime) e.endRaw = toUnix(e.endTime);
+  if (e.ingredients) e.ingredientsRaw = e.ingredients.map((i) => encodeIngredient(toIngredient(i)));
 }
 
 /**
@@ -945,20 +1187,28 @@ function fromDrop(d: DiscoveredDrop): LabExisting {
  * re-signing six unchanged fields, and lets the confirmation list exactly
  * what is about to happen.
  */
-function editActions(): { label: string; action: ReturnType<typeof buildSetBlendHide> }[] {
+function editActions(): { label: string; action: BuiltAction }[] {
   const e = state.editing, o = state.editingOriginal;
   if (!e || !o) return [];
   const actor = state.actor;
-  const out: { label: string; action: ReturnType<typeof buildSetBlendHide> }[] = [];
+  const out: { label: string; action: BuiltAction }[] = [];
   const changed = (k: keyof LabExisting) => e[k] !== o[k];
+  // A list made on save exists before anything points at it.
+  const gate = isNewGate(e.securityId) ? (state.newListId || '0') : (e.securityId || 0);
+  if (e.kind !== 'drop' && e.securityId === 'new') {
+    out.push({ label: `make the list "${listName()}"`, action: buildAddWhitelist(actor, state.collection.trim(), listName(), '') });
+  }
+  if (e.kind !== 'drop') out.push(...newGateHead(e.securityId));
 
-  const displayData = () => {
-    const dd: Record<string, string> = {};
-    if (e.name.trim()) dd.name = e.name.trim();
-    if (e.description.trim()) dd.description = e.description.trim();
-    if (e.image.trim()) dd.image = e.image.trim();
-    return JSON.stringify(dd);
-  };
+  // The rest of display_data (video, animation, ...) stays as the contract holds it.
+  const displayData = () => mergeDisplayData(e.display, { name: e.name, description: e.description, image: e.image });
+  // A date nobody touched goes back exactly as it was read, to the second.
+  const startAt = () => (e.startTime === o.startTime ? e.startRaw : toUnix(e.startTime));
+  const endAt = () => (e.endTime === o.endTime ? e.endRaw : toUnix(e.endTime));
+  // The mix actions replace the whole list, so they are sent only for a real change.
+  const mix = e.ingredients && !e.ingredientsWhy && ingredientsChanged(e.ingredientsRaw, e.ingredients.map(toIngredient))
+    ? e.ingredients.map((i) => encodeIngredient(toIngredient(i)))
+    : undefined;
 
   if (e.kind === 'blend') {
     if (changed('name') || changed('description') || changed('image')) {
@@ -967,13 +1217,14 @@ function editActions(): { label: string; action: ReturnType<typeof buildSetBlend
     if (changed('category')) out.push({ label: 'category', action: buildSetBlendCat(actor, e.id, e.category.trim()) });
     if (changed('hidden')) out.push({ label: e.hidden ? 'hide it' : 'reveal it', action: buildSetBlendHide(actor, e.id, e.hidden) });
     if (changed('startTime') || changed('endTime')) {
-      out.push({ label: 'time window', action: buildSetBlendTime(actor, e.id, toUnix(e.startTime), toUnix(e.endTime)) });
+      out.push({ label: 'time window', action: buildSetBlendTime(actor, e.id, startAt(), endAt()) });
     }
     if (changed('maxUses')) out.push({ label: 'total uses', action: buildSetBlendMax(actor, e.id, intOr(e.maxUses)) });
     if (changed('accountLimit') || changed('cooldown')) {
       out.push({ label: 'per-wallet limit', action: buildSetBlendLim(actor, e.id, intOr(e.accountLimit), intOr(e.cooldown)) });
     }
-    if (changed('securityId')) out.push({ label: 'whitelist', action: buildSetBlendSec(actor, e.id, e.securityId || 0) });
+    if (changed('securityId')) out.push({ label: 'who can use it', action: buildSetBlendSec(actor, e.id, gate) });
+    if (mix) out.push({ label: 'what players give', action: buildSetBlendMix(actor, e.id, mix) });
   }
 
   if (e.kind === 'upgrade') {
@@ -983,10 +1234,11 @@ function editActions(): { label: string; action: ReturnType<typeof buildSetBlend
     if (changed('category')) out.push({ label: 'category', action: buildSetUpgradeCat(actor, e.id, e.category.trim()) });
     if (changed('hidden')) out.push({ label: e.hidden ? 'hide it' : 'reveal it', action: buildSetUpgradeHide(actor, e.id, e.hidden) });
     if (changed('startTime') || changed('endTime')) {
-      out.push({ label: 'time window', action: buildSetUpgradeTime(actor, e.id, toUnix(e.startTime), toUnix(e.endTime)) });
+      out.push({ label: 'time window', action: buildSetUpgradeTime(actor, e.id, startAt(), endAt()) });
     }
     if (changed('maxUses')) out.push({ label: 'total uses', action: buildSetUpgradeMax(actor, e.id, intOr(e.maxUses)) });
-    if (changed('securityId')) out.push({ label: 'whitelist', action: buildSetUpgradeSec(actor, e.id, e.securityId || 0) });
+    if (changed('securityId')) out.push({ label: 'who can use it', action: buildSetUpgradeSec(actor, e.id, gate) });
+    if (mix) out.push({ label: 'what players give', action: buildSetUpgradeMix(actor, e.id, mix) });
   }
 
   if (e.kind === 'drop') {
@@ -995,7 +1247,7 @@ function editActions(): { label: string; action: ReturnType<typeof buildSetBlend
     }
     if (changed('hidden')) out.push({ label: e.hidden ? 'hide it' : 'reveal it', action: buildSetDropHidden(actor, e.id, e.hidden) });
     if (changed('startTime') || changed('endTime')) {
-      out.push({ label: 'time window', action: buildSetDropTimes(actor, e.id, toUnix(e.startTime), toUnix(e.endTime)) });
+      out.push({ label: 'time window', action: buildSetDropTimes(actor, e.id, startAt(), endAt()) });
     }
     if (changed('maxUses')) out.push({ label: 'total supply', action: buildSetDropMax(actor, e.id, intOr(e.maxUses)) });
     if (changed('accountLimit') || changed('cooldown')) {
@@ -1007,7 +1259,17 @@ function editActions(): { label: string; action: ReturnType<typeof buildSetBlend
         : formatListing(Number(e.priceAmount) || 0, e.priceToken, editTokenPrecision());
       out.push({ label: 'price', action: buildSetDropPrice(actor, e.id, p.listing_price, p.settlement_symbol) });
     }
+    // Before anything is added: neftyblocksd refuses a list entry on a drop that is not secured.
+    if (changed('authRequired')) {
+      out.push({
+        label: e.authRequired ? 'only accounts on its list can claim' : 'everyone can claim',
+        action: buildSetDropAuth(actor, e.id, e.authRequired),
+      });
+    }
   }
+  const t = listTarget();
+  if (t) out.push(...listActions(t));
+  out.push(...ruleActions());
   return out;
 }
 
@@ -1015,6 +1277,572 @@ function editActions(): { label: string; action: ReturnType<typeof buildSetBlend
 function editTokenPrecision(): number {
   const t = state.tokens.find((x) => x.ticker === (state.editing?.priceToken ?? '').trim().toUpperCase());
   return t ? t.precision : 8;
+}
+
+// ─── who can use it: account lists ──────────────────────────────────────
+//
+// A blend or an upgrade points at one of its collection's secure.nefty
+// lists, shared with every other recipe that points at it. A drop has a
+// list of its own. The rules of both are in nefty/accessLists.ts; this is
+// the draft an author writes and what it signs.
+
+function emptyListDraft(): ListDraft {
+  return {
+    addText: '', removeText: '', removing: [], clear: false, newName: '',
+    checkedText: '', checkState: 'idle', checkDone: 0, missing: [], checkError: '',
+    membersFor: '', membersState: 'idle', members: [], limits: {}, memberQuery: '', limit: '',
+  };
+}
+
+/** Called whenever the list a draft is about changes. A new object, so a lookup still running for the old one cannot land on it. */
+function resetListDraft(): void {
+  state.list = emptyListDraft();
+}
+
+/** The list a draft writes to. `fresh` when it is made in the same transaction. */
+type ListTarget =
+  | { kind: 'collection'; id: string; name: string; fresh: boolean }
+  | { kind: 'drop'; id: string; fresh: boolean };
+
+function listName(): string {
+  const recipe = (state.mode === 'edit' ? state.editing?.name : state.name)?.trim();
+  return state.list.newName.trim() || `${recipe || 'Recipe'} list`;
+}
+
+function collectionTarget(securityId: string): ListTarget | undefined {
+  if (securityId === 'new') return { kind: 'collection', id: state.newListId || '0', name: listName(), fresh: true };
+  const s = state.securities.find((x) => x.id === securityId);
+  // A proof of holding has no accounts to list: what qualifies is set on the gate itself.
+  return s && s.type === 0 ? { kind: 'collection', id: s.id, name: s.name, fresh: false } : undefined;
+}
+
+/** Which list, if any, what is on screen writes to. */
+function listTarget(): ListTarget | undefined {
+  if (state.mode === 'edit') {
+    const e = state.editing;
+    if (!e) return undefined;
+    if (e.kind === 'drop') return e.authRequired ? { kind: 'drop', id: e.id, fresh: false } : undefined;
+    return collectionTarget(e.securityId);
+  }
+  if (state.kind === 'drop') return state.authRequired ? { kind: 'drop', id: state.newDropId || '0', fresh: true } : undefined;
+  return collectionTarget(state.securityId);
+}
+
+const listKey = (t: ListTarget) => `${t.kind === 'collection' ? 'sec' : 'drop'}:${t.id}`;
+
+/** Reads who is on an existing list, once per list. Called from rendering, like the rest of the lab's reads. */
+function ensureListMembers(t: ListTarget): void {
+  if (t.fresh) return;
+  const d = state.list;
+  const key = listKey(t);
+  if (d.membersFor === key && d.membersState !== 'idle') return;
+  d.membersFor = key;
+  d.membersState = 'loading';
+  d.members = [];
+  const read = t.kind === 'collection'
+    ? readCollectionListMembers(t.id).then((m) => m.map((account) => ({ account, limit: 0 })))
+    : readDropListEntries(t.id);
+  read.then(
+    (entries) => {
+      if (state.list !== d || d.membersFor !== key) return;
+      d.members = entries.map((x) => x.account);
+      d.limits = Object.fromEntries(entries.filter((x) => x.limit > 0).map((x) => [x.account, x.limit]));
+      d.membersState = 'done';
+      rerender();
+    },
+    (err: unknown) => {
+      if (state.list !== d || d.membersFor !== key) return;
+      d.membersState = 'error';
+      d.checkError = err instanceof Error ? err.message : String(err);
+      rerender();
+    },
+  );
+}
+
+/** The paste a lookup is running for. */
+let lookingUp = '';
+
+/** Looks up every pasted account on chain. Runs when the paste box is left, not per keystroke. */
+async function checkListAccounts(): Promise<void> {
+  const d = state.list;
+  const text = d.addText;
+  if (text === d.checkedText && d.checkState === 'done') return;
+  // Leaving the box and pressing "Check them now" are one click apart.
+  if (d.checkState === 'loading' && lookingUp === text) return;
+  lookingUp = text;
+  const { accounts } = parseAccountList(text);
+  d.checkState = 'loading';
+  d.checkDone = 0;
+  d.checkError = '';
+  rerender();
+  const current = () => state.list === d && d.addText === text;
+  try {
+    const missing = await findMissingAccounts(accounts, (n) => {
+      if (current()) { d.checkDone = n; rerender(); }
+    });
+    if (!current()) return;
+    d.missing = missing;
+    d.checkState = 'done';
+  } catch (err) {
+    if (!current()) return;
+    d.checkState = 'error';
+    d.checkError = err instanceof Error ? err.message : String(err);
+  }
+  d.checkedText = text;
+  rerender();
+}
+
+interface ListPlan {
+  add: string[];
+  /** Already on the list: left out, since secure.nefty refuses them. */
+  already: string[];
+  remove: string[];
+  /** secure.nefty only: empty the list before adding. */
+  clear: boolean;
+  invalid: string[];
+  missing: string[];
+  repeated: number;
+  /** Pasted accounts not looked up yet, or being looked up. */
+  checking: boolean;
+  /** Who is on the list now is known (always, for a list made now). */
+  membersKnown: boolean;
+}
+
+/** What signing this draft would do to the list. */
+function listPlan(t: ListTarget): ListPlan {
+  const d = state.list;
+  const parsed = parseAccountList(d.addText);
+  const looked = d.checkedText === d.addText && d.checkState === 'done';
+  const missing = looked ? d.missing : [];
+  const valid = parsed.accounts.filter((a) => !missing.includes(a));
+  const membersKnown = t.fresh || (d.membersFor === listKey(t) && d.membersState === 'done');
+  const members = t.fresh ? [] : membersKnown ? d.members : [];
+  const editing = state.mode === 'edit' && !t.fresh;
+  const typedOff = editing ? parseAccountList(d.removeText).accounts : [];
+  let plan: { add: string[]; already: string[]; remove: string[] };
+  let clear = false;
+  if (editing && d.clear && t.kind === 'collection') {
+    // clearwl empties it in one action, then the paste is the whole list.
+    clear = members.length > 0;
+    plan = { add: valid, already: [], remove: [] };
+  } else if (editing && d.clear) {
+    // A drop has no clear: the list becomes exactly the paste.
+    plan = { add: valid.filter((a) => !members.includes(a)), already: [], remove: members.filter((a) => !valid.includes(a)) };
+  } else if (t.kind === 'drop' && claimLimit() > 0) {
+    // addtowlwlim rewrites the limit of an account already on the list, so with a limit set nobody pasted is left out.
+    const leaving = (editing ? [...d.removing, ...typedOff] : []).filter((a) => members.includes(a));
+    plan = { add: valid.filter((a) => !leaving.includes(a)), already: [], remove: leaving };
+  } else {
+    plan = planListChange(members, valid, editing ? [...d.removing, ...typedOff] : []);
+  }
+  return {
+    ...plan, clear,
+    invalid: parsed.invalid,
+    missing,
+    repeated: parsed.repeated,
+    checking: parsed.accounts.length > 0 && !looked && d.checkState !== 'error',
+    membersKnown,
+  };
+}
+
+/** The list actions of a draft, in the order they must run. */
+function listActions(t: ListTarget): { label: string; action: BuiltAction }[] {
+  const actor = state.actor;
+  const collection = state.collection.trim();
+  const p = listPlan(t);
+  const out: { label: string; action: BuiltAction }[] = [];
+  const n = (k: number) => `${k} account${k === 1 ? '' : 's'}`;
+  if (t.kind === 'collection') {
+    if (p.clear) out.push({ label: `empty "${t.name}"`, action: buildClearWhitelist(actor, collection, t.id) });
+    for (const a of removeFromCollectionList(actor, collection, t.id, p.remove)) {
+      out.push({ label: `take ${n((a.data.accounts_to_remove as string[]).length)} off "${t.name}"`, action: a });
+    }
+    for (const a of addToCollectionList(actor, collection, t.id, p.add)) {
+      out.push({ label: `add ${n((a.data.accounts_to_add as string[]).length)} to "${t.name}"`, action: a });
+    }
+  } else {
+    for (const a of removeFromDropList(actor, t.id, p.remove)) {
+      out.push({ label: `take ${n((a.data.accounts_to_remove as string[]).length)} off its list`, action: a });
+    }
+    for (const a of addToDropList(actor, t.id, p.add, claimLimit())) {
+      out.push({ label: `add ${n((a.data.accounts_to_add as string[]).length)} to its list`, action: a });
+    }
+  }
+  return out;
+}
+
+/** The claim limit typed for the accounts added to a drop's list; 0 for none. */
+function claimLimit(): number {
+  const n = Math.floor(Number(state.list.limit));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** What keeps a draft from being signed. Filed under Rules when creating. */
+function listProblems(t: ListTarget | undefined): string[] {
+  if (!t) return [];
+  const p = listPlan(t);
+  const d = state.list;
+  const out: string[] = [];
+  const few = (l: string[]) => l.slice(0, 5).join(', ') + (l.length > 5 ? ` and ${l.length - 5} more` : '');
+  if (t.kind === 'collection' && t.fresh && !listName().trim()) out.push('Give the new list a name.');
+  if (p.invalid.length) out.push(`${p.invalid.length} cannot be account names: ${few(p.invalid)}.`);
+  if (p.missing.length) out.push(`${p.missing.length} account(s) do not exist on WAX: ${few(p.missing)}. The contract refuses the whole list for one of them.`);
+  if (p.checking) out.push('The accounts on the list are still being looked up.');
+  if (d.checkState === 'error' && d.checkError) out.push(`The accounts could not be looked up: ${d.checkError}`);
+  if (!t.fresh && !p.membersKnown && (p.add.length || state.mode === 'edit')) {
+    out.push(d.membersState === 'error' ? `Who is on the list could not be read: ${d.checkError}` : 'Reading who is on the list now.');
+  }
+  return out;
+}
+
+/**
+ * Reads the ids the counters will hand out, right before they are needed.
+ * Read earlier, another author creating a list in the meantime would make
+ * this one point at theirs; read now, that can only cost a refusal.
+ */
+async function resolveNewIds(): Promise<void> {
+  const newList = state.mode === 'edit'
+    ? state.editing?.kind !== 'drop' && isNewGate(state.editing?.securityId)
+    : state.kind !== 'drop' && isNewGate(state.securityId);
+  if (newList) state.newListId = await nextCollectionListId();
+  if (state.mode === 'create' && state.kind === 'drop' && state.authRequired) state.newDropId = await nextDropId();
+}
+
+/**
+ * Everything creating this recipe signs, in order: the list it is made
+ * with, the recipe, then the accounts. packTransactions splits a long list
+ * into several transactions; the list and the recipe are always in the first.
+ */
+function createActions(): BuiltAction[] {
+  const own = builtAction();
+  const rule = ruleActions().map((c) => c.action);
+  if (state.kind !== 'drop' && state.securityId === 'new-holders') {
+    return [...newGateHead(state.securityId).map((c) => c.action), own];
+  }
+  const t = listTarget();
+  if (!t) return [own, ...rule];
+  const accounts = listActions(t).map((c) => c.action);
+  // A drop's rule goes last: setproofown needs the drop, and the drop secured.
+  if (t.kind === 'drop') return [own, ...accounts, ...rule];
+  const head = t.fresh ? [buildAddWhitelist(state.actor, state.collection.trim(), listName(), '')] : [];
+  return [...head, own, ...accounts];
+}
+
+/** How a recipe's access reads in a sentence: the review row and the confirmation. */
+function whoCanUseIt(): string {
+  const t = listTarget();
+  const sid = state.mode === 'edit' ? state.editing?.securityId ?? '' : state.securityId;
+  const r = ruleKey() ? ensureRule() : undefined;
+  const holders = r && (r.on || r.for === 'sec:new') && r.group.rules.length ? `whoever holds ${describeGroup(r.group, tplName)}` : '';
+  if (!t) {
+    if (sid === 'new-holders') return `${holders || 'holders'}, through a new gate "${gateName()}"`;
+    const gate = state.securities.find((s) => s.id === sid);
+    if (state.kind !== 'drop' && gate) return `${holders || 'holders'}, as the gate "${gate.name}" (#${gate.id}) sets`;
+    return 'everyone';
+  }
+  const p = listPlan(t);
+  const count = t.fresh ? p.add.length : (state.list.members.length - p.remove.length + p.add.length);
+  const who = `${count} account${count === 1 ? '' : 's'}`;
+  if (t.kind === 'drop') return `only the ${who} on its own list${holders ? `, or ${holders}` : ''}`;
+  return t.fresh ? `only the ${who} on a new list "${t.name}"` : `only the ${who} on "${t.name}"`;
+}
+
+type SignedResult = { response?: unknown; resolved?: { transaction: { id: unknown } } };
+const txIdOf = (r: SignedResult) =>
+  (r.response as { transaction_id?: string } | undefined)?.transaction_id ?? String(r.resolved?.transaction.id ?? '');
+
+/**
+ * Signs each transaction in turn, asking the chain about each one first.
+ * A list of thousands is several transactions, and each must land before
+ * the next is asked about, since the second adds to a list the first made.
+ * A refusal stops everything still unsigned and says why.
+ */
+async function signInTurn(
+  session: NonNullable<ReturnType<typeof getCurrentSession>>,
+  txs: BuiltAction[][],
+): Promise<void> {
+  state.signedTxs = [];
+  for (let i = 0; i < txs.length; i++) {
+    state.signing = { at: i + 1, of: txs.length };
+    rerender();
+    let sim = await simulateActions(txs[i]);
+    // What the previous one wrote may not have reached the node asked yet.
+    for (let wait = 0; i > 0 && sim.kind === 'refused' && wait < 3; wait++) {
+      await new Promise((r) => setTimeout(r, 1_500));
+      sim = await simulateActions(txs[i]);
+    }
+    if (sim.kind === 'refused') {
+      const which = txs.length > 1 ? `Transaction ${i + 1} of ${txs.length}: ` : '';
+      const done = i ? ` The ${i} before it are signed.` : ' Nothing was signed.';
+      throw new Error(`${which}the chain would refuse it: ${sim.reason}.${done}`);
+    }
+    const result = await session.transact({ actions: txs[i] });
+    state.signedTxs.push(txIdOf(result as SignedResult));
+  }
+}
+
+function signingLabel(): string {
+  const s = state.signing;
+  return s && s.of > 1 ? `Signing ${s.at} of ${s.of}` : 'Waiting for your wallet';
+}
+
+/** The links to what was just signed, one per transaction. */
+function txLinks(): string {
+  const ids = state.signedTxs.length ? state.signedTxs : [state.lastTx];
+  return ids.filter(Boolean).map(txLink).join(' · ');
+}
+
+// ─── who can use it: holder rules ───────────────────────────────────────
+//
+// A blend or an upgrade can point at a holder gate instead of a list; a
+// drop can have a rule of its own next to its list, and a claim passes
+// either way. The rules of both contracts are in nefty/holderGates.ts.
+
+function emptyRuleDraft(key: string): RuleDraft {
+  return { for: key, state: 'idle', group: { any: false, rules: [] }, original: '', on: false, name: '', readOnly: '', error: '' };
+}
+
+const isHolderGate = (id: string) => state.securities.some((s) => s.id === id && s.type === 1);
+
+/** Which rule, if any, what is on screen writes to or shows. */
+function ruleKey(): string {
+  if (state.mode === 'edit') {
+    const e = state.editing;
+    if (!e?.loaded) return '';
+    if (e.kind === 'drop') return `drop:${e.id}`;
+    if (e.securityId === 'new-holders') return 'sec:new';
+    return isHolderGate(e.securityId) ? `sec:${e.securityId}` : '';
+  }
+  if (state.kind === 'drop') return 'drop:new';
+  if (state.securityId === 'new-holders') return 'sec:new';
+  return isHolderGate(state.securityId) ? `sec:${state.securityId}` : '';
+}
+
+/** JSON with sorted keys and every scalar as text, so a rule read from chain compares with one built here. */
+function canon(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`;
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v as object).sort().map((k) => `${k}:${canon((v as Record<string, unknown>)[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(String(v ?? ''));
+}
+
+/** The draft for the rule on screen, reading an existing rule the first time it is needed. */
+function ensureRule(): RuleDraft {
+  const key = ruleKey();
+  if (state.rule.for === key) return state.rule;
+  const r = emptyRuleDraft(key);
+  state.rule = r;
+  // A gate made along the way starts with one holding to fill in; a drop's starts when its box is ticked.
+  if (key === 'sec:new') r.group.rules.push(newRule('template'));
+  if (!key || key.endsWith(':new')) { r.state = 'done'; return r; }
+  r.state = 'loading';
+  const [kind, id] = key.split(':');
+  const read = kind === 'sec' ? readCollectionRule(state.collection.trim(), id) : readDropRule(id);
+  read.then(
+    (row) => {
+      if (state.rule !== r) return;
+      if (row) {
+        r.on = true;
+        r.original = canon(row.raw);
+        if (row.group) r.group = row.group;
+        else r.readOnly = 'it uses a comparison or a kind of holding this editor does not offer';
+      }
+      r.state = 'done';
+      rerender();
+    },
+    (err: unknown) => {
+      if (state.rule !== r) return;
+      r.state = 'error';
+      r.error = err instanceof Error ? err.message : String(err);
+      rerender();
+    },
+  );
+  return r;
+}
+
+/** Whether the drop on screen is kept to some accounts, which is when it can carry a rule. */
+const dropSecured = () => Boolean(state.mode === 'edit' ? state.editing?.authRequired : state.authRequired);
+
+/** Whether the rule on screen differs from the one on chain. */
+const ruleChanged = (r: RuleDraft) => !r.readOnly && r.on && canon(encodeGroup(r.group)) !== r.original;
+
+function gateName(): string {
+  const recipe = (state.mode === 'edit' ? state.editing?.name : state.name)?.trim();
+  return state.rule.name.trim() || `${recipe || 'Recipe'} holders`.slice(0, MAX_GATE_NAME);
+}
+
+/** The decimals of the tokens rules name, read once each from the token's own stat table. */
+const decimals = new Map<string, number | null | 'loading'>();
+function ensureDecimals(contract: string, code: string): number | null | 'loading' {
+  const key = `${contract}:${code}`;
+  if (!decimals.has(key)) {
+    decimals.set(key, 'loading');
+    tokenDecimals(contract, code).then(
+      (d) => { decimals.set(key, d ?? null); rerender(); },
+      () => { decimals.delete(key); },
+    );
+  }
+  return decimals.get(key)!;
+}
+
+/** A holding to start from, on the collection being worked on. */
+function newRule(kind: HolderRule['kind']): HolderRule {
+  const collection = state.collection.trim();
+  switch (kind) {
+    case 'schema':     return { kind: 'schema', collection, schema_name: state.schemas[0]?.schema_name ?? '', amount: 1, more: false };
+    case 'collection': return { kind: 'collection', collection, amount: 1, more: false };
+    case 'token':      return { kind: 'token', contract: 'eosio.token', amount: '', op: 3 };
+    default:           return { kind: 'template', collection, template_id: state.templates[0]?.template_id ?? 0, amount: 1, more: false };
+  }
+}
+
+/** What keeps the rule on screen from being signed. */
+function ruleProblems(): string[] {
+  const key = ruleKey();
+  if (!key) return [];
+  const r = ensureRule();
+  const isDrop = key.startsWith('drop:');
+  // A drop open to everyone keeps whatever rule it had and signs none: neftyblocksd refuses a rule on it.
+  if (isDrop && !dropSecured()) return [];
+  const writing = isDrop ? r.on : key === 'sec:new' || (state.mode === 'edit' && ruleChanged(r));
+  if (r.state === 'loading') return ['Reading its holder rule.'];
+  if (r.state === 'error') return [`Its holder rule could not be read: ${r.error}`];
+  if (!writing || r.readOnly) return [];
+  const out = groupProblems(r.group);
+  if (key === 'sec:new' && gateName().length > MAX_GATE_NAME) out.push(`A gate's name is ${MAX_GATE_NAME} characters at most.`);
+  for (const rule of r.group.rules) {
+    if (rule.kind !== 'token' || !symbolOf(rule.amount) || !rule.contract.trim()) continue;
+    const [prec, code] = symbolOf(rule.amount).split(',');
+    const d = ensureDecimals(rule.contract.trim(), code);
+    if (d === 'loading') out.push(`Reading ${code}'s decimals on ${rule.contract.trim()}.`);
+    else if (d === null) out.push(`${rule.contract.trim()} has no token ${code}.`);
+    else if (d !== Number(prec)) out.push(`${code} on ${rule.contract.trim()} has ${d} decimals: write the amount with exactly ${d}.`);
+  }
+  return out;
+}
+
+/** The rule's own actions, for what is on screen. Head actions (a gate made along the way) are added by the callers. */
+function ruleActions(): { label: string; action: BuiltAction }[] {
+  const key = ruleKey();
+  if (!key) return [];
+  const r = ensureRule();
+  const actor = state.actor;
+  if (key.startsWith('drop:') && !dropSecured()) return [];
+  if (key === 'drop:new') {
+    return r.on ? [{ label: 'let in holders', action: buildSetDropRule(actor, state.newDropId || '0', r.group) }] : [];
+  }
+  if (key.startsWith('drop:')) {
+    if (r.on && (ruleChanged(r) || !r.original)) {
+      return [{ label: r.original ? 'its holder rule' : 'let in holders', action: buildSetDropRule(actor, state.editing!.id, r.group) }];
+    }
+    if (!r.on && r.original) return [{ label: 'stop letting in holders', action: buildDelDropRule(actor, state.editing!.id) }];
+    return [];
+  }
+  // A collection gate is rewritten in place only from Change: it is shared.
+  if (state.mode === 'edit' && key !== 'sec:new' && ruleChanged(r)) {
+    const id = key.slice(4);
+    const name = state.securities.find((x) => x.id === id)?.name ?? `#${id}`;
+    return [{ label: `the rule of "${name}"`, action: buildSetHolderGate(actor, state.collection.trim(), id, r.group) }];
+  }
+  return [];
+}
+
+/** A gate made in the same transaction as what points at it. */
+function newGateHead(securityId: string): { label: string; action: BuiltAction }[] {
+  if (securityId !== 'new-holders') return [];
+  return [{ label: `make the holder gate "${gateName()}"`, action: buildAddHolderGate(state.actor, state.collection.trim(), gateName(), ensureRule().group) }];
+}
+
+/** Reads, once per collection, what every gate holds and which recipes use it. */
+function ensureGates(): GatesInfo {
+  const collection = state.collection.trim();
+  const g = state.gates;
+  if (!collection || (g.for === collection && g.state !== 'idle')) return g;
+  const info: GatesInfo = { for: collection, state: 'loading', users: {}, counts: {}, rules: {}, deletable: {}, error: '' };
+  state.gates = info;
+  void (async () => {
+    try {
+      const [{ blends }, { upgrades }] = await Promise.all([
+        listBlends({ collection, includeInactive: true }),
+        listUpgrades({ collection, includeInactive: true }),
+      ]);
+      for (const b of blends) {
+        const id = String(b.security_id ?? '0');
+        if (id !== '0') (info.users[id] ??= []).push(`blend #${b.blend_id}`);
+      }
+      for (const u of upgrades) {
+        const id = String(u.security_id ?? '0');
+        if (id !== '0') (info.users[id] ??= []).push(`upgrade #${u.upgrade_id}`);
+      }
+      await Promise.all(state.securities.map(async (s) => {
+        if (s.type === 0) info.counts[s.id] = (await readCollectionListMembers(s.id)).length;
+        else {
+          const rule = await readCollectionRule(collection, s.id);
+          info.rules[s.id] = rule?.group ? describeGroup(rule.group, tplName) : rule ? 'a rule this editor does not show' : 'no rule';
+        }
+        // Nothing uses it: ask the chain whether it would delete it, as this author.
+        if (!info.users[s.id]?.length && state.actor) {
+          const sim = await simulateActions(deleteGateActions(s.id, s.type));
+          info.deletable[s.id] = sim.kind !== 'refused' ? ''
+            : /invalid variant index/.test(sim.reason)
+              ? 'secure.nefty fails to read one of this collection\'s blends while checking that nothing uses the gate, so it refuses every deletion here'
+              : `the chain refuses it: ${sim.reason}`;
+        }
+      }));
+      info.state = 'done';
+    } catch (err) {
+      info.state = 'error';
+      info.error = err instanceof Error ? err.message : String(err);
+    }
+    if (state.gates === info) rerender();
+  })();
+  return info;
+}
+
+/** The other recipes behind a gate, for the panels that change it. */
+function alsoUsedBy(securityId: string): string[] {
+  const g = ensureGates();
+  if (g.state !== 'done') return [];
+  const self = state.mode === 'edit' && state.editing ? `${state.editing.kind} #${state.editing.id}` : '';
+  return (g.users[securityId] ?? []).filter((u) => u !== self);
+}
+
+/** A list goes in one action, a holder gate in two: its rule, then the gate (holderGates.ts). */
+function deleteGateActions(id: string, type: number): BuiltAction[] {
+  const collection = state.collection.trim();
+  return type === 0 ? [buildDeleteList(state.actor, collection, id)] : buildDeleteHolderGate(state.actor, collection, id);
+}
+
+/** Deletes a gate nothing uses, once the chain has said it would. */
+async function onDeleteGate(id: string): Promise<void> {
+  const session = getCurrentSession();
+  const gate = state.securities.find((s) => s.id === id);
+  if (!session || !gate) return;
+  if ((state.gates.users[id] ?? []).length || state.gates.deletable[id] !== '') return;
+  const collection = state.collection.trim();
+  const actions = deleteGateActions(id, gate.type);
+  const summary = [
+    `DELETE the ${gate.type === 0 ? 'list' : 'holder gate'} "${gate.name}" (#${id}) on ${collection}`,
+    '',
+    'No blend or upgrade of the collection uses it. It cannot be brought back: a new one gets a new id.',
+    '',
+    ...actions.map((a) => `${a.account}::${a.name}`),
+  ].join('\n');
+  if (!(await confirmCreate(summary))) return;
+  state.busy = true; state.lastError = ''; state.lastTx = ''; state.signedTxs = [];
+  rerender();
+  try {
+    await signInTurn(session, [actions]);
+    state.securities = state.securities.filter((s) => s.id !== id);
+    state.gates = { ...state.gates, state: 'idle', for: '' };
+  } catch (err) {
+    state.lastError = err instanceof Error ? err.message : String(err);
+  }
+  state.lastTx = state.signedTxs[0] ?? '';
+  state.signing = undefined;
+  state.busy = false;
+  rerender();
 }
 
 /** The one action that is not a field edit, and cannot be undone. */
@@ -1156,7 +1984,10 @@ function toIngredient(i: LabIngredient): NewIngredient {
     case 'template':
       return { kind: 'template', template_id: i.template_id, collection_name, amount: i.amount, ...disposal };
     case 'schema':
-      return { kind: 'schema', collection_name, schema_name: i.schema_name, amount: i.amount, ...disposal };
+      return {
+        kind: 'schema', collection_name, schema_name: i.schema_name, amount: i.amount,
+        ...(i.display_data ? { display_data: i.display_data } : {}), ...disposal,
+      };
     case 'attribute':
       return {
         kind: 'attribute',
@@ -1164,6 +1995,7 @@ function toIngredient(i: LabIngredient): NewIngredient {
         schema_name: i.schema_name,
         amount: i.amount,
         attributes: [{ attribute_name: i.attribute_name, allowed_values: splitValues(i.values) }],
+        ...(i.display_data ? { display_data: i.display_data } : {}),
         ...disposal,
       };
     case 'collection':
@@ -1193,7 +2025,7 @@ function blendArgs(): CreateBlendArgs {
     end_time: toUnix(state.endTime),
     max_uses: intOr(state.maxUses),
     display_data: displayData(),
-    security_id: state.securityId || 0,
+    security_id: securityArg(),
     is_hidden: state.hidden,
     category: state.category.trim(),
     account_limit: intOr(state.accountLimit),
@@ -1234,11 +2066,19 @@ function upgradeArgs(): CreateUpgradeArgs {
     end_time: toUnix(state.endTime),
     max_uses: intOr(state.maxUses),
     display_data: displayData(),
-    security_id: state.securityId || 0,
+    security_id: securityArg(),
     is_hidden: state.hidden,
     category: state.category.trim(),
   };
 }
+
+/** The gate a new blend or upgrade is created behind: a list made with it has the id its counter gave. */
+function securityArg(): string | number {
+  return isNewGate(state.securityId) ? (state.newListId || 0) : (state.securityId || 0);
+}
+
+/** A list or a holder gate made in the same transaction: both take their id from secure.nefty's one counter. */
+const isNewGate = (id: string | undefined) => id === 'new' || id === 'new-holders';
 
 function dropArgs(): CreateDropArgs {
   const entries = state.mints.map((m) => ({ template_id: m.template_id, quantity: m.quantity }));
@@ -1344,22 +2184,7 @@ function taggedProblems(): Problem[] {
       }
     }
   } else {
-    if (state.ingredients.length === 0) at(1, 'Add at least one thing the player gives up.');
-    // The shared upgrade validator does not look at ingredients at all, so
-    // these checks have to run for both contracts rather than only blends.
-    for (const i of state.ingredients) {
-      if (i.kind === 'token') {
-        if (!/^\d+(\.\d+)? [A-Z]{1,7}$/.test(i.quantity.trim())) {
-          at(1, `"${i.quantity.trim() || 'empty'}" is not a token amount. Write it with the token's exact decimals, e.g. 10.00000000 WAX.`);
-        }
-        if (!i.to.trim()) at(1, 'A token cost with no receiving account would burn the tokens. Name an account.');
-      } else if ('amount' in i && i.amount < 1) {
-        at(1, 'An ingredient asks for fewer than one NFT.');
-      }
-      if (i.kind === 'attribute' && splitValues(i.values).length === 0) {
-        at(1, `Ingredient on ${i.attribute_name} lists no allowed value.`);
-      }
-    }
+    for (const t of ingredientProblems(state.ingredients)) at(1, t);
   }
 
   if (state.kind === 'blend') {
@@ -1396,14 +2221,10 @@ function taggedProblems(): Problem[] {
       }
     }
     for (const t of wholeRecipe(() => validateNewUpgrade(upgradeArgs()))) at(3, t);
-    // Filed under Rules like the other whole-recipe checks: it judges the
-    // assembled ingredient list against what the chain will accept, not any
-    // single field. Silent when the gate could not be read.
-    if (state.upgradeGate) {
-      const gated = upgradeGateProblem(state.upgradeGate, state.ingredients.length);
-      if (gated) at(3, gated);
-    }
   }
+
+  for (const t of listProblems(listTarget())) at(3, t);
+  for (const t of ruleProblems()) at(3, t);
 
   const start = toUnix(state.startTime);
   const end = toUnix(state.endTime);
@@ -1414,6 +2235,34 @@ function taggedProblems(): Problem[] {
     at(3, 'The end time is in the past, so this would be over before it began.');
   }
 
+  return out;
+}
+
+/**
+ * What a list of ingredients cannot be signed with, for creation and for
+ * Change alike. The shared upgrade validator does not look at ingredients
+ * at all, so these run for both contracts rather than only blends.
+ */
+function ingredientProblems(list: LabIngredient[]): string[] {
+  const out: string[] = [];
+  if (list.length === 0) out.push('Add at least one thing the player gives up.');
+  for (const i of list) {
+    if (i.kind === 'token') {
+      if (!/^\d+(\.\d+)? [A-Z]{1,7}$/.test(i.quantity.trim())) {
+        out.push(`"${i.quantity.trim() || 'empty'}" is not a token amount. Write it with the token's exact decimals, e.g. 10.00000000 WAX.`);
+      }
+      if (!i.to.trim()) out.push('A token cost with no receiving account would burn the tokens. Name an account.');
+    } else if ('amount' in i && i.amount < 1) {
+      out.push('An ingredient asks for fewer than one NFT.');
+    }
+    if (i.kind === 'attribute' && splitValues(i.values).length === 0) {
+      out.push(`Ingredient on ${i.attribute_name} lists no allowed value.`);
+    }
+  }
+  if (state.kind === 'upgrade' && state.upgradeGate) {
+    const gated = upgradeGateProblem(state.upgradeGate, gateIngredients(list));
+    if (gated) out.push(gated);
+  }
   return out;
 }
 
@@ -1451,8 +2300,19 @@ function warnings(): string[] {
     out.push('The contract applies every change in order to the same NFT, so all of them happen together. This is not a draw.');
   }
 
-  if (state.kind === 'drop' && state.authRequired) {
-    out.push('A whitelisted drop starts with an EMPTY whitelist, so nobody can claim it until you add accounts in the classic Manage panel.');
+  const listed = listTarget();
+  if (listed) {
+    const p = listPlan(listed);
+    const empty = p.add.length === 0 && (listed.fresh || (p.membersKnown && state.list.members.length === 0));
+    const holders = listed.kind === 'drop' && ensureRule().on;
+    if (empty && !holders) {
+      out.push(listed.kind === 'drop'
+        ? 'Nobody is on the drop\'s list and it lets in no holders, so nobody can claim it until that changes from Change.'
+        : `Nobody is on "${listed.name}", so nobody can use this until accounts are added from Change.`);
+    }
+    if (!listed.fresh && listed.kind === 'collection' && p.add.length) {
+      out.push(`"${listed.name}" belongs to the collection: every blend and upgrade behind it lets the added accounts in too.`);
+    }
   }
 
   if (state.kind !== 'drop') {
@@ -1494,7 +2354,27 @@ export {
   warnings as __warnings,
   plainSentence as __plainSentence,
   attributeBlock as __attributeBlock,
+  createActions as __createActions,
+  editActions as __editActions,
+  listTarget as __listTarget,
+  listPlan as __listPlan,
+  listProblems as __listProblems,
+  resolveNewIds as __resolveNewIds,
+  checkListAccounts as __checkListAccounts,
+  emptyListDraft as __emptyListDraft,
+  loadEditing as __loadEditing,
+  editProblems as __editProblems,
+  ensureRule as __ensureRule,
+  ruleProblems as __ruleProblems,
+  ensureGates as __ensureGates,
+  whoCanUseIt as __whoCanUseIt,
+  BLANK_EXISTING as __BLANK_EXISTING,
 };
+
+/** The recipe open in Change, and the baseline it is diffed against. Test-only. */
+export function __editingState(): { editing?: LabExisting; original?: LabExisting } {
+  return { editing: state.editing, original: state.editingOriginal };
+}
 
 /**
  * Simulates the wallet finishing its restore, which in the browser happens
@@ -2002,6 +2882,7 @@ function chooseRunAction(action: RecipeAction, actor: string): void {
 function chooseKind(kind: LabKind): void {
   state.kind = kind;
   state.step = 0;
+  resetListDraft();
   // Three kinds, three contracts: the answer does not carry over.
   if (state.collection) void refreshCreateAuth(state.collection);
 }
@@ -2010,6 +2891,7 @@ function chooseKind(kind: LabKind): void {
 function chooseMode(mode: LabMode): void {
   state.mode = mode;
   state.editing = undefined;
+  resetListDraft();
   if (mode === 'edit') {
     state.lastTx = ''; state.lastError = '';
     if (state.collection) void loadExisting();
@@ -2236,7 +3118,7 @@ function ingredientRow(i: LabIngredient, idx: number): string {
   if (i.kind === 'token') {
     return `
       <div class="lab-row">
-        <span class="lab-tag">Tokens</span>
+        <span class="lab-tag">${isUpgradeFee(i) ? 'Fee' : 'Tokens'}</span>
         <input class="lab-inline" id="lab-ing-qty-${idx}" type="text" data-lab="ing-qty" data-idx="${idx}"
                value="${esc(i.quantity)}" placeholder="10.00000000 WAX" autocomplete="off" />
         <span class="lab-mini-label">paid to</span>
@@ -2309,17 +3191,61 @@ function ingredientRow(i: LabIngredient, idx: number): string {
     </div>`;
 }
 
+/** The ingredient list the shared rows edit: the recipe open in Change, or the one being created. */
+function ings(): LabIngredient[] {
+  return state.mode === 'edit' && state.editing?.ingredients ? state.editing.ingredients : state.ingredients;
+}
+
+/** The ingredients as up.nefty's fee rule reads them: a token line's amount and recipient, nothing for an NFT. */
+function gateIngredients(list: LabIngredient[] = state.ingredients): GateIngredient[] {
+  return list.map((i) => (i.kind === 'token' ? { quantity: i.quantity.trim(), to: i.to.trim() } : {}));
+}
+
+/** Whether an ingredient is up.nefty's fee line, so the row and the step can say so. */
+function isUpgradeFee(i: LabIngredient): boolean {
+  const g = state.upgradeGate;
+  return state.kind === 'upgrade' && !!g?.feeRequired && i.kind === 'token'
+    && isFeeLine(g, { quantity: i.quantity.trim(), to: i.to.trim() });
+}
+
+/**
+ * up.nefty's fee, below level.3: offered in one click while it is missing,
+ * named once it is there. The NeftyBlocks site used to add this line on its
+ * own; without it the chain refuses the upgrade (upgradeGate.ts).
+ */
+function feeCallout(list: LabIngredient[]): string {
+  const g = state.upgradeGate;
+  if (state.kind !== 'upgrade' || !g?.known || !g.feeRequired) return '';
+  if (list.some(isUpgradeFee)) {
+    return `<p class="lab-note">The ${esc(g.fixedFee)} line to ${esc(g.feeRecipient)} is NeftyBlocks' fixed fee.
+      up.nefty requires it from collections below level.3 of NEFTY staking, and the player pays it on every upgrade.</p>`;
+  }
+  return `
+    <div class="lab-callout caution">
+      <strong>NeftyBlocks' fee is required.</strong>
+      ${esc(state.collection || 'This collection')} is below level.3 of NEFTY staking, so up.nefty only creates an
+      upgrade that charges its fixed fee, ${esc(g.fixedFee)} sent to ${esc(g.feeRecipient)}, on top of the upgrade's
+      own cost. The player pays it on every upgrade.
+      <div class="lab-row-actions"><button class="lab-add" data-lab="add-upgrade-fee">Add the ${esc(g.fixedFee)} fee</button></div>
+    </div>`;
+}
+
 function stepGive(): string {
   if (state.picking?.target === 'ingredient') return picker();
-  const burned = state.ingredients.filter((i) => 'sendTo' in i && !i.sendTo.trim()).length;
-  const nft = state.ingredients.filter((i) => i.kind !== 'token').length;
   return `
     <h3 class="lab-q">What does a player give up?</h3>
     <p class="lab-hint">Pick from your own collection. Nothing here has to be typed from memory.</p>
+    ${ingredientEditor(state.ingredients)}`;
+}
 
-    ${state.ingredients.length === 0
+/** The rows and buttons of what a player gives, the same for creation and for Change. */
+function ingredientEditor(list: LabIngredient[]): string {
+  const burned = list.filter((i) => 'sendTo' in i && !i.sendTo.trim()).length;
+  const nft = list.filter((i) => i.kind !== 'token').length;
+  return `
+    ${list.length === 0
       ? '<p class="lab-empty">Nothing yet. Add at least one cost below.</p>'
-      : `<div class="lab-rows">${state.ingredients.map(ingredientRow).join('')}</div>`}
+      : `<div class="lab-rows">${list.map(ingredientRow).join('')}</div>`}
 
     <div class="lab-row-actions">
       <button class="lab-add" data-lab="open-ingredient">Add a specific NFT</button>
@@ -2328,6 +3254,8 @@ function stepGive(): string {
       <button class="lab-add" data-lab="add-ing-collection">Add any NFT of the collection</button>
       <button class="lab-add" data-lab="add-ing-token">Add a token cost</button>
     </div>
+
+    ${feeCallout(list)}
 
     ${nft > 0 ? `
       <div class="lab-callout ${burned ? 'danger' : ''}">
@@ -2705,25 +3633,263 @@ function stepRules(): string {
     </div>
 
     ${isDrop ? `
-      <label class="lab-check">
-        <input type="checkbox" ${state.authRequired ? 'checked' : ''} data-lab="drop-auth" />
-        <span><strong>Whitelist required</strong>. The whitelist starts EMPTY, so nobody can claim until you add accounts in the classic Manage panel.</span>
-      </label>`
+      <div class="lab-field">
+        <label>Who can claim it</label>
+        <div class="lab-seg">
+          <button class="${state.authRequired ? '' : 'on'}" data-lab="drop-auth-off">Everyone</button>
+          <button class="${state.authRequired ? 'on' : ''}" data-lab="drop-auth-on">Only some accounts</button>
+        </div>
+        ${listPanel()}
+        ${rulePanel()}
+      </div>`
     : `
       <div class="lab-field">
         <label>Who can use it</label>
-        ${state.securities.length
-          ? `<select id="lab-security">
-               <option value=""${state.securityId ? '' : ' selected'}>Everyone, no whitelist</option>
-               ${state.securities.map((s) => `<option value="${esc(s.id)}"${s.id === state.securityId ? ' selected' : ''}>Only "${esc(s.name)}" (#${esc(s.id)})</option>`).join('')}
-             </select>`
-          : '<p class="lab-note">This collection has no whitelist, so everyone can use it. Whitelists are created in the classic Manage panel.</p>'}
+        ${gateSelect('lab-security', state.securityId)}
+        ${listPanel()}
+        ${rulePanel()}
       </div>`}
 
     <label class="lab-check">
       <input type="checkbox" ${state.hidden ? 'checked' : ''} data-lab="hidden" />
       <span><strong>Create it hidden</strong>. It exists on chain but appears in no list, so you can test it before players find it. Strongly recommended for a first one.</span>
     </label>`;
+}
+
+/** Everyone, one of the collection's gates, or a list made along with it. */
+function gateSelect(id: string, value: string): string {
+  const lists = state.securities.filter((s) => s.type === 0);
+  const proofs = state.securities.filter((s) => s.type !== 0);
+  const known = !value || isNewGate(value) || state.securities.some((s) => s.id === value);
+  const option = (v: string, label: string) =>
+    `<option value="${esc(v)}"${v === value ? ' selected' : ''}>${esc(label)}</option>`;
+  return `
+    <select id="${id}">
+      ${option('', 'Everyone')}
+      ${option('new', 'Only accounts on a new list')}
+      ${option('new-holders', 'Only holders, by a new rule')}
+      ${lists.length ? `<optgroup label="This collection's lists">
+        ${lists.map((s) => option(s.id, `Only accounts on "${s.name}" (#${s.id})`)).join('')}</optgroup>` : ''}
+      ${proofs.length ? `<optgroup label="Holder gates">
+        ${proofs.map((s) => option(s.id, `Only holders, as "${s.name}" (#${s.id}) sets`)).join('')}</optgroup>` : ''}
+      ${known ? '' : option(value, `Gate #${value}, not found on this collection`)}
+    </select>`;
+}
+
+/** The list a recipe is behind: who is on it, what to add, and in Change what to take off. */
+function listPanel(): string {
+  const t = listTarget();
+  if (!t) return '';
+  ensureListMembers(t);
+  const d = state.list;
+  const p = listPlan(t);
+  const editing = state.mode === 'edit' && !t.fresh;
+  return `
+    <div class="lab-list-panel">
+      ${t.kind === 'collection' && t.fresh ? `
+        <label class="lab-mini">Name of the new list
+          <input id="lab-list-name" type="text" value="${esc(d.newName)}" placeholder="${esc(listName())}" maxlength="64" autocomplete="off" />
+        </label>` : ''}
+      ${t.kind === 'collection' && !t.fresh ? sharedNote(t.id) : ''}
+      ${t.fresh ? '' : listMembers(p, editing)}
+      <label class="lab-mini">${t.fresh ? 'Accounts on it' : 'Add accounts'}
+        <textarea id="lab-list-add" rows="5" spellcheck="false" autocomplete="off"
+                  placeholder="One per line, or separated by commas or spaces">${esc(d.addText)}</textarea>
+      </label>
+      ${listCheckLine(p)}
+      ${t.kind === 'drop' ? `
+        <label class="lab-mini">Claim limit for the accounts added <span class="lab-note">optional</span>
+          <input id="lab-list-limit" type="number" min="0" value="${esc(d.limit)}" placeholder="the drop's own" />
+        </label>
+        <p class="lab-note">The lower of this and the drop's own per-wallet limit applies, so it can only lower it.
+          Pasting an account already on the list with a limit gives it that limit.</p>` : ''}
+      ${editing ? `
+        <label class="lab-mini">Take accounts off
+          <textarea id="lab-list-remove" rows="3" spellcheck="false" autocomplete="off"
+                    placeholder="Paste the accounts to take off">${esc(d.removeText)}</textarea>
+        </label>
+        <label class="lab-check">
+          <input type="checkbox" ${d.clear ? 'checked' : ''} data-lab="list-clear" />
+          <span><strong>Start the list over</strong>. Everyone on it now comes off, and the list becomes the accounts pasted above.</span>
+        </label>` : ''}
+      ${listCost(p)}
+    </div>`;
+}
+
+/** Which other recipes a change to a collection gate reaches. */
+function sharedNote(securityId: string): string {
+  const others = alsoUsedBy(securityId);
+  if (!others.length) return '';
+  const shown = others.slice(0, 6).join(', ') + (others.length > 6 ? ` and ${others.length - 6} more` : '');
+  return `<p class="lab-note">Shared: ${esc(shown)} use${others.length === 1 ? 's' : ''} it too, and follow every change to it.</p>`;
+}
+
+/**
+ * The holder rule on screen: made with the recipe, an existing gate's, or a
+ * drop's own. In creation an existing gate's rule is only shown; it is
+ * shared, so it is rewritten from Change.
+ */
+function rulePanel(): string {
+  const key = ruleKey();
+  if (!key) return '';
+  const isDrop = key.startsWith('drop:');
+  const secured = state.mode === 'edit' ? state.editing?.authRequired : state.authRequired;
+  if (isDrop && !secured) return '';
+  const r = ensureRule();
+  if (r.state === 'loading' || r.state === 'idle') return '<p class="lab-note">Reading its holder rule.</p>';
+  if (r.state === 'error') return `<p class="lab-warn">Its holder rule could not be read: ${esc(r.error)}</p>`;
+  const shownOnly = state.mode === 'create' && key.startsWith('sec:') && key !== 'sec:new';
+  const head = isDrop ? `
+      <label class="lab-check">
+        <input type="checkbox" ${r.on ? 'checked' : ''} data-lab="rule-on" />
+        <span><strong>Also let in holders</strong>. A claim passes for an account on its list, or for one that holds what the rule names.</span>
+      </label>
+      ${!r.on && r.original ? '<p class="lab-note">Its holder rule comes off on save.</p>' : ''}`
+    : key === 'sec:new' ? `
+      <label class="lab-mini">Name of the new holder gate
+        <input id="lab-rule-name" type="text" value="${esc(r.name)}" placeholder="${esc(gateName())}" maxlength="${MAX_GATE_NAME}" autocomplete="off" />
+      </label>`
+    : sharedNote(key.slice(4));
+  if (isDrop && !r.on) return `<div class="lab-list-panel">${head}</div>`;
+  if (r.readOnly || shownOnly) {
+    return `<div class="lab-list-panel">${head}
+      <p class="lab-note">Lets in whoever holds ${esc(r.group.rules.length ? describeGroup(r.group, tplName) : 'nothing yet')}.
+        ${r.readOnly ? `It is shown, not edited: ${esc(r.readOnly)}.` : 'Change it from Change: every recipe behind the gate follows.'}</p>
+    </div>`;
+  }
+  const rules = r.group.rules;
+  return `
+    <div class="lab-list-panel">
+      ${head}
+      ${rules.length > 1 ? `
+        <div class="lab-seg">
+          <button class="${r.group.any ? '' : 'on'}" data-lab="rule-all">All of these</button>
+          <button class="${r.group.any ? 'on' : ''}" data-lab="rule-any">Any one of these</button>
+        </div>` : ''}
+      ${rules.length
+        ? `<div class="lab-rows">${rules.map(ruleRow).join('')}</div>`
+        : '<p class="lab-empty">Nothing to hold yet. Add what lets an account in.</p>'}
+      <div class="lab-row-actions">
+        <button class="lab-add" data-lab="rule-add" data-kind="template" ${state.templates.length ? '' : 'disabled'}>Hold a template</button>
+        <button class="lab-add" data-lab="rule-add" data-kind="schema" ${state.schemas.length ? '' : 'disabled'}>Hold NFTs of a schema</button>
+        <button class="lab-add" data-lab="rule-add" data-kind="collection">Hold NFTs of a collection</button>
+        <button class="lab-add" data-lab="rule-add" data-kind="token">Hold a token</button>
+      </div>
+    </div>`;
+}
+
+function ruleRow(rule: HolderRule, i: number): string {
+  const del = `<button class="lab-x" data-lab="rule-del" data-idx="${i}" aria-label="remove"></button>`;
+  if (rule.kind === 'token') {
+    return `
+      <div class="lab-row">
+        <span class="lab-tag">Token</span>
+        <select class="lab-inline" data-lab="rule-token-op" data-idx="${i}" aria-label="comparison">
+          ${TOKEN_OPS.map((o) => `<option value="${o.op}"${o.op === rule.op ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}
+        </select>
+        <input class="lab-inline" id="lab-rule-qty-${i}" type="text" data-lab="rule-qty" data-idx="${i}"
+               value="${esc(rule.amount)}" placeholder="10.00000000 WAX" autocomplete="off" />
+        <span class="lab-mini-label">on</span>
+        <input class="lab-inline" id="lab-rule-contract-${i}" type="text" data-lab="rule-contract" data-idx="${i}"
+               value="${esc(rule.contract)}" placeholder="eosio.token" autocomplete="off" />
+        ${del}
+      </div>`;
+  }
+  const own = rule.collection === state.collection.trim();
+  const what = rule.kind === 'template'
+    ? own
+      ? `<select class="lab-inline" data-lab="rule-template" data-idx="${i}" aria-label="template">
+           ${state.templates.some((t) => t.template_id === rule.template_id) ? '' : `<option value="${rule.template_id}" selected>template #${rule.template_id}</option>`}
+           ${state.templates.map((t) => `<option value="${t.template_id}"${t.template_id === rule.template_id ? ' selected' : ''}>${esc(t.name)} (#${t.template_id})</option>`).join('')}
+         </select>`
+      : `<span class="lab-row-main"><strong>template #${rule.template_id}</strong><span class="lab-tpl-meta">${esc(rule.collection)}</span></span>`
+    : rule.kind === 'schema'
+      ? own
+        ? `<span class="lab-mini-label">NFTs of</span>
+           <select class="lab-inline" data-lab="rule-schema" data-idx="${i}" aria-label="schema">
+             ${state.schemas.some((x) => x.schema_name === rule.schema_name) ? '' : `<option selected>${esc(rule.schema_name)}</option>`}
+             ${state.schemas.map((x) => `<option${x.schema_name === rule.schema_name ? ' selected' : ''}>${esc(x.schema_name)}</option>`).join('')}
+           </select>`
+        : `<span class="lab-row-main"><strong>NFTs of ${esc(rule.schema_name)}</strong><span class="lab-tpl-meta">${esc(rule.collection)}</span></span>`
+      : `<span class="lab-mini-label">NFTs of</span>
+         <input class="lab-inline" id="lab-rule-coll-${i}" type="text" data-lab="rule-collection" data-idx="${i}"
+                value="${esc(rule.collection)}" placeholder="collection name" autocomplete="off" />`;
+  return `
+    <div class="lab-row">
+      <span class="lab-tag">${rule.kind === 'template' ? 'Template' : rule.kind === 'schema' ? 'Schema' : 'Collection'}</span>
+      <select class="lab-inline" data-lab="rule-more" data-idx="${i}" aria-label="comparison">
+        <option value="3"${rule.more ? '' : ' selected'}>at least</option>
+        <option value="2"${rule.more ? ' selected' : ''}>more than</option>
+      </select>
+      <input class="lab-inline lab-rule-n" id="lab-rule-n-${i}" type="number" min="1" data-lab="rule-n" data-idx="${i}"
+             value="${rule.amount}" aria-label="how many" />
+      ${what}
+      ${del}
+    </div>`;
+}
+
+function listMembers(p: ListPlan, editing: boolean): string {
+  const d = state.list;
+  if (d.membersState === 'error') {
+    return `<p class="lab-warn">Could not read who is on it: ${esc(d.checkError)} <button class="lab-link" data-lab="list-reload">Try again</button></p>`;
+  }
+  if (d.membersState !== 'done') return '<p class="lab-note">Reading who is on it.</p>';
+  if (!d.members.length) return '<p class="lab-note">Nobody is on it yet.</p>';
+  const q = d.memberQuery.trim().toLowerCase();
+  const found = q ? d.members.filter((m) => m.includes(q)) : d.members;
+  const shown = found.slice(0, 120);
+  const off = new Set(p.clear ? d.members : p.remove);
+  return `
+    <div class="lab-members">
+      <div class="lab-members-head">
+        <strong>${d.members.length} on it now</strong>
+        ${d.members.length > 12 ? `<input id="lab-list-q" type="text" value="${esc(d.memberQuery)}" placeholder="Find an account" autocomplete="off" />` : ''}
+      </div>
+      <div class="lab-member-grid">
+        ${shown.map((m) => editing
+          ? `<button class="lab-member${off.has(m) ? ' off' : ''}" data-lab="list-toggle" data-account="${esc(m)}"
+                     aria-pressed="${off.has(m)}" aria-label="${esc(off.has(m) ? `Keep ${m} on the list` : `Take ${m} off the list`)}">${esc(m)}${d.limits[m] ? ` · ${d.limits[m]}` : ''}</button>`
+          : `<span class="lab-member">${esc(m)}${d.limits[m] ? ` · ${d.limits[m]}` : ''}</span>`).join('')}
+      </div>
+      ${found.length > shown.length ? `<p class="lab-note">And ${found.length - shown.length} more. Type to find one.</p>` : ''}
+      ${q && !found.length ? '<p class="lab-note">Nobody on it matches.</p>' : ''}
+      ${editing ? '<p class="lab-note">Click an account to take it off, and again to keep it.</p>' : ''}
+    </div>`;
+}
+
+/** What the paste turned out to be, once looked up. */
+function listCheckLine(p: ListPlan): string {
+  const d = state.list;
+  if (!d.addText.trim()) return '';
+  if (d.checkState === 'loading') {
+    const total = parseAccountList(d.addText).accounts.length;
+    return `<p class="lab-note">Looking the accounts up on chain: ${d.checkDone} of ${total}.</p>`;
+  }
+  if (p.checking) {
+    return '<p class="lab-note">Looked up when you leave the box. <button class="lab-link" data-lab="list-check">Check them now</button></p>';
+  }
+  const bits: string[] = [];
+  if (p.add.length) bits.push(`${p.add.length} to add`);
+  if (p.already.length) bits.push(`${p.already.length} already on it`);
+  if (p.repeated) bits.push(`${p.repeated} typed twice, counted once`);
+  const bad = p.invalid.length + p.missing.length;
+  if (bad) bits.push(`${bad} cannot be added`);
+  return `<p class="${bad ? 'lab-warn' : 'lab-ok'}">${esc(bits.join(' · ') || 'Nothing new to add')}
+    ${bad ? '<button class="lab-link" data-lab="list-drop-bad">Leave them out</button>' : ''}</p>`;
+}
+
+function listCost(p: ListPlan): string {
+  const moved = p.add.length + p.remove.length;
+  if (!moved && !p.clear) return '';
+  const parts: string[] = [];
+  if (p.add.length) {
+    const kb = Math.max(1, Math.round((p.add.length * RAM_BYTES_PER_ACCOUNT) / 1024));
+    parts.push(`Adding ${p.add.length} takes about ${kb} KB of RAM, paid by the signing account.`);
+  }
+  if (p.remove.length || p.clear) parts.push('Taking accounts off gives their RAM back.');
+  const txs = Math.ceil(moved / ACCOUNTS_PER_TRANSACTION);
+  if (txs > 1) parts.push(`That is ${txs} transactions, signed one after the other.`);
+  return `<p class="lab-note">${esc(parts.join(' '))}</p>`;
 }
 
 // ─── step 5: review and sign ────────────────────────────────────────────
@@ -2764,6 +3930,7 @@ function reviewRows(): string {
   }
   rows.push(['Window', `${state.startTime ? new Date(state.startTime).toLocaleString() : 'now'} to ${state.endTime ? new Date(state.endTime).toLocaleString() : 'never'}`]);
   rows.push(['Visibility', state.hidden ? 'hidden, safe to test' : 'visible immediately']);
+  rows.push([state.kind === 'drop' ? 'Who can claim' : 'Who can use it', whoCanUseIt()]);
 
   return `<div class="lab-review">${rows.map(([k, v]) => `<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</div>`;
 }
@@ -2791,13 +3958,13 @@ function stepReview(): string {
     <div class="lab-nav-actions">
       <button class="lab-ghost" data-lab="simulate" ${errs.length || state.busy ? 'disabled' : ''}>Simulate, no signature</button>
       <button class="lab-primary" data-lab="submit" ${errs.length || state.busy ? 'disabled' : ''}>
-        ${state.busy ? 'Waiting for your wallet' : 'Sign and create'}
+        ${state.busy ? signingLabel() : 'Sign and create'}
       </button>
     </div>
 
     ${state.dryRun ? `<h4 class="lab-sub">What your wallet would be asked to sign</h4><pre class="lab-pre">${esc(state.dryRun)}</pre>` : ''}
     ${state.lastError ? `<p class="lab-warn">${esc(state.lastError)}</p>` : ''}
-    ${state.lastTx ? `<p class="lab-ok">Created. ${txLink(state.lastTx)}</p>` : ''}`;
+    ${state.lastTx ? `<p class="lab-ok">Created. ${txLinks()}</p>` : ''}`;
 }
 
 // ─── edit mode: the screen ──────────────────────────────────────────────
@@ -2849,15 +4016,76 @@ function editPicker(): string {
                      </span>
                      <button class="lab-add" data-lab="edit-pick" data-idx="${i}">Change this one</button>
                    </div>`).join('')}
-               </div>`}`;
+               </div>`}
+
+    ${state.collection && state.dataState === 'done' ? gatesSection() : ''}`;
+}
+
+/**
+ * The collection's gates, lists and holder rules alike: what each holds,
+ * which recipes use it, and a delete for the ones nothing uses. Nothing on
+ * chain stops a holder gate in use from being deleted, so the button only
+ * exists once every recipe of the collection has been read.
+ */
+function gatesSection(): string {
+  if (!state.securities.length) return '';
+  const g = ensureGates();
+  const rows = state.securities.map((s) => {
+    const users = g.users[s.id] ?? [];
+    const what = s.type === 0
+      ? `list · ${g.counts[s.id] ?? '…'} account${g.counts[s.id] === 1 ? '' : 's'}`
+      : `holders · ${g.rules[s.id] ?? '…'}`;
+    const used = g.state !== 'done' ? 'reading which recipes use it'
+      : users.length ? `used by ${users.slice(0, 5).join(', ')}${users.length > 5 ? ` and ${users.length - 5} more` : ''}`
+        : 'used by nothing';
+    return `
+      <div class="lab-row">
+        <span class="lab-tag">#${esc(s.id)}</span>
+        <span class="lab-row-main">
+          <strong>${esc(s.name)}</strong>
+          <span class="lab-tpl-meta">${esc(what)}</span>
+          <span class="lab-tpl-meta">${esc(used)}</span>
+        </span>
+        ${g.state === 'done' && !users.length && g.deletable[s.id] === ''
+          ? `<button class="lab-ghost lab-danger" data-lab="gate-delete" data-id="${esc(s.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>`
+          : ''}
+      </div>
+      ${g.state === 'done' && !users.length && g.deletable[s.id] ? `<p class="lab-note">Cannot be deleted: ${esc(g.deletable[s.id])}.</p>` : ''}`;
+  }).join('');
+  return `
+    <h4 class="lab-sub">Who can use this collection's recipes</h4>
+    <p class="lab-hint">Its lists and holder gates. One gate can sit behind many blends and upgrades, and a change to it reaches all of them.</p>
+    ${g.state === 'error' ? `<p class="lab-warn">Could not read them all: ${esc(g.error)} <button class="lab-link" data-lab="gates-reload">Try again</button></p>` : ''}
+    <div class="lab-rows">${rows}</div>
+    ${state.lastError && !state.editing ? `<p class="lab-warn">${esc(state.lastError)}</p>` : ''}
+    ${state.lastTx && !state.editing ? `<p class="lab-ok">Deleted. ${txLinks()}</p>` : ''}`;
+}
+
+/** What keeps a save from being signed: the list being written, and ingredients that were changed. */
+function editProblems(): string[] {
+  const e = state.editing;
+  if (!e) return [];
+  const touched = e.ingredients && ingredientsChanged(e.ingredientsRaw, e.ingredients.map(toIngredient));
+  return [...listProblems(listTarget()), ...ruleProblems(), ...(touched ? ingredientProblems(e.ingredients!) : [])];
 }
 
 function editForm(): string {
   const e = state.editing!;
+  if (state.picking?.target === 'ingredient') return picker();
+  const title = `<h3 class="lab-q">${esc(e.name || `${e.kind} #${e.id}`)} <span class="lab-tag">#${esc(e.id)}</span></h3>`;
+  // The list rows know too little to edit from; the form waits for the recipe's own row.
+  if (!e.loaded) {
+    return `${title}
+      ${state.lastError
+        ? `<p class="lab-warn">${esc(state.lastError)}</p>`
+        : '<p class="lab-hint">Reading it from the chain, so every field starts from what it holds.</p>'}
+      <div class="lab-nav-actions"><button class="lab-ghost" data-lab="edit-back">Back to the list</button></div>`;
+  }
   const changes = editActions();
+  const blocked = editProblems();
   const isDrop = e.kind === 'drop';
   return `
-    <h3 class="lab-q">${esc(e.name)} <span class="lab-tag">#${esc(e.id)}</span></h3>
+    ${title}
     <p class="lab-hint">
       Each change below is a separate action the contract has to accept, so only what you
       actually touch gets signed. What is missing from this list is missing because no
@@ -2920,13 +4148,32 @@ function editForm(): string {
 
     ${isDrop ? '' : `
       <div class="lab-field">
+        <label>What players give</label>
+        ${e.ingredients
+          ? `${ingredientEditor(e.ingredients)}
+             <p class="lab-note">Saving a change here replaces the whole list
+               (<code>${e.kind === 'blend' ? 'setblendmix' : 'setupgrdmix'}</code>); untouched, it is not sent.</p>`
+          : `<p class="lab-note">Not editable here: ${esc(e.ingredientsWhy)}. Saving anything else leaves them exactly as they are.</p>`}
+      </div>`}
+
+    ${isDrop ? `
+      <div class="lab-field">
+        <label>Who can claim it</label>
+        <div class="lab-seg">
+          <button class="${e.authRequired ? '' : 'on'}" data-lab="edit-auth-off">Everyone</button>
+          <button class="${e.authRequired ? 'on' : ''}" data-lab="edit-auth-on">Only some accounts</button>
+        </div>
+        ${!e.authRequired && state.editingOriginal?.authRequired
+          ? '<p class="lab-note">The accounts stay on its list, ready for when it is turned back on.</p>'
+          : ''}
+        ${listPanel()}
+        ${rulePanel()}
+      </div>` : `
+      <div class="lab-field">
         <label>Who can use it</label>
-        ${state.securities.length
-          ? `<select id="lab-edit-security">
-               <option value=""${e.securityId ? '' : ' selected'}>Everyone, no whitelist</option>
-               ${state.securities.map((x) => `<option value="${esc(x.id)}"${x.id === e.securityId ? ' selected' : ''}>Only "${esc(x.name)}" (#${esc(x.id)})</option>`).join('')}
-             </select>`
-          : '<p class="lab-note">This collection has no whitelist.</p>'}
+        ${gateSelect('lab-edit-security', e.securityId)}
+        ${listPanel()}
+        ${rulePanel()}
       </div>`}
 
     <label class="lab-check">
@@ -2937,9 +4184,9 @@ function editForm(): string {
     <div class="lab-callout">
       <strong>What cannot be changed here.</strong>
       ${e.kind === 'blend'
-        ? 'A blend\'s outcomes: <code>setrolls</code> takes no authorized_account, so no author can sign it. Its ingredients are editable, from the Manage panel on the main page.'
+        ? 'A blend\'s outcomes: <code>setrolls</code> takes no authorized_account, so no author can sign it.'
         : e.kind === 'upgrade'
-          ? 'An upgrade\'s attribute rewrites: the ABI has no action for them. Its ingredients are editable through <code>setupgrdmix</code>, not yet wired here.'
+          ? 'An upgrade\'s attribute rewrites: the ABI has no action for them.'
           : 'Which templates a drop mints: <code>createdrop</code> fixes them and no action changes them afterwards.'}
       Changing those means deleting this one and creating a new one.
     </div>
@@ -2948,14 +4195,17 @@ function editForm(): string {
       ? `<div class="lab-callout ok"><strong>${changes.length} change(s) to sign:</strong>
            <ul class="lab-list">${changes.map((c) => `<li>${esc(c.label)} <code>${esc(c.action.account)}::${esc(c.action.name)}</code></li>`).join('')}</ul></div>`
       : '<div class="lab-callout">Nothing changed yet.</div>'}
+    ${blocked.length
+      ? `<div class="lab-callout danger"><strong>Not yet</strong><ul class="lab-list">${blocked.map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`
+      : ''}
 
     ${state.lastError ? `<p class="lab-warn">${esc(state.lastError)}</p>` : ''}
-    ${state.lastTx ? `<p class="lab-ok">Signed. ${txLink(state.lastTx)}</p>` : ''}
+    ${state.lastTx ? `<p class="lab-ok">Signed. ${txLinks()}</p>` : ''}
 
     <div class="lab-nav-actions">
       <button class="lab-ghost" data-lab="edit-back">Back to the list</button>
-      <button class="lab-primary" data-lab="edit-save" ${changes.length === 0 || state.busy ? 'disabled' : ''}>
-        ${state.busy ? 'Waiting for your wallet' : `Sign ${changes.length || ''} change(s)`}
+      <button class="lab-primary" data-lab="edit-save" ${changes.length === 0 || blocked.length || state.busy ? 'disabled' : ''}>
+        ${state.busy ? signingLabel() : `Sign ${changes.length || ''} change(s)`}
       </button>
       <button class="lab-ghost lab-danger" data-lab="edit-delete" ${state.busy ? 'disabled' : ''}>Delete it</button>
     </div>`;
@@ -5889,10 +7139,19 @@ async function onSimulate() {
   state.lastError = '';
   rerender();
   try {
-    const results = await dryRunActions([builtAction()]);
-    state.dryRun = results
-      .map((r) => (r.error ? `${r.action}\n  REJECTED: ${r.error}` : `${r.action}\n  ${r.bin}`))
-      .join('\n\n');
+    await resolveNewIds();
+    const txs = packTransactions(createActions());
+    const results = await dryRunActions(txs.flat());
+    // Only the first can be asked about: the ones after it add to a list it makes.
+    const sim = await simulateActions(txs[0]);
+    const verdict = sim.kind === 'accepted' ? 'The chain would accept it.'
+      : sim.kind === 'refused' ? `The chain would refuse it: ${sim.reason}`
+        : sim.kind === 'resources' ? `The chain would take it once your wallet covers the CPU or NET: ${sim.reason}`
+          : `The chain could not be asked: ${sim.reason}`;
+    state.dryRun = [
+      txs.length > 1 ? `${verdict} (transaction 1 of ${txs.length})` : verdict,
+      ...results.map((r) => (r.error ? `${r.action}\n  REJECTED: ${r.error}` : `${r.action}\n  ${r.bin}`)),
+    ].join('\n\n');
   } catch (err) {
     state.lastError = err instanceof Error ? err.message : String(err);
   }
@@ -5904,10 +7163,15 @@ async function onSubmit() {
   const session = getCurrentSession();
   if (!session) { state.lastError = 'Connect a wallet first.'; rerender(); return; }
 
+  const accounts = listTarget() ? listPlan(listTarget()!).add.length : 0;
   const summary = [
     `${state.kind.toUpperCase()} on ${state.collection}`,
     '',
     plainSentence(),
+    `${state.kind === 'drop' ? 'Who can claim' : 'Who can use it'}: ${whoCanUseIt()}`,
+    ...(accounts > ACCOUNTS_PER_TRANSACTION
+      ? [`The list is ${Math.ceil(accounts / ACCOUNTS_PER_TRANSACTION)} transactions, signed one after the other.`]
+      : []),
     '',
     ...warnings().map((w) => `! ${w}`),
   ].join('\n');
@@ -5916,30 +7180,28 @@ async function onSubmit() {
   state.busy = true;
   state.lastError = '';
   state.lastTx = '';
+  state.signedTxs = [];
   rerender();
   try {
-    let result;
-    if (state.kind === 'blend') {
-      const { authorized_account: _drop, ...rest } = blendArgs();
-      result = await executeCreateBlend(session, rest);
-    } else if (state.kind === 'upgrade') {
-      const { authorized_account: _drop, ...rest } = upgradeArgs();
-      result = await executeCreateUpgrade(session, rest);
-    } else {
-      result = await executeAdminAction(session, buildCreateDrop(dropArgs()));
-    }
-    state.lastTx =
-      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
-      String(result.resolved?.transaction.id ?? '');
-    // The app caches each contract's list. Something was just added to one
-    // of them, so drop the cache rather than send the author back to a
-    // page that does not show what they just made.
+    await resolveNewIds();
+    await signInTurn(session, packTransactions(createActions()));
+    resetListDraft();
+    state.rule = emptyRuleDraft('');
+  } catch (err) {
+    state.lastError = err instanceof Error ? err.message : String(err);
+    // The recipe and the start of its list are in the first transaction.
+    if (state.signedTxs.length) state.lastError += ' It exists: the rest of the list can be added from Change.';
+  }
+  state.lastTx = state.signedTxs[0] ?? '';
+  // The app caches each contract's list. Something was just added to one
+  // of them, so drop the cache rather than send the author back to a
+  // page that does not show what they just made.
+  if (state.lastTx) {
     if (state.kind === 'blend') clearDiscoverCache();
     else if (state.kind === 'upgrade') clearUpgradesCache();
     else clearDropsCache();
-  } catch (err) {
-    state.lastError = err instanceof Error ? err.message : String(err);
   }
+  state.signing = undefined;
   state.busy = false;
   rerender();
 }
@@ -5964,21 +7226,44 @@ async function onSaveEdits() {
   ].join('\n');
   if (!(await confirmCreate(summary))) return;
 
-  state.busy = true; state.lastError = ''; state.lastTx = '';
+  state.busy = true; state.lastError = ''; state.lastTx = ''; state.signedTxs = [];
   rerender();
+  let complete = false;
   try {
-    const result = await session.transact({ actions: changes.map((c) => c.action) });
-    state.lastTx =
-      (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
-      String(result.resolved?.transaction.id ?? '');
-    // What was just signed is now the baseline, so the diff empties out.
-    state.editingOriginal = { ...state.editing! };
-    if (state.kind === 'blend') clearDiscoverCache();
-    else if (state.kind === 'upgrade') clearUpgradesCache();
-    else clearDropsCache();
+    await resolveNewIds();
+    await signInTurn(session, packTransactions(editActions().map((c) => c.action)));
+    complete = true;
   } catch (err) {
     state.lastError = err instanceof Error ? err.message : String(err);
   }
+  // Every field change rides in the first transaction, so once it landed
+  // they are the baseline, whether or not the rest of a long list followed.
+  if (state.signedTxs.length) {
+    const e = state.editing!;
+    if (e.securityId === 'new') {
+      state.securities = [...state.securities, { id: state.newListId, name: listName(), type: 0 }];
+      e.securityId = state.newListId;
+    }
+    if (e.securityId === 'new-holders') {
+      state.securities = [...state.securities, { id: state.newListId, name: gateName(), type: 1 }];
+      e.securityId = state.newListId;
+    }
+    state.rule = emptyRuleDraft('');
+    state.gates = { ...state.gates, state: 'idle', for: '' };
+    settleEditing(e, state.editingOriginal!);
+    state.editingOriginal = copyRecipe(e);
+    if (complete) resetListDraft();
+    // Not complete: keep the paste and read the list again, so what landed
+    // counts as already on it and a second save sends only the rest.
+    else state.list.membersState = 'idle';
+  }
+  state.lastTx = state.signedTxs[0] ?? '';
+  if (state.lastTx) {
+    if (state.kind === 'blend') clearDiscoverCache();
+    else if (state.kind === 'upgrade') clearUpgradesCache();
+    else clearDropsCache();
+  }
+  state.signing = undefined;
   state.busy = false;
   rerender();
 }
@@ -6111,15 +7396,19 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     // are stable so focus would survive either way, but not repainting
     // keeps the caret exactly where the user left it.
     const textField: Record<string, (v: string, i: number) => void> = {
-      'ing-to':        (v, i) => { const g = state.ingredients[i]; if ('sendTo' in g) g.sendTo = v; },
-      'ing-qty':       (v, i) => { const g = state.ingredients[i]; if (g.kind === 'token') g.quantity = v; },
-      'ing-payto':     (v, i) => { const g = state.ingredients[i]; if (g.kind === 'token') g.to = v; },
-      'ing-values':    (v, i) => { const g = state.ingredients[i]; if (g.kind === 'attribute') g.values = v; },
+      'ing-to':        (v, i) => { const g = ings()[i]; if ('sendTo' in g) g.sendTo = v; },
+      'ing-qty':       (v, i) => { const g = ings()[i]; if (g.kind === 'token') g.quantity = v; },
+      'ing-payto':     (v, i) => { const g = ings()[i]; if (g.kind === 'token') g.to = v; },
+      'ing-values':    (v, i) => { const g = ings()[i]; if (g.kind === 'attribute') g.values = v; },
       'out-qty':       (v, i) => { const o = state.outcomes[i]; if (o.kind === 'token') o.quantity = v; },
       'out-contract':  (v, i) => { const o = state.outcomes[i]; if (o.kind === 'token') o.contract = v; },
       'out-pool':      (v, i) => { const o = state.outcomes[i]; if (o.kind === 'pool') o.pool_name = v; },
       'req-values':    (v, i) => { const r = state.requirements[i]; if (r.kind === 'attribute') r.values = v; },
       'mut-value':     (v, i) => { state.mutations[i].value = v; },
+      'rule-qty':      (v, i) => { const r = state.rule.group.rules[i]; if (r?.kind === 'token') r.amount = v.trim(); },
+      'rule-contract': (v, i) => { const r = state.rule.group.rules[i]; if (r?.kind === 'token') r.contract = v.trim().toLowerCase(); },
+      'rule-collection': (v, i) => { const r = state.rule.group.rules[i]; if (r?.kind === 'collection') r.collection = v.trim().toLowerCase(); },
+      'rule-n':        (v, i) => { const r = state.rule.group.rules[i]; if (r && r.kind !== 'token') r.amount = Math.max(0, Math.floor(Number(v) || 0)); },
     };
     if (textField[kind]) {
       el.addEventListener('input', () => textField[kind]((el as HTMLInputElement).value, idx(el)));
@@ -6152,16 +7441,31 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
       return;
     }
 
+    // The holder rule's own selects.
+    if (kind === 'rule-more' || kind === 'rule-token-op' || kind === 'rule-template' || kind === 'rule-schema') {
+      el.addEventListener('change', () => {
+        const v = (el as HTMLSelectElement).value;
+        const r = state.rule.group.rules[idx(el)];
+        if (!r) return;
+        if (kind === 'rule-more' && r.kind !== 'token') r.more = v === '2';
+        if (kind === 'rule-token-op' && r.kind === 'token') r.op = Number(v);
+        if (kind === 'rule-template' && r.kind === 'template') r.template_id = Number(v);
+        if (kind === 'rule-schema' && r.kind === 'schema') r.schema_name = v;
+        render();
+      });
+      return;
+    }
+
     if (kind === 'ing-schema' || kind === 'ing-attr' || kind === 'req-attr' || kind === 'mut-attr') {
       el.addEventListener('change', () => {
         const v = (el as HTMLSelectElement).value;
         const i = idx(el);
         if (kind === 'ing-schema') {
-          const g = state.ingredients[i];
+          const g = ings()[i];
           if (g.kind === 'schema' || g.kind === 'attribute') g.schema_name = v;
           if (g.kind === 'attribute') g.attribute_name = schema(v)?.format[0]?.name ?? '';
         } else if (kind === 'ing-attr') {
-          const g = state.ingredients[i];
+          const g = ings()[i];
           if (g.kind === 'attribute') g.attribute_name = v;
         } else if (kind === 'req-attr') {
           const r = state.requirements[i];
@@ -6186,8 +7490,9 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     const checkbox: Record<string, (v: boolean) => void> = {
       hidden:            (v) => { state.hidden = v; },
       'edit-hidden':     (v) => { if (state.editing) state.editing.hidden = v; },
-      'drop-auth':       (v) => { state.authRequired = v; },
       'drop-unlimited':  (v) => { state.unlimited = v; },
+      'list-clear':      (v) => { state.list.clear = v; },
+      'rule-on':         (v) => { const r = ensureRule(); r.on = v; if (v && !r.group.rules.length) r.group.rules.push(newRule('template')); },
     };
     if (checkbox[kind]) {
       el.addEventListener('change', () => { checkbox[kind]((el as HTMLInputElement).checked); render(); });
@@ -6228,7 +7533,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'pick-template': {
           const id = Number(el.dataset.id);
           const target = state.picking?.target;
-          if (target === 'ingredient') state.ingredients.push({ kind: 'template', template_id: id, amount: 1, sendTo: '' });
+          if (target === 'ingredient') ings().push({ kind: 'template', template_id: id, amount: 1, sendTo: '' });
           if (target === 'outcome')    state.outcomes.push({ kind: 'nft', template_id: id, weight: 1 });
           if (target === 'mint')       state.mints.push({ template_id: id, quantity: 1 });
           if (target === 'requirement') state.requirements.push({ kind: 'template', template_id: id });
@@ -6236,15 +7541,18 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           break;
         }
 
-        case 'add-ing-schema':     state.ingredients.push(newIngredient('schema')); break;
-        case 'add-ing-attribute':  state.ingredients.push(newIngredient('attribute')); break;
-        case 'add-ing-collection': state.ingredients.push(newIngredient('collection')); break;
-        case 'add-ing-token':      state.ingredients.push(newIngredient('token')); break;
-        case 'ing-plus':  { const g = state.ingredients[i]; if ('amount' in g) g.amount += 1; break; }
-        case 'ing-minus': { const g = state.ingredients[i]; if ('amount' in g) g.amount = Math.max(1, g.amount - 1); break; }
-        case 'ing-burn':  { const g = state.ingredients[i]; if ('sendTo' in g) g.sendTo = ''; break; }
-        case 'ing-keep':  { const g = state.ingredients[i]; if ('sendTo' in g && !g.sendTo) g.sendTo = state.actor; break; }
-        case 'ing-del':   state.ingredients.splice(i, 1); break;
+        case 'add-ing-schema':     ings().push(newIngredient('schema')); break;
+        case 'add-ing-attribute':  ings().push(newIngredient('attribute')); break;
+        case 'add-ing-collection': ings().push(newIngredient('collection')); break;
+        case 'add-ing-token':      ings().push(newIngredient('token')); break;
+        case 'add-upgrade-fee':
+          if (state.upgradeGate) ings().push({ kind: 'token', ...feeLine(state.upgradeGate) });
+          break;
+        case 'ing-plus':  { const g = ings()[i]; if ('amount' in g) g.amount += 1; break; }
+        case 'ing-minus': { const g = ings()[i]; if ('amount' in g) g.amount = Math.max(1, g.amount - 1); break; }
+        case 'ing-burn':  { const g = ings()[i]; if ('sendTo' in g) g.sendTo = ''; break; }
+        case 'ing-keep':  { const g = ings()[i]; if ('sendTo' in g && !g.sendTo) g.sendTo = state.actor; break; }
+        case 'ing-del':   ings().splice(i, 1); break;
 
         case 'add-out-token':   state.outcomes.push({ kind: 'token', quantity: '', contract: 'eosio.token', weight: 1 }); break;
         case 'add-out-pool':    state.outcomes.push({ kind: 'pool', pool_name: '', weight: 1 }); break;
@@ -6664,6 +7972,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'edit-kind':
           state.kind = el.dataset.kind as LabKind;
           state.editing = undefined;
+          resetListDraft();
           if (state.kind === 'drop') void loadDropTokens();
           void loadExisting();
           break;
@@ -6673,12 +7982,17 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           if (picked) {
             state.editing = { ...picked };
             state.editingOriginal = { ...picked };
-            state.lastTx = ''; state.lastError = '';
+            state.lastTx = ''; state.lastError = ''; state.signedTxs = [];
+            resetListDraft();
+            void loadEditing(picked);
             if (picked.kind === 'drop') void loadDropTokens();
           }
           break;
         }
-        case 'edit-back': state.editing = undefined; state.lastTx = ''; state.lastError = ''; break;
+        case 'edit-back':
+          state.editing = undefined; state.lastTx = ''; state.lastError = ''; state.signedTxs = [];
+          resetListDraft();
+          break;
         case 'edit-hidden': break; // handled as a checkbox below
         case 'edit-free': if (state.editing) state.editing.free = true; break;
         case 'edit-paid': if (state.editing) { state.editing.free = false; void loadDropTokens(); } break;
@@ -6688,6 +8002,35 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           break;
         case 'edit-save':   void onSaveEdits(); return;
         case 'edit-delete': void onDeleteEntity(); return;
+
+        case 'drop-auth-on':  state.authRequired = true; break;
+        case 'drop-auth-off': state.authRequired = false; break;
+        case 'edit-auth-on':  if (state.editing) state.editing.authRequired = true; break;
+        case 'edit-auth-off': if (state.editing) state.editing.authRequired = false; break;
+        case 'list-toggle': {
+          const account = el.dataset.account ?? '';
+          const d = state.list;
+          d.removing = d.removing.includes(account) ? d.removing.filter((a) => a !== account) : [...d.removing, account];
+          break;
+        }
+        case 'list-check': void checkListAccounts(); return;
+        case 'rule-add': state.rule.group.rules.push(newRule((el.dataset.kind ?? 'template') as HolderRule['kind'])); break;
+        case 'rule-del': state.rule.group.rules.splice(i, 1); break;
+        case 'rule-all': state.rule.group.any = false; break;
+        case 'rule-any': state.rule.group.any = true; break;
+        case 'gate-delete': void onDeleteGate(el.dataset.id ?? ''); return;
+        case 'gates-reload': state.gates = { ...state.gates, state: 'idle', for: '' }; break;
+        case 'list-reload': state.list.membersState = 'idle'; break;
+        case 'list-drop-bad': {
+          // Keeps what can go on the list, as the account names it will be.
+          const d = state.list;
+          const { accounts } = parseAccountList(d.addText);
+          d.addText = accounts.filter((a) => !d.missing.includes(a)).join('\n');
+          d.checkedText = d.addText;
+          d.missing = [];
+          d.checkState = 'done';
+          break;
+        }
 
         case 'simulate': void onSimulate(); return;
         case 'submit':   void onSubmit(); return;
@@ -6738,6 +8081,9 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     state.collection = v.trim();
     state.schemas = []; state.templates = []; state.securities = [];
     state.schemaName = ''; state.dataState = 'idle';
+    // A gate belongs to one collection: another collection's id would be refused.
+    state.securityId = '';
+    resetListDraft();
     if (state.collection) void loadCollectionData();
     if (state.mode === 'edit' && state.collection) void loadExisting();
   };
@@ -6763,7 +8109,16 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   bind('lab-max-uses', (v) => { state.maxUses = v; });
   bind('lab-account-limit', (v) => { state.accountLimit = v; });
   bind('lab-cooldown', (v) => { state.cooldown = v; });
-  bind('lab-security', (v) => { state.securityId = v; });
+  bind('lab-security', (v) => { state.securityId = v; resetListDraft(); });
+  bind('lab-list-name', (v) => { state.list.newName = v; });
+  bind('lab-list-add', (v) => { state.list.addText = v; });
+  bind('lab-list-remove', (v) => { state.list.removeText = v; });
+  bind('lab-list-q', (v) => { state.list.memberQuery = v; }, 'live');
+  bind('lab-list-limit', (v) => { state.list.limit = v; });
+  bind('lab-rule-name', (v) => { state.rule.name = v; });
+  // Looked up once the box is left: per keystroke, every half-typed name
+  // would be its own round trip.
+  root.querySelector('#lab-list-add')?.addEventListener('change', () => { void checkListAccounts(); });
   bind('lab-price-amount', (v) => { state.priceAmount = v; });
   bind('lab-price-token', (v) => { state.priceToken = v; });
   bind('lab-price-recipient', (v) => { state.priceRecipient = v; });
@@ -6782,6 +8137,6 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   ed('lab-edit-max',         (e, v) => { e.maxUses = v; });
   ed('lab-edit-limit',       (e, v) => { e.accountLimit = v; });
   ed('lab-edit-cooldown',    (e, v) => { e.cooldown = v; });
-  ed('lab-edit-security',    (e, v) => { e.securityId = v; });
+  ed('lab-edit-security',    (e, v) => { e.securityId = v; resetListDraft(); });
   bind('lab-max-claimable', (v) => { state.maxClaimable = v; });
 }

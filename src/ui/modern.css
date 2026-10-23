@@ -159,7 +159,9 @@ html[data-theme="modern"] code {
 /* --- inputs, selects, pickers, textareas --------------------------- */
 html[data-theme="modern"] input[type=text],
 html[data-theme="modern"] input[type=number],
+html[data-theme="modern"] input[type=datetime-local],
 html[data-theme="modern"] select,
+html[data-theme="modern"] textarea,
 html[data-theme="modern"] .picker-toggle,
 html[data-theme="modern"] .manage-section textarea,
 html[data-theme="modern"] .manage-section input[type=text],
@@ -168,10 +170,13 @@ html[data-theme="modern"] .manage-section input[type=datetime-local] {
   border-color: var(--border);
   color: var(--fg);
 }
-html[data-theme="modern"] input::placeholder { color: var(--muted); }
+html[data-theme="modern"] input::placeholder,
+html[data-theme="modern"] textarea::placeholder { color: var(--muted); }
 html[data-theme="modern"] input[type=text]:focus,
 html[data-theme="modern"] input[type=number]:focus,
-html[data-theme="modern"] select:focus {
+html[data-theme="modern"] input[type=datetime-local]:focus,
+html[data-theme="modern"] select:focus,
+html[data-theme="modern"] textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(139, 124, 240, 0.25);
 }
@@ -479,6 +484,7 @@ html[data-theme="modern"] .asset-grid,
 html[data-theme="modern"] .asset,
 html[data-theme="modern"] input[type=text],
 html[data-theme="modern"] input[type=number],
+html[data-theme="modern"] input[type=datetime-local],
 html[data-theme="modern"] select,
 html[data-theme="modern"] textarea,
 html[data-theme="modern"] .picker-toggle,

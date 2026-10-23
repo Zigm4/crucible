@@ -1170,15 +1170,21 @@ Both items from tester feedback on the guided creator are done: the token
 list is read from the contract with type-ahead, and `#/lab` now edits as
 well as creates. What is left:
 
-- **Editing ingredients in the guided editor.** `setblendmix` and
-  `setupgrdmix` both exist and both have builders, but neither is in the
-  `#/lab` editor. Ingredient editing still lives in the text box on the
-  main page, and only for blends. Both actions REPLACE the whole list
-  rather than adding or removing, so the editor has to load the current
-  recipe first and show plainly that anything removed from the list stops
-  being required. That is the reason it was not done in the same pass as
-  the other fields: those are single values, this one is a list whose
-  every omission is a change.
+- **Warn when a collection has no RAM with neftyblocksd.** A drop mints
+  from RAM its collection deposited on `neftyblocksd` (`rambalances`).
+  Without it every claim is refused with "The collection does not have
+  enough RAM to mint the assets", whoever claims: pearlhorizon's drop
+  #239019 is in that state. The creator and Change say nothing about it
+  today; they should read the balance when a drop is created or opened,
+  and say how much a claim needs.
+- **Ingredients the editor cannot write back.** Change edits a blend's or
+  an upgrade's ingredients (`setblendmix`, `setupgrdmix`) only when its
+  rows reproduce the list exactly, because both actions replace the whole
+  list. Three shapes have no row yet, so a recipe that uses one is shown
+  and left untouched: an NFT from another collection than the recipe's,
+  NFTs matched on several attributes at once, and time gates
+  (`COOLDOWN_INGREDIENT`). Supporting them means extending the ingredient
+  editor, and the same rows would let creation offer them too.
 
 - **WaxDAO drops / packs / farms.** Only WaxDAO *blends* are wired today.
   The rest of the `waxdao*` family (drops, farms, pack openings on

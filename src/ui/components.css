@@ -11,7 +11,7 @@
 
 
 /* ─── inputs ───────────────────────────────────────────────────────────── */
-input[type=text], input[type=number], select {
+input[type=text], input[type=number], input[type=datetime-local], select, textarea {
   width: 100%;
   padding: 10px 12px;
   background: rgba(4, 12, 22, 0.85);
@@ -23,12 +23,12 @@ input[type=text], input[type=number], select {
   letter-spacing: 0.5px;
   transition: border-color 120ms, box-shadow 120ms;
 }
-input[type=text]:focus, input[type=number]:focus, select:focus {
+input[type=text]:focus, input[type=number]:focus, input[type=datetime-local]:focus, select:focus, textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent), 0 0 16px rgba(56, 189, 248, 0.25);
 }
-input::placeholder { color: var(--muted); }
+input::placeholder, textarea::placeholder { color: var(--muted); }
 
 select {
   appearance: none;
@@ -1961,6 +1961,51 @@ p.lab-note { margin: 6px 0 0; }
 }
 .lab-check input { margin-top: 3px; flex: none; width: auto; }
 .lab-check strong { color: var(--fg); }
+
+/* Who can use a recipe: the list it is behind, what goes on it and what comes off. */
+.lab-list-panel { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+.lab-list-panel > p { margin: 0; }
+/* .lab-mini grows to 170px for side-by-side pairs; stacked here it would only leave a gap. */
+.lab-list-panel > .lab-mini { flex: none; }
+.lab-list-panel textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  line-height: 1.5;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.lab-members { border: 1px solid var(--border-soft); border-radius: 6px; padding: 10px 12px; }
+.lab-members-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--fg);
+}
+.lab-members-head input { width: 200px; max-width: 100%; }
+.lab-member-grid { display: flex; flex-wrap: wrap; gap: 6px; max-height: 220px; overflow-y: auto; }
+.lab-member {
+  display: inline-block;
+  padding: 3px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 1.5;
+  text-transform: none;
+  letter-spacing: 0;
+}
+button.lab-member { cursor: pointer; }
+button.lab-member:hover { border-color: var(--danger); color: var(--fg); }
+.lab-member.off { color: var(--muted); text-decoration: line-through; border-style: dashed; border-color: var(--danger); }
+.lab-members > .lab-note { margin: 8px 0 0; }
+/* How many NFTs a holder rule asks for: a count, not a sentence. */
+.lab-row input.lab-rule-n { width: 72px; min-width: 0; flex: none; }
 
 /* A condition that reads as a sentence, with its controls inline. The
    global `input[type=...], select { width: 100% }` rule wins on

@@ -180,6 +180,7 @@ html[data-theme="neutral"] .asset-grid,
 html[data-theme="neutral"] .asset,
 html[data-theme="neutral"] input[type=text],
 html[data-theme="neutral"] input[type=number],
+html[data-theme="neutral"] input[type=datetime-local],
 html[data-theme="neutral"] select,
 html[data-theme="neutral"] textarea,
 html[data-theme="neutral"] .picker-toggle,
@@ -226,7 +227,9 @@ html[data-theme="neutral"] code {
 /* ─── inputs, selects, pickers, textareas ─────────────────────────────── */
 html[data-theme="neutral"] input[type=text],
 html[data-theme="neutral"] input[type=number],
+html[data-theme="neutral"] input[type=datetime-local],
 html[data-theme="neutral"] select,
+html[data-theme="neutral"] textarea,
 html[data-theme="neutral"] .picker-toggle,
 html[data-theme="neutral"] .manage-section textarea,
 html[data-theme="neutral"] .manage-section input[type=text],
@@ -235,10 +238,13 @@ html[data-theme="neutral"] .manage-section input[type=datetime-local] {
   border-color: var(--border);
   color: var(--fg);
 }
-html[data-theme="neutral"] input::placeholder { color: var(--muted); }
+html[data-theme="neutral"] input::placeholder,
+html[data-theme="neutral"] textarea::placeholder { color: var(--muted); }
 html[data-theme="neutral"] input[type=text]:focus,
 html[data-theme="neutral"] input[type=number]:focus,
-html[data-theme="neutral"] select:focus {
+html[data-theme="neutral"] input[type=datetime-local]:focus,
+html[data-theme="neutral"] select:focus,
+html[data-theme="neutral"] textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(59, 99, 224, 0.15);
 }

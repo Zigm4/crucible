@@ -17,7 +17,11 @@
     "verify:attributes": "npm run build:verify && node scripts/verify-attributes.mjs",
     "verify:media": "npm run build:verify && node scripts/verify-media.mjs",
     "verify:simulate": "npm run build:verify && node scripts/verify-simulate.mjs",
-    "verify:waxdao-holdings": "npm run build:verify && node scripts/verify-waxdao-holdings.mjs"
+    "verify:waxdao-holdings": "npm run build:verify && node scripts/verify-waxdao-holdings.mjs",
+    "verify:access-lists": "npm run build:verify && node scripts/verify-access-lists.mjs",
+    "verify:upgrade-fee": "npm run build:verify && node scripts/verify-upgrade-fee.mjs",
+    "verify:change": "npm run build:verify && node scripts/verify-change.mjs",
+    "verify:holder-gates": "npm run build:verify && node scripts/verify-holder-gates.mjs"
   },
   "dependencies": {
     "@wharfkit/session": "^4.0.2",

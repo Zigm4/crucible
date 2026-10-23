@@ -9,23 +9,32 @@
  * entry `all`. `up.nefty` has no such list: the strings `neftyblocksa`,
  * `all` and `features` appear zero times in its code.
  *
- * The rule, read out of the deployed WASM:
+ * The rule, settled through compute_transaction (scripts/verify-upgrade-fee.mjs):
  *
- *   if (config.fixed_fee.amount > 0  AND NOT early.access)  need > 1 ingredient
- *   else                                                    need >= 1
+ *   if (config.fixed_fee.amount > 0  AND NOT early.access)
+ *     need 2 ingredients or more      "At least one ingredient besides the
+ *                                      fixed fee must be specified"
+ *     and one of them the fee itself:  "Fixed fee is required"
+ *       a token ingredient of the fee's symbol, at least the fee's amount,
+ *       sent to config.fee_recipient
+ *   else
+ *     need 1 or more
  *
  * `early.access` is granted only by `level.3`, which costs 45,000 NEFTY
  * staked against that collection. `setfixedfee` has been called exactly once
- * ever, on 2024-01-31, setting 0.01 WAX, so the first branch is live today.
+ * ever, on 2024-01-31, setting 0.01 WAX to fees.nefty, so the first branch is
+ * live today. Measured on pearlhorizon, which has never staked: half the fee
+ * is refused, 0.01 NEFTY is refused, 0.01 WAX to anyone but fees.nefty is
+ * refused; the fee twice is accepted, since the second line counts as the
+ * other ingredient. On underpunks55, at level.3, one line of anything is
+ * accepted, with or without the fee.
  *
- * What this does NOT do, and the reason this module exists: the contract
- * never adds a fee, and never checks that any ingredient IS the fee. It
- * counts, and nothing more. The 0.01 WAX line on 255 recipes was put there
- * by the NeftyBlocks website when it built the transaction. That website is
- * gone and we do not add it either, so an author who drops below level.3
- * would send exactly what they sent last year and get back
- * `assertion failure with message: At least one ingredient besides the fixed
- * fee must be specified`. Telling them beforehand is the whole point.
+ * The contract never adds the fee itself. The 0.01 WAX line on 255 recipes
+ * was put there by the NeftyBlocks website when it built the transaction.
+ * That website is gone, so the creator offers the line instead, and says
+ * why, before the chain refuses a recipe without it. An earlier reading of
+ * the WASM concluded the contract only counted ingredients, and this module
+ * told authors any second line would do: the chain refuses exactly that.
  *
  * Only `createupgrde` and `setupgrdmix` reach this gate. Running an upgrade
  * (`upgrade`, `upgradesec`) and changing its cap (`setupgrdmax`) do not, so
@@ -45,6 +54,10 @@ export interface UpgradeGate {
   earlyAccess: boolean;
   /** `up.nefty`'s configured fixed fee, verbatim. Empty when unreadable. */
   fixedFee: string;
+  /** Who the fee line has to pay, from the same config. */
+  feeRecipient: string;
+  /** Whether a new upgrade from this collection must carry the fee line. */
+  feeRequired: boolean;
   /** 1 or 2. What the contract will accept. */
   minIngredients: number;
   /**
@@ -90,12 +103,20 @@ export async function levelGrants(level: string, feature: string): Promise<boole
   return value === 1 || value === true || value === '1';
 }
 
-/** `up.nefty`'s fixed fee, which is what arms the whole rule. */
-export async function readFixedFee(contract = 'up.nefty'): Promise<string> {
-  const rows = await getTableRows<{ fixed_fee: { quantity: string; contract: string } }>({
+/** `up.nefty`'s fixed fee, which arms the whole rule, and who it is paid to. */
+export async function readFeeConfig(contract = 'up.nefty'): Promise<{ fixedFee: string; feeRecipient: string }> {
+  const rows = await getTableRows<{ fixed_fee: { quantity: string; contract: string }; fee_recipient: string }>({
     code: contract, scope: contract, table: 'config', limit: 1,
   });
-  return rows[0]?.fixed_fee ? String(rows[0].fixed_fee.quantity) : '';
+  return {
+    fixedFee: rows[0]?.fixed_fee ? String(rows[0].fixed_fee.quantity) : '',
+    feeRecipient: String(rows[0]?.fee_recipient ?? ''),
+  };
+}
+
+/** `up.nefty`'s fixed fee alone. */
+export async function readFixedFee(contract = 'up.nefty'): Promise<string> {
+  return (await readFeeConfig(contract)).fixedFee;
 }
 
 /** True when an asset string carries a non-zero amount, without float maths. */
@@ -118,20 +139,23 @@ export async function readUpgradeGate(
   contract = 'up.nefty',
 ): Promise<UpgradeGate> {
   const blank: UpgradeGate = {
-    level: '', earlyAccess: false, fixedFee: '', minIngredients: 1, known: false,
+    level: '', earlyAccess: false, fixedFee: '', feeRecipient: '', feeRequired: false, minIngredients: 1, known: false,
   };
   if (!collection) return blank;
   try {
-    const [level, fixedFee] = await Promise.all([
+    const [level, { fixedFee, feeRecipient }] = await Promise.all([
       readCollectionLevel(collection),
-      readFixedFee(contract),
+      readFeeConfig(contract),
     ]);
     const earlyAccess = await levelGrants(level, UPGRADE_FEATURE);
+    const feeRequired = isPositiveAsset(fixedFee) && !earlyAccess;
     return {
       level,
       earlyAccess,
       fixedFee,
-      minIngredients: isPositiveAsset(fixedFee) && !earlyAccess ? 2 : 1,
+      feeRecipient,
+      feeRequired,
+      minIngredients: feeRequired ? 2 : 1,
       known: true,
     };
   } catch {
@@ -139,24 +163,58 @@ export async function readUpgradeGate(
   }
 }
 
+/** An ingredient as far as the fee rule cares: a token amount and who receives it, or neither. */
+export interface GateIngredient {
+  quantity?: string;
+  to?: string;
+}
+
+/** An asset string as an integer count of its smallest unit, and its symbol. */
+function units(asset: string): { amount: bigint; decimals: number; symbol: string } | undefined {
+  const m = /^(\d+)(?:\.(\d+))?\s+([A-Z]{1,7})$/.exec(String(asset).trim());
+  if (!m) return undefined;
+  const decimals = (m[2] ?? '').length;
+  return { amount: BigInt(`${m[1]}${m[2] ?? ''}`), decimals, symbol: m[3] };
+}
+
+/** Whether `line` pays the fee: its symbol and precision, at least its amount, to its recipient. */
+export function isFeeLine(gate: UpgradeGate, line: GateIngredient): boolean {
+  const fee = units(gate.fixedFee);
+  const paid = line.quantity ? units(line.quantity) : undefined;
+  if (!fee || !paid || !gate.feeRecipient) return false;
+  return paid.symbol === fee.symbol && paid.decimals === fee.decimals
+    && paid.amount >= fee.amount && String(line.to ?? '').trim() === gate.feeRecipient;
+}
+
+/** The line to add when the fee is missing: exactly the fee, to its recipient. */
+export function feeLine(gate: UpgradeGate): { quantity: string; to: string } {
+  return { quantity: gate.fixedFee, to: gate.feeRecipient };
+}
+
 /**
  * The sentence to show an author, or '' when there is nothing to say.
  *
- * Written to be actionable rather than alarming: the fix is one more
- * ingredient of any kind, and it does not have to be a fee to anyone. The
- * contract counts ingredients and never inspects them.
+ * Written to be actionable rather than alarming: the fix is the fee line,
+ * which the creator adds in one click, and one ingredient of the upgrade's
+ * own. Silent when the gate could not be read, and when no fee is due.
  */
-export function upgradeGateProblem(gate: UpgradeGate, ingredientCount: number): string {
-  if (!gate.known || ingredientCount >= gate.minIngredients) return '';
+export function upgradeGateProblem(gate: UpgradeGate, ingredients: GateIngredient[]): string {
+  if (!gate.known || !gate.feeRequired) return '';
   const where = gate.level && gate.level !== 'level.zero'
     ? `is ${gate.level}`
     : gate.level === 'level.zero'
       ? 'is level.zero'
       : 'has never staked NEFTY';
-  return `up.nefty will reject this: the collection ${where}, and only level.3 `
-    + `(45,000 NEFTY staked against it) may create an upgrade with a single ingredient. `
-    + `Add one more ingredient of any kind. It does not have to be a fee: the contract `
-    + `counts ingredients, it never checks what they are, so a token amount routed back `
-    + `to yourself satisfies it. Without it the transaction aborts with "At least one `
-    + `ingredient besides the fixed fee must be specified".`;
+  if (!ingredients.some((i) => isFeeLine(gate, i))) {
+    return `up.nefty will refuse this: the collection ${where}, and below level.3 `
+      + `(45,000 NEFTY staked against it) a new upgrade has to carry NeftyBlocks' fixed fee `
+      + `as one of its ingredients: ${gate.fixedFee} sent to ${gate.feeRecipient}, paid by the player `
+      + `on every upgrade. Without it the chain answers "Fixed fee is required".`;
+  }
+  if (ingredients.length < gate.minIngredients) {
+    return `The fee line is there, but it does not count as the upgrade's own cost: up.nefty wants `
+      + `at least one more ingredient besides it. Without one the chain answers "At least one `
+      + `ingredient besides the fixed fee must be specified".`;
+  }
+  return '';
 }
