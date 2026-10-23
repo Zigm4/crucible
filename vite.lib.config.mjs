@@ -33,6 +33,6 @@ export default defineConfig({
     outDir: 'scripts/.build',
     emptyOutDir: true,
     minify: false,
-    rollupOptions: { external: ['@wharfkit/session'], output: { entryFileNames: '[name].mjs' } },
+    rolldownOptions: { external: ['@wharfkit/session'], output: { entryFileNames: '[name].mjs' } },
   },
 });

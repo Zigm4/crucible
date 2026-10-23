@@ -7,11 +7,11 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: true,
-    rollupOptions: {
+    rolldownOptions: {
       // Multi-page: the app (index.html) + the standalone themed user guide.
       input: {
-        main: resolve(__dirname, 'index.html'),
-        guide: resolve(__dirname, 'guide.html'),
+        main: resolve(import.meta.dirname, 'index.html'),
+        guide: resolve(import.meta.dirname, 'guide.html'),
       },
     },
   },

@@ -113,6 +113,6 @@ export async function switchSession(
   if (!restored) return undefined;
   current = restored;
   // So a reload comes back to the account the user last chose.
-  await getSessionKit().persistSession(restored, true);
+  await getSessionKit().persistSession(restored, { setAsDefault: true });
   return current;
 }
