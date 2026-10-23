@@ -92,6 +92,8 @@ export interface DiscoveredBlend {
   result_template_id?: number;
   /** Result template's name, when the source already carried it (indexer). */
   result_template_name?: string;
+  /** The recipe's own picture, from its display_data: a fallback when the result has none. */
+  image?: string;
   /** Uses allowed in total, 0 for no cap, and uses so far. */
   max?: number;
   use_count?: number;
@@ -467,7 +469,7 @@ function statusPriority(s: DiscoveredStatus): number {
   }
 }
 
-function parseDisplayData(d: RawBlend['display_data']): { name?: string } {
+function parseDisplayData(d: RawBlend['display_data']): { name?: string; image?: string } {
   if (!d) return {};
   if (typeof d === 'object') return d;
   if (typeof d === 'string') {
@@ -547,6 +549,7 @@ function toDiscovered(b: RawBlend): DiscoveredBlend | undefined {
     ingredients: b.ingredients as import('./blend').IngredientVariant[] | undefined,
     result_template_id: res.template_id,
     result_template_name: res.name,
+    image: typeof dd.image === 'string' && dd.image.trim() ? dd.image.trim() : undefined,
     // Read already, to compute the status. Kept so a list can say how many
     // uses are left and when a recipe opens, not only that it is "upcoming".
     max: Number(b.max ?? 0),

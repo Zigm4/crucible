@@ -34,6 +34,8 @@ export default defineConfig({
         waxdaoBlends: 'src/waxdao/blends.ts',
         waxdaoExecute: 'src/waxdao/blendExecute.ts',
         media: 'src/ui/media.ts',
+        simulate: 'src/chain/simulate.ts',
+        waxdaoHoldings: 'src/waxdao/holdings.ts',
       },
       formats: ['es'],
     },

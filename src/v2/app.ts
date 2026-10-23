@@ -15,13 +15,17 @@
  * Routes, all in the hash so the page stays a static file:
  *   #/                        home
  *   #/use/<kind~coll~id>      run a recipe, on that recipe when one is named
+ *   #/explore/<collection>    everything one collection offers (explore.ts);
+ *                             the classic #/catalog/<collection> lands here
  *   #/nfts/<owner~view>       the inventory
  *   #/create                  make or change a recipe
  *   #/names/<name>            WAX name auctions
  *   #/lab/<tool>/<subject>    the classic page's address for the same tool,
  *                             accepted and rewritten to the forms above
  *   #/nefty/blend/43444       a classic recipe link, opened in #/use
- *   #/catalog, #/status ...   a page v2 does not have yet, with a link to it
+ *   #/stake                   getting tokens out of stake.nefty (stake.ts); the
+ *                             classic #/nefty/stake lands here
+ *   #/status                  a page v2 does not have yet, with a link to it
  *
  * The Crucible Contracts preview is not part of v2: embedLab() removes it,
  * and a link to it lands on the home.
@@ -34,10 +38,14 @@ import {
 } from '../ui/lab';
 import { attachMediaFallbacks } from '../ui/media';
 import { captureRenderSnapshot, restoreRenderSnapshot } from '../ui/renderSnapshot';
+import { attachExploreHandlers, renderExplore } from './explore';
+import { attachStakeHandlers, renderStake } from './stake';
 
 type Route =
   | { page: 'home' }
   | { page: 'tool'; tool: OpenableTool; subject: string }
+  | { page: 'explore'; collection: string }
+  | { page: 'stake'; account: string }
   | { page: 'classic'; hash: string };
 
 /** The menu, in the order a visitor meets the questions. */
@@ -66,12 +74,10 @@ const CLASSIC_RECIPES: Record<string, RecipeSource> = {
 };
 
 /** First segments that belong to a classic page v2 has not taken over. */
-const CLASSIC_PAGES = ['nefty', 'waxdao', 'blenderizer', 'catalog', 'status'];
+const CLASSIC_PAGES = ['nefty', 'waxdao', 'blenderizer', 'status'];
 
 /** Where the rest of Crucible still lives, until v2 has its own version. */
 const ELSEWHERE: { label: string; blurb: string; href: string }[] = [
-  { label: 'Staking', blurb: 'Stake tokens on a collection, claim rewards', href: '../#/nefty/stake' },
-  { label: 'Collection catalogue', blurb: 'Every recipe one collection has, on one page', href: '../#/catalog' },
   { label: 'Contract status', blurb: 'Whether each contract is up and unchanged', href: '../#/status' },
   { label: 'User guide', blurb: 'How Crucible works, and what it never does', href: '../guide.html' },
 ];
@@ -99,6 +105,10 @@ function parseRoute(hash: string): Route {
   // link reads the same on both pages.
   const own = TOOL_AT.get(head);
   if (own) return { page: 'tool', tool: own, subject: (parts[1] ?? '').toLowerCase() };
+  // The classic catalogue's address is this page's explorer.
+  if (head === 'explore' || head === 'catalog') return { page: 'explore', collection: (parts[1] ?? '').toLowerCase() };
+  if (head === 'stake') return { page: 'stake', account: (parts[1] ?? '').toLowerCase() };
+  if (head === 'nefty' && (parts[1] ?? '').toLowerCase() === 'stake') return { page: 'stake', account: '' };
   if (head === 'lab') {
     const tool = (parts[1] ?? '').toLowerCase() as OpenableTool;
     if (!TOOLS.includes(tool)) return { page: 'home' };
@@ -123,6 +133,12 @@ function follow(hash: string): Route {
   // home, so it should also say it.
   if (r.page === 'home' && hash && hash !== '#/' && hash !== '#') {
     try { history.replaceState(null, '', '#/'); } catch { /* keep the old address */ }
+  }
+  if (r.page === 'explore' && /^#\/?catalog/i.test(hash)) {
+    try { history.replaceState(null, '', `#/explore${r.collection ? `/${r.collection}` : ''}`); } catch { /* keep the old address */ }
+  }
+  if (r.page === 'stake' && !/^#\/?stake/i.test(hash)) {
+    try { history.replaceState(null, '', '#/stake'); } catch { /* keep the old address */ }
   }
   if (r.page !== 'tool') return r;
   // An address in another form (#/lab/..., a classic recipe link) becomes
@@ -153,10 +169,13 @@ function go(hash: string) {
 
 function renderNav(): string {
   const at = route.page === 'tool' ? route.tool : route.page;
+  const tool = (m: (typeof MENU)[number]) =>
+    `<a href="${pathOf(m.tool)}" ${at === m.tool ? 'aria-current="page"' : ''}>${esc(m.label)}</a>`;
   return [
     `<a href="#/" ${at === 'home' ? 'aria-current="page"' : ''}>Home</a>`,
-    ...MENU.map((m) =>
-      `<a href="${pathOf(m.tool)}" ${at === m.tool ? 'aria-current="page"' : ''}>${esc(m.label)}</a>`),
+    tool(MENU[0]),
+    `<a href="#/explore" ${at === 'explore' ? 'aria-current="page"' : ''}>Explore</a>`,
+    ...MENU.slice(1).map(tool),
   ].join('');
 }
 
@@ -186,7 +205,7 @@ const ICONS = {
   more: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
 };
 
-function group(icon: keyof typeof ICONS, title: string, blurb: string, cards: string, extra = ''): string {
+function group(icon: keyof typeof ICONS, title: string, blurb: string, cards: string, extra = '', after = ''): string {
   return `
     <section class="v2-group ${extra}">
       <div class="v2-group-head">
@@ -200,6 +219,7 @@ function group(icon: keyof typeof ICONS, title: string, blurb: string, cards: st
         </div>
       </div>
       <div class="run-kinds v2-cards">${cards}</div>
+      ${after}
     </section>`;
 }
 
@@ -218,6 +238,10 @@ function renderHome(): string {
     <a class="run-kind" href="${pathOf('names')}">
       <strong>WAX names</strong>
       <small>Premium name auctions: bid, follow, claim</small>
+    </a>
+    <a class="run-kind" href="#/stake">
+      <strong>Staking</strong>
+      <small>Get back what stake.nefty and WaxDAO's farms, pools and DAOs still hold for you</small>
     </a>`;
   const create = CREATE.map((c) => `
     <button class="run-kind" data-v2-create="${c.kind}">
@@ -244,7 +268,8 @@ function renderHome(): string {
         all of them. Your wallet signs, this page only builds the transaction.</p>
         ${walletLine()}
       </div>
-      ${group('use', 'Use a recipe', 'Burn, upgrade, claim or open. Crucible finds the recipes and checks what you hold.', use)}
+      ${group('use', 'Use a recipe', 'Burn, upgrade, claim or open. Crucible finds the recipes and checks what you hold.', use, '',
+    '<a class="v2-explore-link" href="#/explore">Or start from a collection: everything it offers, on one page →</a>')}
       ${group('wallet', 'Your wallet', 'What you own, and the WAX names you are bidding on.', wallet)}
       ${group('create', 'Create', 'For collection authors: make a recipe, or change one you already made.', create)}
       ${group('more', 'Also in Crucible', 'Still on the classic page for now. Same chain, same transactions.', more, 'v2-group-quiet')}
@@ -282,7 +307,9 @@ function render() {
 
 function paint() {
   scheduled = false;
-  const key = route.page === 'tool' ? `tool:${route.tool}` : route.page;
+  const key = route.page === 'tool' ? `tool:${route.tool}`
+    : route.page === 'explore' ? `explore:${route.collection}`
+      : route.page === 'stake' ? `stake:${route.account}` : route.page;
   const moved = key !== paintedKey;
   paintedKey = key;
   const snap = captureRenderSnapshot();
@@ -296,12 +323,27 @@ function paint() {
   if (classic) {
     classic.href = route.page === 'home' ? '../'
       : route.page === 'tool' ? `../#/lab/${route.tool}${location.hash.slice(pathOf(route.tool).length)}`
-        : `../${location.hash}`;
+        : route.page === 'explore' ? `../#/catalog${route.collection ? `/${route.collection}` : ''}`
+          : route.page === 'stake' ? '../#/nefty/stake'
+          : `../${location.hash}`;
   }
 
   if (route.page === 'tool') {
     root.innerHTML = renderLabPage();
     attachLabHandlers(root, render);
+  } else if (route.page === 'explore') {
+    syncInventoryLock(false);
+    // Without a wallet the shelf can say what exists but not what you can
+    // run, so the way to connect sits above it.
+    const connect = getCurrentSession() ? '' : `<div class="v2-explore">${walletLine()}</div>`;
+    root.innerHTML = connect + renderExplore(route.collection, render);
+    attachExploreHandlers(root, render, go);
+    attachHomeHandlers(root);
+  } else if (route.page === 'stake') {
+    syncInventoryLock(false);
+    root.innerHTML = renderStake(render, walletLine(), route.account);
+    attachStakeHandlers(root, render, go);
+    attachHomeHandlers(root);
   } else {
     syncInventoryLock(false);
     root.innerHTML = route.page === 'classic' ? renderClassicOnly(route.hash) : renderHome();

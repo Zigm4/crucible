@@ -35,6 +35,7 @@ import {
   type KnownSession,
 } from '../chain/session';
 import { atomicFetch } from '../chain/rpc';
+import { simulateActions, type Simulation } from '../chain/simulate';
 import { SUGGESTED_COLLECTIONS } from './collections';
 import {
   whatUsesThis, checkTokenCost, usableIndex, forgetCollection, indexerIsDown,
@@ -4381,7 +4382,14 @@ function renderSignBlock(reqs: ReturnType<typeof requirementsOf>, known: boolean
   if (run.pickedRecipe) {
     for (const text of signStops(run.pickedRecipe, runChecksContext(), pickedIds())) stops.push({ tone: 'warn', text });
   }
-  const blocked = missing.length > 0 || stops.length > 0;
+  // Once nothing else holds it back, the chain is asked. Its refusal holds
+  // the button too; a slow answer holds it only while it is being asked.
+  if (!missing.length && !stops.length) ensureRunSimulation(state.actor);
+  const sim = !missing.length && !stops.length ? run.sim : undefined;
+  const refused = sim?.result?.kind === 'refused';
+  const asking = Boolean(sim && !sim.result);
+  const blocked = missing.length > 0 || stops.length > 0 || refused;
+  const summary = !missing.length && !stops.length ? signSummary(reqs) : [];
   return `
     <div class="run-sign">
       ${stops.length ? `
@@ -4392,11 +4400,13 @@ function renderSignBlock(reqs: ReturnType<typeof requirementsOf>, known: boolean
         <ul class="run-missing">
           ${missing.map((m) => `<li>${esc(m)}</li>`).join('')}
         </ul>` : stops.length ? '' : '<p class="lab-ok">Everything is picked. This is ready to sign.</p>'}
+      ${summary.length ? `<p class="lab-hint run-sign-summary">Signing: ${esc(summary.join(', '))}.</p>` : ''}
+      ${sim ? renderSimulation() : ''}
       <div class="lab-row-actions">
         <button data-lab="run-autopick" ${run.signing ? 'disabled' : ''}>Pick for me</button>
         <button class="lab-primary" data-lab="run-sign"
-                ${blocked || run.signing ? 'disabled' : ''}>
-          ${run.signing ? 'Waiting for your wallet' : 'Run it'}
+                ${blocked || asking || run.signing ? 'disabled' : ''}>
+          ${run.signing ? 'Waiting for your wallet' : asking ? 'Checking with the chain' : 'Run it'}
         </button>
       </div>
       ${run.signError ? `<p class="lab-warn">Not signed: ${esc(run.signError)}</p>` : ''}
@@ -4425,6 +4435,81 @@ function runRequirements(): ReturnType<typeof requirementsOf> {
 }
 
 /** Signs the recipe on screen, through the contract it actually lives on. */
+/** The transaction for the recipe and picks on screen, as `actor` would sign it. */
+function buildCurrentRunActions(actor: string) {
+  const run = state.run;
+  return buildRunActions({
+    source: (run.source || 'blend') as RecipeSource,
+    actor,
+    id: run.blendId,
+    raw: run.blend ?? run.pickedRecipe?.raw,
+    requirements: runRequirements(),
+    picked: run.picked,
+    security: run.pickedRecipe ? runSecurityCheck(actor) : undefined,
+  });
+}
+
+/**
+ * Asks the chain about the transaction on screen, once per signer and set
+ * of picks (src/chain/simulate.ts). Started by drawing the sign block, and
+ * answered by a repaint; picks that change meanwhile drop the old answer.
+ */
+function ensureRunSimulation(actor: string): void {
+  const run = state.run;
+  const key = JSON.stringify([actor, run.source, run.blendId, run.picked]);
+  if (run.sim?.key === key) return;
+  run.sim = { key };
+  void (async () => {
+    let result: Simulation;
+    try {
+      result = await simulateActions(await buildCurrentRunActions(actor));
+    } catch (e) {
+      result = { kind: 'unavailable', reason: e instanceof Error ? e.message : String(e) };
+    }
+    if (state.run.sim?.key !== key) return;
+    state.run.sim = { key, result };
+    rerender();
+  })();
+}
+
+/** What signing does, in words, from the picks: what leaves, what stays, what is paid. */
+function signSummary(reqs: ReturnType<typeof requirementsOf>): string[] {
+  const run = state.run;
+  const count = (role: string) => reqs.reduce((n, r, i) => n + (r.kind === 'nft' && r.role === role ? (run.picked[i]?.length ?? 0) : 0), 0);
+  const nfts = (n: number) => `${n} NFT${n === 1 ? '' : 's'}`;
+  const out: string[] = [];
+  const burn = count('burn');
+  if (burn) out.push(`${nfts(burn)} leave your wallet`);
+  const kept = count('keep');
+  if (kept) out.push(`${nfts(kept)} stay in your wallet${reqs.some((r) => r.role === 'keep' && /taken from it/.test(r.text)) ? ', with the balance it asks taken from it' : ''}`);
+  const upgraded = count('upgrade');
+  if (upgraded) out.push(`${nfts(upgraded)} rewritten in place, and still yours`);
+  const paid = reqs.filter((r) => r.kind === 'token' && r.tokenQuantity).map((r) => r.tokenQuantity!);
+  if (paid.length) out.push(`you pay ${paid.join(' + ')}`);
+  return out;
+}
+
+/** The chain's answer, above the button it decides. */
+function renderSimulation(): string {
+  const r = state.run.sim?.result;
+  if (!state.run.sim) return '';
+  if (!r) return '<p class="lab-hint run-sim">Asking the chain whether it would go through. Nothing is signed.</p>';
+  if (r.kind === 'accepted') {
+    const made = r.mints > 0 ? ` It would mint ${r.mints} NFT${r.mints === 1 ? '' : 's'}.`
+      : ' Anything drawn at random is decided after you sign.';
+    return `<p class="lab-ok run-sim">The chain accepts it: simulated just now, nothing signed.${made}</p>`;
+  }
+  if (r.kind === 'refused') {
+    return `<p class="lab-warn run-sim">The chain would refuse it: ${esc(r.reason)}
+      <button data-lab="run-sim-retry">Check again</button></p>`;
+  }
+  if (r.kind === 'resources') {
+    return `<p class="lab-hint run-sim">Your account's own CPU or NET would not cover it (${esc(r.reason)}).
+      A wallet that pays for its users' transactions, such as WAX Cloud Wallet, can still get it through.</p>`;
+  }
+  return `<p class="lab-hint run-sim">The chain could not be asked (${esc(r.reason)}). You can still sign.</p>`;
+}
+
 async function onRunSign(): Promise<void> {
   const run = state.run;
   const session = getCurrentSession();
@@ -4455,15 +4540,7 @@ async function onRunSign(): Promise<void> {
     : undefined;
   try {
     const known = drawn ? await readKnownClaimIds(actor) : new Set<string>();
-    const actions = await buildRunActions({
-      source: (run.source || 'blend') as RecipeSource,
-      actor,
-      id: run.blendId,
-      raw: run.blend ?? run.pickedRecipe?.raw,
-      requirements: runRequirements(),
-      picked: run.picked,
-      security: run.pickedRecipe ? runSecurityCheck(actor) : undefined,
-    });
+    const actions = await buildCurrentRunActions(actor);
     const result = await session.transact({ actions });
     run.lastTrxId = (result.response as { transaction_id?: string } | undefined)?.transaction_id
       ?? String(result.resolved?.transaction.id ?? '');
@@ -6284,6 +6361,9 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'run-sign':
           void onRunSign();
           return;
+        case 'run-sim-retry':
+          state.run.sim = undefined;
+          break;
         case 'run-back':
           state.run.step = Math.max(1, state.run.step - 1) as RunStep;
           break;

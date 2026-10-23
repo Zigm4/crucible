@@ -15,7 +15,9 @@
     "verify:contractauth": "npm run build:verify && node scripts/verify-contract-auth.mjs",
     "verify:names": "npm run build:verify && node scripts/verify-names.mjs",
     "verify:attributes": "npm run build:verify && node scripts/verify-attributes.mjs",
-    "verify:media": "npm run build:verify && node scripts/verify-media.mjs"
+    "verify:media": "npm run build:verify && node scripts/verify-media.mjs",
+    "verify:simulate": "npm run build:verify && node scripts/verify-simulate.mjs",
+    "verify:waxdao-holdings": "npm run build:verify && node scripts/verify-waxdao-holdings.mjs"
   },
   "dependencies": {
     "@wharfkit/session": "^4.0.2",

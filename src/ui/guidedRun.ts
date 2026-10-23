@@ -365,6 +365,11 @@ export interface RunState {
   signError: string;
   /** The second half of a pack or a random blend, once the first is signed. */
   finish?: import('./runFinish').RunFinish;
+  /**
+   * What the chain said about the transaction on screen, keyed by the
+   * signer and the picks it was built from. No `result` while asking.
+   */
+  sim?: { key: string; result?: import('../chain/simulate').Simulation };
 }
 
 export function emptyRunState(): RunState {

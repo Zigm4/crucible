@@ -47,6 +47,7 @@ import { listUpgrades, upgradeTargetFits, type DiscoveredUpgrade } from '../neft
 import { listPackDesigns, pickOwnedPacks, type PackDesign } from '../nefty/packs';
 import { listNeftyPackDesigns } from '../nefty/neftyPacks';
 import { listWaxdaoBlends, type DiscoveredWaxdaoBlend } from '../waxdao/blends';
+import type { RecipeChoice } from './guidedRun';
 import {
   listBlenderizerBlends,
   blenderizerTitle,
@@ -90,6 +91,8 @@ export interface CatalogEntry {
   /** Template produced, when there is exactly one obvious one. */
   templateId?: number;
   image?: string;
+  /** Shown when `image` is missing or does not load: the recipe's own picture. */
+  fallbackImage?: string;
   /** One-line cost summary, e.g. "10 NFTs", "1.00 WAX", "free". */
   cost: string;
   /** Extra qualifier chips. */
@@ -105,7 +108,7 @@ export interface CatalogEntry {
   blocked?: string;
 }
 
-const UNCATEGORISED = 'uncategorised';
+export const UNCATEGORISED = 'uncategorised';
 
 // ─── state ──────────────────────────────────────────────────────────────
 
@@ -460,6 +463,7 @@ function fromNeftyBlend(b: DiscoveredBlend, owned: AtomicAsset[], hasWallet: boo
     status: statusFrom(b.status),
     category: UNCATEGORISED,
     templateId: b.result_template_id,
+    fallbackImage: b.image,
     cost: bits.join(' + ') || 'free',
     gated: b.whitelist_required,
     random: b.is_random,
@@ -489,6 +493,18 @@ function fromDrop(d: DiscoveredDrop): CatalogEntry {
   };
 }
 
+/** The image an upgrade writes onto the NFT, when it writes one. */
+function upgradeResultImage(u: DiscoveredUpgrade): string | undefined {
+  for (const spec of u.specs ?? []) {
+    for (const r of spec.results ?? []) {
+      if (r.attribute_type === 'image' && typeof r.immediate_value === 'string' && r.immediate_value.trim()) {
+        return r.immediate_value.trim();
+      }
+    }
+  }
+  return undefined;
+}
+
 function fromUpgrade(u: DiscoveredUpgrade, owned: AtomicAsset[], hasWallet: boolean): CatalogEntry {
   const bits: string[] = [];
   for (const ing of u.ingredients ?? []) {
@@ -515,6 +531,11 @@ function fromUpgrade(u: DiscoveredUpgrade, owned: AtomicAsset[], hasWallet: bool
     href: `#/nefty/upgrade/${u.upgrade_id}`,
     status: statusFrom(u.status),
     category: (u.specs ?? [])[0]?.schema_name || UNCATEGORISED,
+    // What it looks like after: an image an upgrade writes is the picture
+    // of what you get. Then the upgrade's own, then an NFT it accepts.
+    image: upgradeResultImage(u) ?? u.image,
+    fallbackImage: upgradeResultImage(u) ? u.image : undefined,
+    templateId: u.acceptedTemplateIds?.[0],
     cost: bits.join(' + ') || 'free',
     gated: u.whitelist_required,
     random: u.is_random,
@@ -618,6 +639,25 @@ function fromBlenderizer(
   };
 }
 
+/**
+ * One of the runner's recipes as a catalogue entry: name, artwork, cost
+ * and the category it is shelved under, for the v2 collection explorer.
+ * Whether it can be run is the runner's verdict there, not `doable`, so
+ * the wallet is not passed in.
+ */
+export function shelfEntry(c: RecipeChoice): CatalogEntry | undefined {
+  switch (c.source) {
+    case 'blend': return fromNeftyBlend(c.raw as DiscoveredBlend, [], false);
+    case 'waxdao': return fromWaxdao(c.raw as DiscoveredWaxdaoBlend, [], false);
+    case 'blenderizer': return fromBlenderizer(c.raw as DiscoveredBlenderizerBlend, [], false);
+    case 'upgrade': return fromUpgrade(c.raw as DiscoveredUpgrade, [], false);
+    case 'drop': return fromDrop(c.raw as DiscoveredDrop);
+    case 'pack':
+    case 'neftypack': return fromPack(c.raw as PackDesign, new Map(), false);
+    default: return undefined;
+  }
+}
+
 // ─── category resolution ────────────────────────────────────────────────
 
 interface RawTemplate {
@@ -635,8 +675,9 @@ interface RawTemplate {
  * disappearing, because a missing schema is a display problem, not a
  * reason to hide a recipe from a player.
  */
-async function resolveCategories(collection: string, entries: CatalogEntry[]): Promise<void> {
-  const pending = entries.filter((e) => e.category === UNCATEGORISED && e.templateId);
+export async function resolveCategories(collection: string, entries: CatalogEntry[]): Promise<void> {
+  // Uncategorised, or without a picture: the produced template has both.
+  const pending = entries.filter((e) => e.templateId && (e.category === UNCATEGORISED || !e.image || !e.fallbackImage));
   const ids = [...new Set(pending.map((e) => e.templateId as number))];
   if (ids.length === 0) return;
 
@@ -659,8 +700,10 @@ async function resolveCategories(collection: string, entries: CatalogEntry[]): P
   for (const e of pending) {
     const t = byId.get(e.templateId as number);
     if (!t) continue;
-    e.category = t.schema?.schema_name || UNCATEGORISED;
-    if (!e.image) e.image = pickImageRef(t.immutable_data);
+    if (e.category === UNCATEGORISED) e.category = t.schema?.schema_name || UNCATEGORISED;
+    const art = pickImageRef(t.immutable_data);
+    if (!e.image) e.image = art;
+    else if (!e.fallbackImage && art !== e.image) e.fallbackImage = art;
     // Packs and drops often have no display name of their own; the
     // produced template's name is the one players recognise.
     if (!e.name || /^(Blend|Drop|Pack|Template) #/i.test(e.name)) {

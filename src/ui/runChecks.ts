@@ -248,7 +248,9 @@ function holdingChecks(reqs: Requirement[], ctx: CheckContext): RecipeCheck[] {
       const short = nft.filter((r) => r.have !== undefined && r.have < r.need);
       if (short.length) {
         const first = short[0];
-        out.push({ tone: 'warn', about: 'nfts', text: `You hold ${first.have} of ${first.text}`
+        // "The NFT to upgrade: ..." reads mid-sentence after "You hold 0 of".
+        const what = /^(The|A|An) /.test(first.text) ? first.text.charAt(0).toLowerCase() + first.text.slice(1) : first.text;
+        out.push({ tone: 'warn', about: 'nfts', text: `You hold ${first.have} of ${what}`
           + (short.length > 1 ? `, and ${short.length - 1} more ingredient${short.length > 2 ? 's are' : ' is'} short` : '') });
       } else if (!reqs.some((r) => r.kind === 'other')) {
         out.push({ tone: 'ok', text: 'You hold every NFT it takes', about: 'nfts' });
