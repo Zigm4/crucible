@@ -121,14 +121,18 @@ function tokenOf(quantity: string, contract: string) {
   return { contract, symbol: symbol ?? '', precision: (q?.split('.')[1] ?? '').length };
 }
 
+const OWNER_PAGES_AT_ONCE = 24;
+
 /** Which of these NFTs the given contract owns right now. */
 async function heldBy(contract: string, ids: string[]): Promise<Set<string>> {
   const out = new Set<string>();
   const pages: string[][] = [];
   for (let i = 0; i < ids.length; i += 100) pages.push(ids.slice(i, i + 100));
-  // Side by side, a few at a time: a wallet with 1,600 staked NFTs is 17 pages.
-  for (let i = 0; i < pages.length; i += 6) {
-    await Promise.all(pages.slice(i, i + 6).map(async (page) => {
+  // A page takes the API about 3.5s however many are asked together, so
+  // they all go at once: the largest wallet in the scan, 2,144 staked NFTs,
+  // is 22 pages. The cap only keeps a bigger one from asking 50 together.
+  for (let i = 0; i < pages.length; i += OWNER_PAGES_AT_ONCE) {
+    await Promise.all(pages.slice(i, i + OWNER_PAGES_AT_ONCE).map(async (page) => {
       try {
         const rows = await atomicFetch<{ asset_id: string; owner: string | null }[]>(
           `/atomicassets/v1/assets?ids=${page.join(',')}&limit=100`);
