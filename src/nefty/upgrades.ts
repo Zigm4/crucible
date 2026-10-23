@@ -39,6 +39,11 @@
  *   silently mis-decoding it as a fixed value.
  */
 
+import type { AtomicAsset } from '../atomic/assets';
+import {
+  decodeTypedRule, describeAttributeList, describeTypedRule, passesAll, passesAttributeList,
+  passesTypedRule, type AttributeList, type TypedAttributeRule,
+} from '../atomic/attributes';
 import { getTableRows } from '../chain/rpc';
 
 const CHAIN_CHUNK_SIZE = 200n;
@@ -61,8 +66,10 @@ export type UpgradeIngredient =
   | { kind: 'schema'; collection_name: string; schema_name: string; amount: number; effect: UpgradeEffect }
   | { kind: 'collection'; collection_name: string; amount: number; effect: UpgradeEffect }
   | { kind: 'balance'; schema_name: string; template_id: number; attribute_name: string; cost: number }
-  | { kind: 'attribute'; collection_name: string; schema_name: string; amount: number; effect: UpgradeEffect }
-  | { kind: 'typed_attribute'; collection_name: string; schema_name: string; amount: number; effect: UpgradeEffect }
+  | { kind: 'attribute'; collection_name: string; schema_name: string; amount: number; effect: UpgradeEffect;
+      attributes: AttributeList[] }
+  | { kind: 'typed_attribute'; collection_name: string; schema_name: string; amount: number; effect: UpgradeEffect;
+      rules: TypedAttributeRule[] }
   | { kind: 'unknown'; raw: unknown };
 
 /**
@@ -81,7 +88,8 @@ export type UpgradeEffect =
 export type UpgradeRequirement =
   | { kind: 'template'; template_id: number }
   | { kind: 'templates'; template_ids: number[] }
-  | { kind: 'attribute'; raw: unknown };
+  /** TYPED_ATTRIBUTE_REQUIREMENT: in 1,244 of the open specs, alone in 265 of them. */
+  | { kind: 'attribute'; rule: TypedAttributeRule };
 
 /** What attribute the upgrade rewrites and to which value. */
 export interface UpgradeResult {
@@ -114,6 +122,8 @@ export interface DiscoveredUpgrade {
   /** True when security_id != 0 (whitelist or ownership gate). */
   whitelist_required: boolean;
   whitelist_allowed?: boolean;
+  /** The secure.nefty gate, '0' for none. Needed to sign `upgradesec`. */
+  security_id: string;
   ingredients: UpgradeIngredient[];
   specs: UpgradeSpec[];
   max: number;
@@ -337,6 +347,8 @@ function decodeIngredient(raw: [string, Record<string, unknown>]): UpgradeIngred
         schema_name: String(p.schema_name ?? ''),
         amount: Number(p.amount ?? 1),
         effect: decodeEffect(p.effect as [string, Record<string, unknown>] | undefined),
+        attributes: ((p.attributes ?? []) as { attribute_name?: unknown; allowed_values?: unknown[] }[])
+          .map((x) => ({ attribute_name: String(x.attribute_name ?? ''), allowed_values: (x.allowed_values ?? []).map(String) })),
       };
     case 'TYPED_ATTRIBUTE_INGREDIENT':
       return {
@@ -345,6 +357,7 @@ function decodeIngredient(raw: [string, Record<string, unknown>]): UpgradeIngred
         schema_name: String(p.schema_name ?? ''),
         amount: Number(p.amount ?? 1),
         effect: decodeEffect(p.effect as [string, Record<string, unknown>] | undefined),
+        rules: ((p.attributes ?? []) as Record<string, unknown>[]).map(decodeTypedRule),
       };
     default:
       return { kind: 'unknown', raw };
@@ -362,7 +375,7 @@ function decodeRequirement(raw: [string, Record<string, unknown>]): UpgradeRequi
       template_ids: ((p.template_ids ?? []) as unknown[]).map((n) => Number(n)),
     };
   }
-  return { kind: 'attribute', raw: p };
+  return { kind: 'attribute', rule: decodeTypedRule((p.typed_attribute_definition ?? {}) as Record<string, unknown>) };
 }
 
 function decodeResult(r: RawUpgradeRow['upgrade_specs'][number]['upgrade_results'][number]): UpgradeResult {
@@ -416,6 +429,7 @@ function toDiscovered(r: RawUpgradeRow): DiscoveredUpgrade | undefined {
     status: computeStatus(r),
     is_random,
     whitelist_required: security_id !== '0',
+    security_id,
     ingredients,
     specs,
     max: Number(r.max ?? 0),
@@ -424,6 +438,66 @@ function toDiscovered(r: RawUpgradeRow): DiscoveredUpgrade | undefined {
     end_time: Number(r.end_time ?? 0),
     acceptedTemplateIds,
   };
+}
+
+// ── which NFTs it takes ────────────────────────────────────────────── //
+
+/**
+ * Whether an NFT can be the one upgraded under this spec: its schema, the
+ * template the spec names if any, and every attribute rule. Undefined
+ * when a rule uses a form this page cannot judge.
+ *
+ * Matching on templates alone, which is what this did, offered NFTs the
+ * contract then refused: most specs with a template also carry a rule on
+ * an attribute ("level is 1" before the upgrade to level 2), and 265 open
+ * specs name no template at all.
+ */
+export function specFits(spec: UpgradeSpec, collection: string, a: AtomicAsset): boolean | undefined {
+  if (a.collection?.collection_name !== collection) return false;
+  if (a.schema?.schema_name !== spec.schema_name) return false;
+  const tpl = Number(a.template?.template_id ?? -1);
+  const checks: (boolean | undefined)[] = [];
+  for (const req of spec.requirements) {
+    if (req.kind === 'template') checks.push(tpl === req.template_id);
+    else if (req.kind === 'templates') checks.push(req.template_ids.includes(tpl));
+    else checks.push(passesTypedRule(a, req.rule));
+  }
+  return passesAll(checks);
+}
+
+/** Whether an NFT can be the one upgraded, under any of the upgrade's specs. */
+export function upgradeTargetFits(u: DiscoveredUpgrade, a: AtomicAsset): boolean | undefined {
+  const per = u.specs.map((s) => specFits(s, u.collection_name, a));
+  return per.includes(true) ? true : per.includes(undefined) ? undefined : false;
+}
+
+/** Whether an NFT can pay this ingredient. False for the token ones. */
+export function upgradeIngredientFits(ing: UpgradeIngredient, a: AtomicAsset): boolean | undefined {
+  const coll = a.collection?.collection_name;
+  if (ing.kind === 'template') return coll === ing.collection_name && Number(a.template?.template_id) === ing.template_id;
+  if (ing.kind === 'schema') return coll === ing.collection_name && a.schema?.schema_name === ing.schema_name;
+  if (ing.kind === 'collection') return coll === ing.collection_name;
+  if (ing.kind === 'attribute' || ing.kind === 'typed_attribute') {
+    if (coll !== ing.collection_name || a.schema?.schema_name !== ing.schema_name) return false;
+    return ing.kind === 'attribute'
+      ? passesAttributeList(a, ing.attributes)
+      : passesAll(ing.rules.map((r) => passesTypedRule(a, r)));
+  }
+  return false;
+}
+
+/** The attribute rules of a spec, in words, or '' when it has none. */
+export function specRulesText(spec: UpgradeSpec): string {
+  return spec.requirements
+    .flatMap((r) => (r.kind === 'attribute' ? [describeTypedRule(r.rule)] : []))
+    .join(' and ');
+}
+
+/** An attribute ingredient's rules, in words. */
+export function ingredientRulesText(ing: UpgradeIngredient): string {
+  if (ing.kind === 'attribute') return describeAttributeList(ing.attributes);
+  if (ing.kind === 'typed_attribute') return ing.rules.map(describeTypedRule).join(' and ');
+  return '';
 }
 
 /**

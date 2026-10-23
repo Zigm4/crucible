@@ -14,11 +14,17 @@ import { atomicFetch } from '../chain/rpc';
 export interface AtomicAsset {
   asset_id: string;
   owner: string;
-  template?: { template_id: string } | null;
+  template?: { template_id: string; immutable_data?: Record<string, unknown> } | null;
   schema?: { schema_name: string };
   collection?: { collection_name: string };
   name?: string;
+  /**
+   * The three places an attribute can live, merged. The template wins in
+   * this merge, which is not how contracts read it: see attributes.ts.
+   */
   data?: Record<string, unknown>;
+  mutable_data?: Record<string, unknown>;
+  immutable_data?: Record<string, unknown>;
   template_mint?: string;
   /**
    * When this NFT last arrived in the current owner's wallet, in

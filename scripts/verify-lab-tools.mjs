@@ -510,10 +510,15 @@ async function main() {
 
     // 6. The link under an NFT ingredient. `tpl=` opens the template
     // screen, which by URL renders empty; `template=` is the filter.
+    // The filter is built by inventoryFilterFor, which also narrows a
+    // schema or collection ingredient instead of opening the whole wallet.
     const labSrc = await src('ui/lab.ts');
-    const seeMine = labSrc.split('run-see-mine')[0].slice(-900) + labSrc.split('run-see-mine')[1]?.slice(0, 300);
+    const filterFn = labSrc.split('function inventoryFilterFor')[1]?.split('\n}\n')[0] ?? '';
+    const seeMine = labSrc.split('run-see-mine')[0].slice(-900) + labSrc.split('run-see-mine')[1]?.slice(0, 300) + filterFn;
     say(/~template=/.test(seeMine) && !/~tpl=\$\{tpl\}/.test(seeMine),
         'see-the-ones-you-hold filters the inventory instead of opening an empty template page');
+    say(/~collection=/.test(filterFn) && /~schema=/.test(filterFn),
+        'and a schema or collection ingredient is filtered by that, not left as the whole wallet');
 
     // 7. Typing in the wallet field must not be the same value the
     // in-flight read uses as its identity guard.
@@ -531,9 +536,13 @@ async function main() {
     say(/Not searched: WaxDAO and Blenderizer/.test(labSrc),
         'the uses panel names the contracts it does NOT read');
 
-    // 10. Upgrades matching through an attribute rule were dropped.
+    // 10. Upgrades matching through an attribute rule were dropped. The
+    // bridge now asks upgrades.ts, the same matcher every page uses;
+    // verify-attributes.mjs checks that matcher against the chain.
     const bridgeSrc = await src('ui/bridge.ts');
-    say(/'attribute' \|\| ing\.kind === 'typed_attribute'/.test(bridgeSrc),
+    const upgradesSrc = await src('nefty/upgrades.ts');
+    say(/upgradeIngredientFits\(ing, a\)/.test(bridgeSrc) && /upgradeTargetFits\(u, a\)/.test(bridgeSrc)
+        && /ing\.kind === 'attribute' \|\| ing\.kind === 'typed_attribute'/.test(upgradesSrc),
         'an upgrade that takes this NFT by attribute is matched, not silently skipped');
     say(/unreadable/.test(bridgeSrc), 'and a rule shape we cannot read is counted');
 
@@ -867,12 +876,17 @@ async function main() {
     // because a guess that misses a schema slot proves nothing except
     // that the guard works. (It does: the first version of this test hit
     // "Pick 4 for 4 x any mapfragments NFT" and refused to build.)
-    const fakesFor = (reqs, collection) => {
+    // The NFT to upgrade must also be of the spec's schema and pass its
+    // attribute rules, as up.nefty checks it, so its fake carries those.
+    const fakesFor = (reqs, collection, raw) => {
       const out = [];
       reqs.forEach((r, i) => {
         if (r.kind !== 'nft') return;
         const tpl = /template #(\d+)/.exec(r.text)?.[1] ?? String(900000 + i);
-        const schema = /any ([a-z0-9.]+) NFT/.exec(r.text)?.[1] ?? 'any';
+        const spec = r.role === 'upgrade' ? raw?.specs?.[0] : undefined;
+        const schema = spec?.schema_name ?? /any ([a-z0-9.]+) NFT/.exec(r.text)?.[1] ?? 'any';
+        const mutable = Object.fromEntries((spec?.requirements ?? [])
+          .filter((q) => q.kind === 'attribute').map((q) => [q.rule.attribute_name, q.rule.allowed[0]]));
         for (let k = 0; k < r.need; k += 1) {
           out.push({
             asset_id: `7${i}${k}`,
@@ -880,6 +894,7 @@ async function main() {
             collection: { collection_name: collection },
             schema: { schema_name: schema },
             data: {},
+            mutable_data: mutable,
           });
         }
       });
@@ -907,7 +922,7 @@ async function main() {
       const bare = c.source === 'blend'
         ? run.requirementsOf(rawRow, [], true)
         : run.describeRecipe(c.source, rawRow, [], true).requirements;
-      const owned = fakesFor(bare, c.collection);
+      const owned = fakesFor(bare, c.collection, rawRow);
       const reqs = c.source === 'blend'
         ? run.requirementsOf(rawRow, owned, true)
         : run.describeRecipe(c.source, rawRow, owned, true).requirements;

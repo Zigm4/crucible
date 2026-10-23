@@ -9,15 +9,18 @@
  *
  *     |blend_deposit|<blend_ID>|<slot>|
  *
- * where `<slot>` is the 1-based index of the NFT in the recipe's
- * `blend_ingredients` array (slot 0 is reserved for the FT cost when
- * present).
+ * where `<slot>` is the ingredient's position in the recipe's
+ * `blend_ingredients` array, tokens included. A token cost pays into its
+ * own slot the same way, with a token transfer.
  *
  * The WaxDAO website itself is shut down at the time of writing, but
  * the contract is still live and Crucible can drive it directly, the
  * same way it drives blend.nefty / atomicpacksx / up.nefty.
  */
 
+import { Name } from '@wharfkit/session';
+
+import type { WaxdaoAttributeRule } from '../atomic/attributes';
 import { getTableRows } from '../chain/rpc';
 
 const CHAIN_CHUNK_SIZE = 250n;
@@ -68,7 +71,8 @@ export type WaxdaoIngredient =
       schema_name: string;
       amount: number;
       burn: boolean;
-      required_attributes: unknown[];
+      /** Every live one is "exact" on a text attribute. */
+      required_attributes: WaxdaoAttributeRule[];
     }
   | { kind: 'unknown'; raw: unknown };
 
@@ -96,15 +100,21 @@ export interface DiscoveredWaxdaoBlend {
   blends_remaining: number;
   limit_per_user: number;
   cooldown_reset: number;
+  /**
+   * Who may run it: 'none' for anyone, 'usernames' for the accounts listed
+   * in `whitelisted_accounts`, 'farm' for stakers in `whitelisted_farmname`.
+   */
+  whitelist_type: string;
+  whitelisted_accounts: string[];
+  whitelisted_farmname: string;
+  minimum_to_stake: number;
   ingredients: WaxdaoIngredient[];
   results: WaxdaoResult[];
   payment_receivers: { account: string; percentage: number }[];
   /**
-   * Set of all NFT ingredient slots that need a separate
-   * atomicassets::transfer. Each slot is the 1-based index of the
-   * ingredient in `blend_ingredients` (slot 0 is the FT cost, when
-   * present). Pre-computed here so the action builder is a thin
-   * mapping.
+   * Every NFT ingredient, with the slot its deposit names: its position
+   * in `blend_ingredients`, which is also its index in `ingredients`.
+   * Pre-computed here so the action builder is a thin mapping.
    */
   nftSlots: { slot: number; ingredient: WaxdaoIngredient }[];
   /** True when the recipe has a fungible-token cost. */
@@ -124,7 +134,7 @@ interface RawIngredient {
   schema_name: string;
   template_id: number;
   non_fungible_quantity: number;
-  required_attributes: unknown[];
+  required_attributes: { type?: string; name?: string; value?: string; criteria?: string }[];
 }
 
 interface RawResult {
@@ -149,6 +159,9 @@ interface RawBlend {
   max_blends: number | string;
   blends_remaining: number | string;
   whitelist_type: string;
+  whitelisted_farmname?: string;
+  minimum_to_stake?: number | string;
+  whitelisted_accounts?: string[];
   blend_title: string;
   blend_description: string;
   cover_image: string;
@@ -336,7 +349,10 @@ function decodeIngredient(ing: RawIngredient): WaxdaoIngredient {
       schema_name: ing.schema_name,
       amount,
       burn,
-      required_attributes: ing.required_attributes ?? [],
+      required_attributes: (ing.required_attributes ?? []).map((x) => ({
+        type: String(x.type ?? ''), name: String(x.name ?? ''),
+        value: String(x.value ?? ''), criteria: String(x.criteria ?? ''),
+      })),
     };
   }
   return { kind: 'unknown', raw: ing };
@@ -357,18 +373,18 @@ function decodeResult(r: RawResult): WaxdaoResult {
 function toDiscovered(r: RawBlend): DiscoveredWaxdaoBlend {
   const ingredients = (r.blend_ingredients ?? []).map(decodeIngredient);
 
-  // Slot indices: WaxDAO numbers slots from 0, where slot 0 is the FT
-  // ingredient when present, then 1..N for each NFT ingredient in
-  // order. We mirror that here so the action builder can produce
-  // memos byte-identical to the chain trace.
+  // A deposit's slot is the ingredient's position in the list, tokens
+  // included. This used to put the token at 0 and the NFTs after it,
+  // which is the same thing only while the token comes first and comes
+  // alone. 153 of the 594 open blends do not (100 charge two tokens, 53
+  // list the token later), and none of them could be blended from here:
+  // an NFT sent to a token's slot is refused ("Incorrect ingredient
+  // type", blends 905 and 171 through compute_transaction, never signed;
+  // 905 mints with this numbering), and a second token was never paid.
   const hasFtCost = ingredients.some((i) => i.kind === 'fungible');
-  const nftSlots: { slot: number; ingredient: WaxdaoIngredient }[] = [];
-  let nftSlotCursor = hasFtCost ? 1 : 0;
-  for (const ing of ingredients) {
-    if (ing.kind === 'fungible') continue;
-    nftSlots.push({ slot: nftSlotCursor, ingredient: ing });
-    nftSlotCursor += 1;
-  }
+  const nftSlots = ingredients
+    .map((ingredient, slot) => ({ slot, ingredient }))
+    .filter((x) => x.ingredient.kind !== 'fungible');
 
   return {
     blend_id: String(r.ID),
@@ -383,6 +399,10 @@ function toDiscovered(r: RawBlend): DiscoveredWaxdaoBlend {
     blends_remaining: Number(r.blends_remaining ?? 0),
     limit_per_user: Number(r.limit_per_user ?? 0),
     cooldown_reset: Number(r.cooldown_reset ?? 0),
+    whitelist_type: String(r.whitelist_type || 'none'),
+    whitelisted_accounts: (r.whitelisted_accounts ?? []).map(String),
+    whitelisted_farmname: String(r.whitelisted_farmname ?? ''),
+    minimum_to_stake: Number(r.minimum_to_stake ?? 0),
     ingredients,
     results: (r.blend_results ?? []).map(decodeResult),
     payment_receivers: (r.payment_receivers ?? []).map((p) => ({
@@ -412,4 +432,100 @@ export async function loadWaxdaoBlendById(
 
 export function clearWaxdaoBlendsCache() {
   cache.clear();
+}
+
+// ── one account's uses ──────────────────────────────────────────────── //
+
+/**
+ * How often one account ran one blend, from `blendorderz`.
+ *
+ * Its rows are keyed by `userblendcom`, the account's name value in the high
+ * 64 bits and the blend id in the low ones, with a secondary i128 index on it,
+ * so one account's row is a single read. Read off the live table: the counter
+ * is `quantity`, and `cooldown_reset` is when that account's window ends.
+ */
+export interface WaxdaoUse {
+  quantity: number;
+  /** Unix seconds. */
+  cooldown_reset: number;
+}
+
+export async function readWaxdaoUse(blendId: string, actor: string): Promise<WaxdaoUse | undefined> {
+  const key = ((BigInt(Name.from(actor).value.toString()) << 64n) | BigInt(blendId)).toString();
+  const rows = await getTableRows<{ userblendcom: string; quantity: number | string; cooldown_reset: number | string }>({
+    code: 'waxdaomarket', scope: 'waxdaomarket', table: 'blendorderz',
+    index_position: 'secondary', key_type: 'i128',
+    lower_bound: key, upper_bound: key, limit: 1,
+  });
+  const r = rows.find((x) => String(x.userblendcom) === key);
+  return r ? { quantity: Number(r.quantity) || 0, cooldown_reset: Number(r.cooldown_reset) || 0 } : undefined;
+}
+
+/**
+ * Uses left for this account right now.
+ *
+ * The counter never resets. Across all 9,791 rows of blendorderz, no counter
+ * is over its limit on a blend without cooldown (27 blends), and 151 are on
+ * blends with one (55 of 145), some far over: 123 uses of a 1-per-hour blend.
+ * The contract confirms it when asked through an unsigned compute_transaction:
+ * an account at 6 uses of a 1-per-hour blend, window over, blends through to
+ * the mint. So within the window the limit is held against the lifetime
+ * counter, and once the window is over one more use opens the next one.
+ * In practice: the limit at first, then one per cooldown. Inside a window the
+ * contract does refuse: a copy of a blend with 1 per day, created and run
+ * twice in one simulated transaction, fails the second time with "There is
+ * a limit on how many NFTs can be bought by 1 user".
+ */
+export function waxdaoUsesLeft(
+  b: Pick<DiscoveredWaxdaoBlend, 'limit_per_user' | 'cooldown_reset'>,
+  use: WaxdaoUse | undefined,
+  nowSec: number = Math.floor(Date.now() / 1000),
+): number {
+  if (b.limit_per_user <= 0) return Infinity;
+  if (!use) return b.limit_per_user;
+  const left = Math.max(0, b.limit_per_user - use.quantity);
+  if (b.cooldown_reset > 0 && nowSec >= use.cooldown_reset) return Math.max(1, left);
+  return left;
+}
+
+/** Which of these farms are non-custodial, where a member's row reads 0 staked. */
+export async function readNonCustodialFarms(farms: string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const farm of new Set(farms)) {
+    const [row] = await getTableRows<{ farmname: string; farmtype: string }>({
+      code: 'waxdaofarmer', scope: 'waxdaofarmer', table: 'farms',
+      index_position: 'secondary', key_type: 'name', lower_bound: farm, upper_bound: farm, limit: 1,
+    });
+    if (row && row.farmname === farm && /^nc/i.test(String(row.farmtype))) out.add(farm);
+  }
+  return out;
+}
+
+// ── farm gates ──────────────────────────────────────────────────────── //
+
+/**
+ * The WaxDAO farms an account stakes in, and how much, from waxdaofarmer.
+ *
+ * A blend with whitelist_type 'farm' is for stakers of `whitelisted_farmname`.
+ * waxdaofarmer keeps one `stakebackup` row per account and farm, custodial
+ * and non-custodial alike, with a secondary index on the account, so this is
+ * one read. Verified against the farms' own totals (thenfxmarket: 20 staked,
+ * 20 summed over its 12 rows).
+ *
+ * What the contract checks, asked through compute_transaction (executed,
+ * never signed or written): a staker's blend runs to the mint, a
+ * non-staker's is refused with "No record of this user was found in the
+ * farm for this blend". With a minimum of 1, a member of a non-custodial
+ * farm passes although its row says 0 staked, since those stakes are not
+ * counted in that row.
+ */
+export async function readFarmStakes(actor: string): Promise<Map<string, number>> {
+  const rows = await getTableRows<{ username: string; farmname: string; totalstaked: number | string }>({
+    code: 'waxdaofarmer', scope: 'waxdaofarmer', table: 'stakebackup',
+    index_position: 'secondary', key_type: 'name',
+    lower_bound: actor, upper_bound: actor, limit: 500,
+  });
+  const out = new Map<string, number>();
+  for (const r of rows) if (r.username === actor) out.set(String(r.farmname), Number(r.totalstaked) || 0);
+  return out;
 }

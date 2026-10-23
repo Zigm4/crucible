@@ -1,0 +1,222 @@
+/*!
+ * crucible / v2.css   (the v2 preview page only)
+ * =============================================================
+ * Everything else comes from the classic stylesheets: the lab's
+ * cards, steps and buttons, and the two calm skins, modern.css
+ * (dark) and neutral.css (light). This file only lays out what v2
+ * adds around them: the header with its menu, and the home.
+ *
+ * Colours are the active theme's tokens, never literals, so the
+ * same rules hold in both skins.
+ */
+
+/* --- page ------------------------------------------------------------ */
+.v2 main { padding-top: 20px; }
+/* The classic frame around #root suits a dense tool page; here the
+   cards already carry their own edges. */
+.v2 #root {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* --- header ---------------------------------------------------------- */
+.v2-header {
+  display: flex;
+  align-items: center;
+  gap: 8px 20px;
+  flex-wrap: wrap;
+  padding-bottom: 14px;
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--border);
+}
+.v2-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--fg);
+  text-decoration: none;
+}
+.v2-logo { width: 26px; height: 26px; color: var(--accent); flex: none; }
+.v2-name { font-size: 18px; font-weight: 700; letter-spacing: 0.4px; }
+.v2-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.v2-nav { display: flex; gap: 2px; }
+.v2-nav a {
+  padding: 7px 11px;
+  border-radius: 8px;
+  color: var(--fg-dim);
+  font-size: 13.5px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.v2-nav a:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.v2-nav a[aria-current="page"] {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.v2-header-end { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.v2-classic { font-size: 12.5px; color: var(--fg-dim); text-decoration: none; white-space: nowrap; }
+.v2-classic:hover { color: var(--accent); }
+.v2-theme {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.v2-theme button {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.v2-theme button.on { color: var(--fg); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+
+/* --- home ------------------------------------------------------------ */
+.v2-home { max-width: 900px; margin: 0 auto; }
+
+/* The question is the page: it gets a band of its own, set apart from
+   the groups by size and by a soft wash of the accent. */
+.v2-hero {
+  margin-bottom: 26px;
+  padding: 34px 32px 28px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 18px;
+  background:
+    radial-gradient(ellipse at 0% 0%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%),
+    radial-gradient(ellipse at 100% 100%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 55%),
+    var(--panel);
+}
+.v2-eyebrow {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.v2-hero h1 {
+  margin: 0 0 12px;
+  font-size: 40px;
+  line-height: 1.1;
+  font-weight: 750;
+  letter-spacing: -0.5px;
+  color: var(--fg);
+}
+.v2-lead { margin: 0; max-width: 60ch; color: var(--fg-dim); font-size: 15.5px; line-height: 1.6; }
+
+.v2-wallet {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  flex-wrap: wrap;
+  margin-top: 22px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+.v2-wallet.on { border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+.v2-wallet strong { color: var(--fg); }
+.v2-error { margin: 6px 0 0; color: var(--danger); font-size: 12.5px; }
+
+/* One card per group, with air between them, so each reads as its own
+   place rather than as a heading in one long list. */
+.v2 .v2-group { margin-bottom: 18px; padding: 20px 22px 22px; }
+.v2-group-head { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
+.v2-group-head h2 {
+  margin: 0 0 3px;
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--fg);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.v2-group-head p { margin: 0; color: var(--fg-dim); font-size: 13.5px; line-height: 1.5; }
+.v2-group-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.v2-group-icon svg { width: 21px; height: 21px; }
+/* What still lives on the classic page sits back a step. */
+.v2 .v2-group-quiet { background: transparent; border-style: dashed; }
+.v2-group-quiet .v2-group-icon { color: var(--muted); background: color-mix(in srgb, var(--fg) 6%, transparent); }
+
+/* The home reuses the run tool's kind cards, some of them as links.
+   Groups hold two or four of them, so the grid is set in pairs: a row
+   of four, or two rows of two, never three and an orphan. */
+.v2-home .run-kinds { margin: 0; }
+.v2-cards { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.v2-cards:has(> :nth-child(2):last-child) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 860px) { .v2-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 460px) { .v2-cards, .v2-cards:has(> :nth-child(2):last-child) { grid-template-columns: 1fr; } }
+.v2-home .run-kind { padding: 14px; gap: 4px; transition: border-color .12s, background .12s; }
+.v2-home .run-kind:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+a.run-kind { text-decoration: none; }
+.v2-home .run-kind strong { font-size: 14.5px; }
+.v2-tag {
+  margin-left: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  vertical-align: 1px;
+}
+
+.v2-classic-only h1 { margin: 0 0 8px; font-size: 20px; }
+.v2-classic-only p { color: var(--fg-dim); line-height: 1.6; }
+.v2-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 16px; }
+.v2-actions a.lab-primary { text-decoration: none; }
+
+/* --- phone ----------------------------------------------------------- */
+@media (max-width: 760px) {
+  .v2 main { padding-left: 16px; padding-right: 16px; }
+  .v2-header { gap: 10px 12px; }
+  /* The menu takes its own row and scrolls sideways inside it, so the
+     page itself never does. */
+  .v2-nav {
+    order: 3;
+    flex-basis: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin: 0 -4px;
+  }
+  .v2-nav::-webkit-scrollbar { display: none; }
+  .v2-hero { padding: 24px 18px 20px; border-radius: 14px; }
+  .v2-hero h1 { font-size: 30px; }
+  .v2-lead { font-size: 14.5px; }
+  .v2 .v2-group { padding: 16px; }
+}

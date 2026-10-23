@@ -24,8 +24,11 @@
  * says that is what it looked at rather than implying it looked further.
  */
 import type { AtomicAsset } from '../atomic/assets';
+import { attributeOf, passesAttributeList } from '../atomic/attributes';
 import { listBlends, clearDiscoverCache } from '../nefty/discover';
-import { listUpgrades, clearUpgradesCache } from '../nefty/upgrades';
+import {
+  listUpgrades, clearUpgradesCache, upgradeIngredientFits, upgradeTargetFits, type DiscoveredUpgrade,
+} from '../nefty/upgrades';
 import { clearAtomicIndexerDown, atomicIndexerDown } from '../chain/rpc';
 import { listPackDesigns } from '../nefty/packs';
 import { listNeftyPackDesigns } from '../nefty/neftyPacks';
@@ -72,10 +75,14 @@ function ingredientTakes(a: AtomicAsset, ing: IngredientVariant): boolean {
   if (kind === 'ATTRIBUTE_INGREDIENT') {
     if (a.collection?.collection_name !== p.collection_name) return false;
     if (a.schema?.schema_name !== p.schema_name) return false;
-    return (p.attributes ?? []).every((att) => {
-      const v = (a.data ?? {})[att.attribute_name];
-      return (att.allowed_values ?? []).map(String).includes(String(v));
-    });
+    return passesAttributeList(a, (p.attributes ?? []).map((att) => ({
+      attribute_name: att.attribute_name, allowed_values: (att.allowed_values ?? []).map(String),
+    })));
+  }
+  if (kind === 'BALANCE_INGREDIENT') {
+    // An NFT whose number pays the cost, and which stays in the wallet.
+    return String(a.template?.template_id ?? '') === String(p.template_id)
+      && Number(attributeOf(a, p.attribute_name)) >= Number(p.cost);
   }
   return false;
 }
@@ -89,6 +96,9 @@ function reasonFor(a: AtomicAsset, ing: IngredientVariant): string {
   if (kind === 'ATTRIBUTE_INGREDIENT') {
     const names = (p.attributes ?? []).map((x) => x.attribute_name).join(' and ');
     return `it matches on ${names || 'an attribute'}`;
+  }
+  if (kind === 'BALANCE_INGREDIENT') {
+    return `it spends ${p.cost} of its ${p.attribute_name}, and you keep it`;
   }
   void a;
   return 'it matches this recipe';
@@ -236,6 +246,11 @@ export async function usableIndex(collection: string, actor = ''): Promise<Match
     collection?: string; schema?: string;
     attributes: { attribute_name: string; allowed_values?: unknown[] }[];
   }[] = [];
+  // Upgrades are asked whole: what they take depends on attribute rules
+  // as well as templates, and those are matched against the NFT itself.
+  const liveUpgrades: DiscoveredUpgrade[] = [];
+  // A balance is only usable with enough on the NFT, so it is checked whole.
+  const balanceIngredients: IngredientVariant[] = [];
   let recipes = 0;
 
   if (blends.status === 'fulfilled') {
@@ -244,6 +259,7 @@ export async function usableIndex(collection: string, actor = ''): Promise<Match
       recipes += 1;
       for (const [kind, p] of b.ingredients ?? []) {
         if (kind === 'TEMPLATE_INGREDIENT') templates.add(String(p.template_id));
+        else if (kind === 'BALANCE_INGREDIENT') balanceIngredients.push([kind, p] as IngredientVariant);
         else if (kind === 'SCHEMA_INGREDIENT') schemas.add(`${p.collection_name}/${p.schema_name}`);
         else if (kind === 'COLLECTION_INGREDIENT') collections.add(String(p.collection_name));
         else if (kind === 'ATTRIBUTE_INGREDIENT') {
@@ -265,12 +281,7 @@ export async function usableIndex(collection: string, actor = ''): Promise<Match
     for (const u of upgrades.value.upgrades) {
       if (u.status !== 'active') continue;
       recipes += 1;
-      for (const t of u.acceptedTemplateIds ?? []) templates.add(String(t));
-      for (const ing of u.ingredients ?? []) {
-        if (ing.kind === 'template') templates.add(String(ing.template_id));
-        else if (ing.kind === 'schema') schemas.add(`${ing.collection_name}/${ing.schema_name}`);
-        else if (ing.kind === 'collection') collections.add(String(ing.collection_name));
-      }
+      liveUpgrades.push(u);
     }
   }
   for (const res of [packs, neftyPacks]) {
@@ -299,11 +310,14 @@ export async function usableIndex(collection: string, actor = ''): Promise<Match
         if (rule.collection && rule.collection !== coll) continue;
         if (rule.schema && rule.schema !== schema) continue;
         if (!rule.attributes.length) continue;
-        const ok = rule.attributes.every((att) => (att.allowed_values ?? [])
-          .map(String).includes(String((a.data ?? {})[att.attribute_name])));
+        const ok = passesAttributeList(a, rule.attributes.map((att) => ({
+          attribute_name: att.attribute_name, allowed_values: (att.allowed_values ?? []).map(String),
+        })));
         if (ok) return true;
       }
-      return false;
+      if (balanceIngredients.some((ing) => ingredientTakes(a, ing))) return true;
+      return liveUpgrades.some((u) => upgradeTargetFits(u, a) === true
+        || (u.ingredients ?? []).some((ing) => upgradeIngredientFits(ing, a) === true));
     },
   };
 }
@@ -362,40 +376,19 @@ export async function whatUsesThis(a: AtomicAsset, actor = ''): Promise<Uses> {
     for (const u of upgrades.value.upgrades) {
       // An upgrade can want this NFT in two different roles, and which
       // one decides whether you keep it. Worth saying which.
-      const isTarget = (u.acceptedTemplateIds ?? []).map(String).includes(tpl);
-      // An upgrade can want this NFT through an attribute rule as well as
-      // by template, schema or collection. Returning false for those
-      // dropped real upgrades while the panel went on saying the whole
-      // collection had been searched, so they are matched here and the
-      // ones whose shape we cannot evaluate are counted instead of
-      // quietly discarded.
-      let unsure = false;
+      // Matched on everything the upgrade asks, attribute rules included,
+      // the way up.nefty checks them. A template alone said "this is the
+      // NFT it upgrades" for one at the wrong level; the ones whose shape
+      // we cannot evaluate are counted instead of quietly discarded.
+      const target = upgradeTargetFits(u, a);
+      const isTarget = target === true;
+      let unsure = target === undefined;
       const asCost = (u.ingredients ?? []).some((ing) => {
-        if (ing.kind === 'template') return String(ing.template_id) === tpl;
-        if (ing.kind === 'schema') {
-          return a.collection?.collection_name === ing.collection_name
-            && a.schema?.schema_name === ing.schema_name;
-        }
-        if (ing.kind === 'collection') return a.collection?.collection_name === ing.collection_name;
-        if (ing.kind === 'attribute' || ing.kind === 'typed_attribute') {
-          const spec = ing as unknown as {
-            collection_name?: string; schema_name?: string;
-            attributes?: { attribute_name: string; allowed_values?: unknown[] }[];
-          };
-          if (spec.collection_name && a.collection?.collection_name !== spec.collection_name) return false;
-          if (spec.schema_name && a.schema?.schema_name !== spec.schema_name) return false;
-          const rules = spec.attributes ?? [];
-          if (!rules.length) { unsure = true; return false; }
-          return rules.every((att) => {
-            const v = (a.data ?? {})[att.attribute_name];
-            const allowed = (att.allowed_values ?? []).map(String);
-            if (!allowed.length) { unsure = true; return false; }
-            return allowed.includes(String(v));
-          });
-        }
         if (ing.kind === 'ft') return false;      // a token cost, not this NFT
-        unsure = true;                            // a shape we do not read
-        return false;
+        if (ing.kind === 'balance' || ing.kind === 'unknown') { unsure = true; return false; }
+        const fits = upgradeIngredientFits(ing, a);
+        if (fits === undefined) unsure = true;
+        return fits === true;
       });
       if (unsure) unreadable += 1;
       if (!isTarget && !asCost) continue;

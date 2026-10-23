@@ -2742,6 +2742,74 @@ body.inv-locked { overflow: hidden; }
 .run-choice-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-step[disabled] { opacity: .4; cursor: default; }
 
+/* Can you run it. One colour per answer, the same in the list, in the
+   tally above it and on the check step: green you can, amber something
+   is missing, red closed to you, dashed grey not known yet. */
+.run-choice { border-left-width: 3px; }
+.run-choice.run-tone-ok { border-left-color: var(--ok); }
+.run-choice.run-tone-warn { border-left-color: var(--warn); }
+.run-choice.run-tone-block { border-left-color: var(--danger); }
+.run-choice.run-tone-pending { border-left-style: dashed; border-left-color: var(--muted); }
+.run-choice:disabled { cursor: not-allowed; opacity: .78; }
+.run-choice:disabled .run-choice-name { color: var(--fg-dim); }
+.run-verdict { font-size: 12.5px; }
+.run-tone-ok .run-verdict { color: var(--ok); }
+.run-tone-warn .run-verdict { color: var(--warn); }
+.run-tone-block .run-verdict { color: var(--danger); }
+.run-tone-pending .run-verdict { color: var(--fg-dim); }
+.run-checks { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.run-check {
+  padding: 1px 8px; border-radius: 999px; font-size: 11px; line-height: 1.7;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+.run-check-ok { color: var(--ok); }
+.run-check-info { color: var(--fg-dim); }
+.run-check-warn { color: var(--warn); }
+.run-check-block { color: var(--danger); }
+.run-check-pending { color: var(--muted); border-style: dashed; }
+.run-tally { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 10px; }
+.run-more {
+  margin-top: 10px; padding: 7px 12px; border-radius: 8px; cursor: pointer;
+  border: 1px dashed color-mix(in srgb, currentColor 25%, transparent);
+  background: none; color: var(--fg-dim); font: inherit; font-size: 12.5px;
+}
+.run-more:hover { color: var(--fg); border-color: var(--accent); }
+.run-verdict-panel {
+  margin: 14px 0 18px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--border); border-left: 3px solid var(--muted);
+}
+.run-verdict-panel.run-tone-ok { border-left-color: var(--ok); }
+.run-verdict-panel.run-tone-warn { border-left-color: var(--warn); }
+.run-verdict-panel.run-tone-block { border-left-color: var(--danger); }
+.run-verdict-panel h4 { margin: 0 0 8px; }
+.run-check-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; font-size: 13px; }
+.run-li { display: flex; gap: 9px; align-items: baseline; }
+.run-li::before {
+  content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted); transform: translateY(-1px);
+}
+.run-li-ok::before { background: var(--ok); }
+.run-li-info::before { background: color-mix(in srgb, var(--fg-dim) 60%, transparent); }
+.run-li-warn::before { background: var(--warn); }
+.run-li-block::before { background: var(--danger); }
+.run-li-pending::before { background: none; border: 1px dashed var(--muted); }
+/* What the wallet signed half of and never finished. */
+.run-pending {
+  margin: 0 0 16px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: color-mix(in srgb, var(--warn) 7%, transparent);
+}
+.run-pending > p { margin: 4px 0 8px; }
+.run-pending-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px 14px; flex-wrap: wrap;
+  padding: 6px 0; border-top: 1px solid var(--border-soft); font-size: 13px;
+}
+/* Where to find what is missing, under the line that says it is. */
+.run-hub { display: block; margin-top: 4px; font-size: 12px; color: var(--fg-dim); }
+.run-hub a { color: var(--accent); }
+.run-li > span { min-width: 0; }
+
 
 
 /* The picker. Only shown where there is a real choice: a slot with

@@ -19,11 +19,11 @@
  * Key differences vs blend.nefty:
  *   - no `announcedepo`: the order is created entirely by the
  *     `assertblend` row + the slot-indexed memos
- *   - each NFT ingredient is its OWN transfer (no batching), and the
- *     memo carries the 1-based slot index
- *   - slot 0 is reserved for the FT ingredient when present; NFT
- *     slots start at 1 in that case, or at 0 when the recipe has no
- *     FT cost
+ *   - each ingredient is its OWN transfer (no batching), token or NFT,
+ *     and the memo carries its position in the recipe's ingredient list.
+ *     In the trace above the token comes first, so it pays into slot 0
+ *     and the NFTs into 1, 2...; a recipe that lists a second token, or
+ *     its token later, pays each one into its own position
  *   - `unique_id` is a client-side uint64 used by the contract to
  *     dedup pending blend orders; we generate one at sign time
  */
@@ -75,9 +75,8 @@ function depositMemo(blend_id: string | number, slot: number): string {
 /**
  * Builds the full action list for a WaxDAO blend.
  *
- * Order matters: `assertblend` first, then the FT transfer (slot 0)
- * if any, then one atomicassets::transfer per NFT slot in slot-index
- * order.
+ * `assertblend` first, then one transfer per ingredient in list order:
+ * a token transfer for a cost, an atomicassets::transfer for an NFT.
  */
 export function buildWaxdaoBlendActions(args: WaxdaoBlendPlanArgs): BuiltAction[] {
   const auth = [{ actor: args.claimer, permission: 'active' }];
@@ -97,26 +96,27 @@ export function buildWaxdaoBlendActions(args: WaxdaoBlendPlanArgs): BuiltAction[
     },
   });
 
-  // 2. FT cost, slot 0 (when present)
-  for (const ing of args.blend.ingredients) {
-    if (ing.kind !== 'fungible') continue;
-    actions.push({
-      account: ing.contract,
-      name: 'transfer',
-      authorization: auth,
-      data: {
-        from: args.claimer,
-        to: 'waxdaomarket',
-        quantity: ing.quantity,
-        memo: depositMemo(blend_id, 0),
-      },
-    });
-    break; // recipes have at most one FT ingredient in practice
-  }
-
-  // 3. NFT transfers, one per slot, in increasing slot order.
-  const slotsSorted = [...args.blend.nftSlots].sort((a, b) => a.slot - b.slot);
-  for (const { slot, ingredient } of slotsSorted) {
+  // 2. Every ingredient into its own slot, in list order. Only the first
+  //    token used to be paid ("at most one in practice"), and 100 open
+  //    recipes charge two.
+  const nftAt = new Map(args.blend.nftSlots.map((s) => [s.slot, s.ingredient]));
+  for (const [slot, ing] of args.blend.ingredients.entries()) {
+    if (ing.kind === 'fungible') {
+      actions.push({
+        account: ing.contract,
+        name: 'transfer',
+        authorization: auth,
+        data: {
+          from: args.claimer,
+          to: 'waxdaomarket',
+          quantity: ing.quantity,
+          memo: depositMemo(blend_id, slot),
+        },
+      });
+      continue;
+    }
+    const ingredient = nftAt.get(slot);
+    if (!ingredient) continue;
     const picked = args.nftSelection.get(slot);
     if (!picked) {
       throw new Error(

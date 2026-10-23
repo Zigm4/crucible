@@ -1,4 +1,5 @@
 import { getTableRows } from '../chain/rpc';
+import { covers, readTokenBalanceRaw } from './tokens';
 
 /**
  * Drops live in the `neftyblocksd` contract on WAX, in a single global table
@@ -51,7 +52,18 @@ export interface ProofFilter {
   template_id?: number;
   amount: number;
   comparison_operator: number;
+  /** TOKEN_HOLDING only: the issuer, the symbol ("8,WAX") and the amount ("1.00000000 WAX"). */
+  token_contract?: string;
+  token_symbol?: string;
+  token_amount?: string;
 }
+
+/**
+ * Token balances a proof was judged against, keyed "contract:SYMBOL". A
+ * balance of null means the account has no row, which is a true zero. A
+ * missing key means the balance could not be read.
+ */
+export type ProofBalances = Map<string, string | null>;
 export interface ProofResolution {
   /** Logical operator from LOGICAL_GROUP: 0 = AND, 1 = OR. */
   logical_operator: number;
@@ -391,15 +403,9 @@ async function resolveAuth(
       limit: 1,
     });
     if (rows.length > 0) {
-      const filters: ProofFilter[] = (rows[0].group.filters ?? []).map(([type, p]) => ({
-        type: type as ProofFilter['type'],
-        collection_name: p.collection_name as string | undefined,
-        schema_name: p.schema_name as string | undefined,
-        template_id: p.template_id !== undefined ? Number(p.template_id) : undefined,
-        amount: Number(p.amount ?? 1),
-        comparison_operator: Number(p.comparison_operator ?? 3),
-      }));
-      const resolved = resolveProof(filters, rows[0].group.logical_operator, ownedAssets);
+      const filters = parseProofFilters(rows[0].group);
+      const balances = await readProofBalances(filters, actor).catch(() => undefined);
+      const resolved = resolveProof(filters, rows[0].group.logical_operator, ownedAssets, balances);
       drop.auth = { kind: 'proof', filters, resolved };
       return;
     }
@@ -425,42 +431,155 @@ async function resolveAuth(
   drop.auth = { kind: 'unclaimable' };
 }
 
-function resolveProof(
+/**
+ * The filters of a LOGICAL_GROUP, the shape neftyblocksd and secure.nefty
+ * both store a proof of ownership in.
+ */
+export function parseProofFilters(group: {
+  filters?: Array<[string, Record<string, unknown>]>;
+}): ProofFilter[] {
+  return (group.filters ?? []).map(([type, p]) => type === 'TOKEN_HOLDING'
+    // The amount of a token filter is an asset string, not a count.
+    ? {
+        type: 'TOKEN_HOLDING' as const,
+        token_contract: String(p.token_contract ?? ''),
+        token_symbol: String(p.token_symbol ?? ''),
+        token_amount: String(p.amount ?? ''),
+        amount: 1,
+        comparison_operator: Number(p.comparison_operator ?? 3),
+      }
+    : {
+        type: type as ProofFilter['type'],
+        collection_name: p.collection_name as string | undefined,
+        schema_name: p.schema_name as string | undefined,
+        template_id: p.template_id !== undefined ? Number(p.template_id) : undefined,
+        amount: Number(p.amount ?? 1),
+        comparison_operator: Number(p.comparison_operator ?? 3),
+      });
+}
+
+const tokenKeyOf = (f: ProofFilter) =>
+  `${f.token_contract ?? ''}:${(f.token_symbol ?? '').split(',')[1] ?? ''}`;
+
+/**
+ * Reads the balances a group's token filters ask about: one read per
+ * distinct token. They used to be skipped, so 249 drop proofs that asked
+ * for a balance could never be satisfied, whatever the wallet held.
+ */
+export async function readProofBalances(filters: ProofFilter[], owner: string): Promise<ProofBalances> {
+  const out: ProofBalances = new Map();
+  for (const f of filters) {
+    if (f.type !== 'TOKEN_HOLDING' || !f.token_contract) continue;
+    const key = tokenKeyOf(f);
+    if (out.has(key)) continue;
+    const raw = await readTokenBalanceRaw({ owner, contract: f.token_contract, symbolCode: key.split(':')[1] });
+    if (raw !== undefined) out.set(key, raw);
+  }
+  return out;
+}
+
+/**
+ * Whether the balance meets a token filter, by the comparison it states:
+ * 0 equal, 1 not equal, 2 greater, 3 greater or equal, 4 less, 5 less or
+ * equal. Undefined when the balance could not be read.
+ */
+function tokenMet(f: ProofFilter, balances?: ProofBalances): boolean | undefined {
+  const key = tokenKeyOf(f);
+  if (!balances?.has(key) || !f.token_amount) return undefined;
+  const code = key.split(':')[1];
+  const have = balances.get(key) ?? `0 ${code}`;
+  const atLeast = covers(have, f.token_amount);
+  const atMost = covers(f.token_amount, have);
+  if (atLeast === undefined || atMost === undefined) return undefined;
+  switch (f.comparison_operator) {
+    case 0: return atLeast && atMost;
+    case 1: return !(atLeast && atMost);
+    case 2: return atLeast && !atMost;
+    case 4: return !atLeast;
+    case 5: return atMost;
+    default: return atLeast;
+  }
+}
+
+/**
+ * How many NFTs one filter needs shown. The comparison is the holding
+ * against `amount`: 0 equal, 2 greater, 3 greater or equal. The rest
+ * (not equal, less) say nothing useful about what to show, and are
+ * treated as greater or equal.
+ */
+const proofCount = (f: ProofFilter) =>
+  Math.max(1, f.comparison_operator === 2 ? f.amount + 1 : f.amount);
+
+/** Whether one owned NFT counts towards one filter. */
+export function matchesProofFilter(
+  f: ProofFilter,
+  a: NonNullable<ListDropsOpts['ownedAssets']>[number],
+): boolean {
+  if (f.type === 'TEMPLATE_HOLDINGS') {
+    return a.collection?.collection_name === f.collection_name && a.template?.template_id === String(f.template_id);
+  }
+  if (f.type === 'SCHEMA_HOLDINGS') {
+    return a.collection?.collection_name === f.collection_name && a.schema?.schema_name === f.schema_name;
+  }
+  if (f.type === 'COLLECTION_HOLDINGS') return a.collection?.collection_name === f.collection_name;
+  return false;
+}
+
+/** How many NFTs the wallet is short of for one filter. */
+export function proofShortfall(f: ProofFilter, owned: ListDropsOpts['ownedAssets'] = []): number {
+  return Math.max(0, proofCount(f) - owned.filter((a) => matchesProofFilter(f, a)).length);
+}
+
+/**
+ * Picks owned NFTs that prove each filter, each filter judged on its own.
+ *
+ * One NFT may count for several filters. secure.nefty, asked through an
+ * unsigned compute_transaction (executed by a node, never signed or written),
+ * accepted a single NFT of template 790465 as proof of both "1 of template
+ * 790465" and "1 from its collection", and refused a proof missing the
+ * template, so the check counts per filter. neftyblocksd answered the same
+ * for a drop's claimwproof, refusing only the proof with the template left
+ * out.
+ * The NFTs shown are the union of what each filter needed, reusing ones
+ * already shown first so the list stays short.
+ *
+ * It used to pick one NFT per filter whatever the filter asked, so "25 NFTs
+ * from tag" read as satisfied by a single one, and the claim was refused on
+ * chain for the 24 it never showed.
+ */
+export function resolveProof(
   filters: ProofFilter[],
   logical_operator: number,
   ownedAssets: ListDropsOpts['ownedAssets'] = [],
+  /** Balances for the token filters; without them those filters are not met. */
+  balances?: ProofBalances,
 ): ProofResolution {
-  // Pick one matching asset per filter (greedy, in order), avoiding reuse.
-  const used = new Set<string>();
+  const shown = new Set<string>();
   const picks: string[] = [];
+  let met = 0;
   for (const f of filters) {
-    const candidate = ownedAssets.find((a) => {
-      if (used.has(a.asset_id)) return false;
-      if (f.type === 'TEMPLATE_HOLDINGS') {
-        return (
-          a.collection?.collection_name === f.collection_name &&
-          a.template?.template_id === String(f.template_id)
-        );
-      }
-      if (f.type === 'SCHEMA_HOLDINGS') {
-        return (
-          a.collection?.collection_name === f.collection_name &&
-          a.schema?.schema_name === f.schema_name
-        );
-      }
-      if (f.type === 'COLLECTION_HOLDINGS') {
-        return a.collection?.collection_name === f.collection_name;
-      }
-      return false;
-    });
-    if (candidate) {
-      used.add(candidate.asset_id);
-      picks.push(candidate.asset_id);
+    // An OR group needs one filter met, so the first one met is enough.
+    if (logical_operator === 1 && met > 0) break;
+    // A token filter is met by the balance alone and shows no NFT.
+    if (f.type === 'TOKEN_HOLDING') {
+      if (tokenMet(f, balances)) met += 1;
+      continue;
     }
+    const matches = ownedAssets.filter((a) => matchesProofFilter(f, a));
+    const need = proofCount(f);
+    if (matches.length < need) continue;
+    const ordered = [
+      ...matches.filter((a) => shown.has(a.asset_id)),
+      ...matches.filter((a) => !shown.has(a.asset_id)),
+    ];
+    for (const a of ordered.slice(0, need)) {
+      if (shown.has(a.asset_id)) continue;
+      shown.add(a.asset_id);
+      picks.push(a.asset_id);
+    }
+    met += 1;
   }
-  const satisfied = logical_operator === 1
-    ? picks.length > 0
-    : picks.length === filters.length;
+  const satisfied = logical_operator === 1 ? met > 0 : met === filters.length;
   return { logical_operator, asset_ids: picks, satisfied };
 }
 

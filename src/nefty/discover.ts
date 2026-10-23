@@ -19,6 +19,7 @@
  * for blends with security_id != 0 by reading `secure.nefty/whitelists`.
  */
 import { atomicFetch, getTableRows } from '../chain/rpc';
+import { readSecurityGate } from './security';
 
 const PAGE_LIMIT = 100;
 const MAX_PAGES = 5;
@@ -66,8 +67,12 @@ export interface DiscoveredBlend {
   status: DiscoveredStatus;
   /** True when the blend requires a `secure.nefty` whitelist. */
   whitelist_required: boolean;
-  /** True/false once we've checked; undefined when no wallet or check failed. */
+  /** The secure.nefty gate, '0' for none: a whitelist or a proof of ownership. */
+  security_id?: string;
+  /** True/false once we've checked; undefined when no wallet, check failed, or the gate is an ownership proof. */
   whitelist_allowed?: boolean;
+  /** Which kind of secure.nefty gate, once read: a whitelist or a proof of ownership. */
+  gate_kind?: 'whitelist' | 'proof' | 'unknown';
   /**
    * True for blends where at least one roll has 2+ outcomes (the result
    * is decided at unbox time, not at recipe time). The UI executes
@@ -87,6 +92,12 @@ export interface DiscoveredBlend {
   result_template_id?: number;
   /** Result template's name, when the source already carried it (indexer). */
   result_template_name?: string;
+  /** Uses allowed in total, 0 for no cap, and uses so far. */
+  max?: number;
+  use_count?: number;
+  /** As the source stored them, seconds or milliseconds; 0 for no bound. */
+  start_time?: number;
+  end_time?: number;
 }
 
 // ─── raw indexer / on-chain shape ──────────────────────────────────────── //
@@ -530,12 +541,26 @@ function toDiscovered(b: RawBlend): DiscoveredBlend | undefined {
     name: (dd.name && String(dd.name)) || `Blend #${id}`,
     status: computeStatus(b),
     whitelist_required: security_id !== '0',
+    security_id,
     is_random: !isDeterministicRolls(b.rolls),
     // whitelist_allowed left undefined until enrichWhitelist runs
     ingredients: b.ingredients as import('./blend').IngredientVariant[] | undefined,
     result_template_id: res.template_id,
     result_template_name: res.name,
+    // Read already, to compute the status. Kept so a list can say how many
+    // uses are left and when a recipe opens, not only that it is "upcoming".
+    max: Number(b.max ?? 0),
+    use_count: Number(b.use_count ?? 0),
+    start_time: Number(b.start_time ?? 0),
+    end_time: Number(b.end_time ?? 0),
   };
+}
+
+/** The status a blend row is in right now, by the same rule as the lists. */
+export function blendStatusOf(b: {
+  is_hidden?: boolean; max?: number; use_count?: number; start_time?: number; end_time?: number;
+}): DiscoveredStatus {
+  return computeStatus(b);
 }
 
 // ─── whitelist enrichment ──────────────────────────────────────────────── //
@@ -558,13 +583,20 @@ async function enrichWhitelist(blends: DiscoveredBlend[], actor: string): Promis
   await Promise.all(
     targets.map(async (b) => {
       try {
-        const sid = await fetchSecurityId(b.blend_id);
+        const sid = b.security_id && b.security_id !== '0' ? b.security_id : await fetchSecurityId(b.blend_id);
         if (!sid || sid === '0') {
           b.whitelist_required = false;
           return;
         }
-        const allowed = await isInWhitelist(sid, actor);
-        b.whitelist_allowed = allowed;
+        b.security_id = sid;
+        // The gate says which kind it is. Read as a whitelist, an ownership
+        // gate has no rows for anybody, so every visitor was "not
+        // whitelisted" and the row was greyed out for people who qualified.
+        // An ownership gate needs the wallet's NFTs, which this list does not
+        // have, so it stays undecided here and is judged on the blend itself.
+        const gate = await readSecurityGate(b.collection_name, sid, actor);
+        b.gate_kind = gate.kind;
+        b.whitelist_allowed = gate.kind === 'whitelist' ? gate.allowed : undefined;
       } catch {
         // leave whitelist_allowed undefined; UI handles it gracefully
       }
@@ -588,22 +620,3 @@ async function fetchSecurityId(blend_id: string): Promise<string> {
   return sid;
 }
 
-const wlCache = new Map<string, Set<string>>(); // security_id -> set of allowed actors
-async function isInWhitelist(security_id: string, actor: string): Promise<boolean> {
-  let allowed = wlCache.get(security_id);
-  if (!allowed) {
-    const rows = await getTableRows<{ account?: string; name?: string }>({
-      code: 'secure.nefty',
-      scope: security_id,
-      table: 'whitelists',
-      limit: 1000,
-    });
-    allowed = new Set();
-    for (const r of rows) {
-      const candidate = (r.account ?? r.name ?? '') as string;
-      if (candidate) allowed.add(candidate);
-    }
-    wlCache.set(security_id, allowed);
-  }
-  return allowed.has(actor);
-}

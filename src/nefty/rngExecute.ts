@@ -14,7 +14,7 @@
  *   TX1 (announce + deposit + fuse, signed by the user):
  *     [0a. blend.nefty::openbal         once per (owner, symbol) ever]
  *     [0b. <token>::transfer            for token-paying blends]
- *      1.  blend.nefty::announcedepo    { owner, count }
+ *     [1.  blend.nefty::announcedepo    { owner, count }   when NFTs go in]
  *     [2.  atomicassets::transfer       { ..., memo: "deposit" }    ]
  *      3.  blend.nefty::fuse            { claimer, blend_id,
  *                                         transferred_assets,
@@ -132,16 +132,15 @@ export async function buildFuseActions(args: RngPlanArgs): Promise<BuiltAction[]
     });
   }
 
-  // 3. announcedepo (count = NFTs being deposited, even when 0)
-  actions.push({
-    account: 'blend.nefty',
-    name: 'announcedepo',
-    authorization: auth,
-    data: { owner: args.claimer, count: args.asset_ids.length },
-  });
-
-  // 4. NFT transfer (skip when FT-only)
+  // 3 + 4. announcedepo and the NFT transfer, only when NFTs go in: an
+  //    announce of 0 is refused (see execute.ts).
   if (args.asset_ids.length > 0) {
+    actions.push({
+      account: 'blend.nefty',
+      name: 'announcedepo',
+      authorization: auth,
+      data: { owner: args.claimer, count: args.asset_ids.length },
+    });
     actions.push({
       account: 'atomicassets',
       name: 'transfer',

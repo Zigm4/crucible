@@ -46,10 +46,18 @@ import { loadPool, type PoolInfo } from '../nefty/pools';
 import { checkWhitelist, type WhitelistStatus } from '../nefty/whitelist';
 import { listAssetsForOwner, type AtomicAsset } from '../atomic/assets';
 import {
+  choiceFromBlendRow, emptyCheckContext, gateOf, loadCheckContext, signStops, verdictFor,
+  type CheckContext, type RecipeVerdict,
+} from './runChecks';
+import { dropCollectionOf, type RecipeChoice, type RecipeSource } from './guidedRun';
+import { hubLinks, renderVerdictPanel } from './verdictView';
+import { proofFor, securityCheckFor } from '../nefty/security';
+import {
   buildSlots,
   flattenNftSelection,
   ftSlots,
   nftSlots,
+  ownNftSelection,
   totalRequiredNfts,
   type FtSlot,
   type IngredientSlot,
@@ -63,12 +71,18 @@ import {
   type SecurityCheck,
 } from '../nefty/rngExecute';
 import {
+  ingredientRulesText,
   listUpgrades,
   loadUpgradeById,
+  specFits,
+  upgradeIngredientFits,
   type DiscoveredUpgrade,
   type UpgradeStatus,
   type UpgradeIngredient,
 } from '../nefty/upgrades';
+import {
+  canJudgeTypedRule, canJudgeWaxdaoRule, describeTypedRule, describeWaxdaoRule, passesAll, passesWaxdaoRule,
+} from '../atomic/attributes';
 import { buildUpgradeActions, executeUpgrade } from '../nefty/upgradeExecute';
 import {
   listWaxdaoBlends,
@@ -199,6 +213,7 @@ import {
   type CatalogGrouping,
 } from './catalog';
 import { syncInventoryLock, renderLabPage, attachLabHandlers, applyLabRoute } from './lab';
+import { captureRenderSnapshot, restoreRenderSnapshot } from './renderSnapshot';
 import {
   emptyStakingState, loadStaking, censusPool, isUnprovenPool, tokenContractFor, refundDelayFor,
   buildClaimFor, buildUnstakeFor, buildRefundFor, poolShortfall,
@@ -1159,7 +1174,10 @@ function isBlendExecutable(blend: DiscoveredBlend, ownedAssets: AtomicAsset[]): 
   if (!blend.ingredients || blend.ingredients.length === 0) return true;
   const slots = buildSlots(blend.ingredients, ownedAssets);
   for (const slot of slots) {
-    if (slot.kind === 'FT' || slot.kind === 'UNSUPPORTED') continue;
+    if (slot.kind === 'FT') continue;
+    // An ingredient this app does not handle cannot be blended from here,
+    // and it used to count as executable for that very reason.
+    if (slot.kind === 'UNSUPPORTED') return false;
     if (slot.eligible.length < slot.amount) return false;
   }
   return true;
@@ -2009,6 +2027,10 @@ async function onLoadDropManual() {
   state.dropLastTrxId = undefined;
   render();
   try {
+    // A shared link names the drop, not its collection. The search used to
+    // run in whatever collection was open, often none, and found nothing.
+    const owner = await dropCollectionOf(state.dropId);
+    if (owner && owner !== state.discoveryCollection) onChangeCollection(owner);
     const session = getCurrentSession();
     const { drops } = await listDrops({
       collection: state.discoveryCollection,
@@ -2016,9 +2038,11 @@ async function onLoadDropManual() {
       actor: session ? String(session.actor) : undefined,
       ownedAssets: state.ownedAssets,
     });
-    // Try to find by id, fall back to a direct chain read if absent.
     const drop = drops.find((d) => d.drop_id === state.dropId);
     if (drop) {
+      // onPickDrop picks from the list on screen, which a drop loaded by
+      // id was not in, so it used to stop there with nothing selected.
+      state.drops = drops;
       onPickDrop(state.dropId);
     } else {
       setStatus(`Drop ${state.dropId} not found in ${state.discoveryCollection}.`, 'err');
@@ -2031,6 +2055,135 @@ async function onLoadDropManual() {
   }
 }
 
+// ─── can you run it: the guided pages' checks, here too ─────────────── //
+
+/**
+ * These panels each grew their own idea of "can this run". The guided run
+ * tool judges every recipe with one set of checks (runChecks), read from the
+ * chain the same way, and the panels use it as well: the same list of
+ * criteria above the sign button, and the button held back by the same
+ * blocking ones. The panels' own checks stay, since they also watch the slot
+ * picks; the shared ones add what they never knew: what secure.nefty gates
+ * really ask, blend and WaxDAO limits per account, WaxDAO farms and lists,
+ * and token-holding proofs.
+ *
+ * The whole wallet is read for it, not only the collection on screen: a
+ * gate can ask for NFTs of another collection.
+ */
+let classicCtx: CheckContext = emptyCheckContext();
+let classicChecked = '';
+
+function classicChoice(): RecipeChoice | undefined {
+  if (state.page !== 'app') return undefined;
+  const mk = (source: RecipeSource, raw: unknown, id: string): RecipeChoice =>
+    ({ source, raw, id, name: '', note: '', live: true });
+  switch (state.view) {
+    case 'blends': return state.blend ? choiceFromBlendRow(state.blend) : undefined;
+    case 'drops': return state.drop ? mk('drop', state.drop, state.drop.drop_id) : undefined;
+    case 'upgrades': return state.upgrades.picked ? mk('upgrade', state.upgrades.picked, state.upgrades.picked.upgrade_id) : undefined;
+    case 'waxdao-blends': return state.waxdao.picked ? mk('waxdao', state.waxdao.picked, state.waxdao.picked.blend_id) : undefined;
+    case 'blenderizer-blends': return state.blenderizer.picked ? mk('blenderizer', state.blenderizer.picked, state.blenderizer.picked.blend_id) : undefined;
+    default: return undefined;
+  }
+}
+
+/** Reads what the checks need for one recipe: the wallet first, since gates are judged against it. */
+async function loadClassicChecks(choice: RecipeChoice, collection: string): Promise<void> {
+  const ctx = classicCtx;
+  if (ctx.actor && !ctx.assetsKnown) {
+    try {
+      ctx.assets = await listAssetsForOwner({ owner: ctx.actor });
+      ctx.assetsKnown = true;
+    } catch { /* the checks say what they could not read */ }
+  }
+  await loadCheckContext(ctx, [choice], collection, render);
+}
+
+/** The verdict of the recipe on screen, starting its reads the first time it is asked. */
+function classicVerdict(): RecipeVerdict | undefined {
+  const choice = classicChoice();
+  if (!choice) return undefined;
+  const actor = String(getCurrentSession()?.actor ?? '');
+  const raw = choice.raw as { collection_name?: string; collection?: string };
+  const collection = String(raw.collection_name ?? raw.collection ?? '');
+  if (classicCtx.actor !== actor || classicCtx.collection !== collection) {
+    const assets = classicCtx.actor === actor ? classicCtx.assets : [];
+    const known = classicCtx.actor === actor && classicCtx.assetsKnown;
+    classicCtx = emptyCheckContext();
+    classicCtx.actor = actor;
+    classicCtx.collection = collection;
+    classicCtx.assets = assets;
+    classicCtx.assetsKnown = known;
+    classicChecked = '';
+  }
+  const key = `${choice.source}:${choice.id}`;
+  if (classicChecked !== key) {
+    classicChecked = key;
+    void loadClassicChecks(choice, collection);
+  }
+  return verdictFor(choice, classicCtx);
+}
+
+/** The NFTs the transaction on screen spends, which leave the wallet before a gate is checked. */
+function classicSpent(): string[] {
+  if (state.page !== 'app') return [];
+  // The picks so far, not flattenNftSelection: that one throws until every
+  // slot is full. An NFT that only has a balance spent stays in the wallet.
+  if (state.view === 'blends') {
+    const kept = new Set(nftSlots(state.slots).filter((s) => s.keep).map((s) => s.index));
+    return [...state.selection.entries()].filter(([i]) => !kept.has(i)).flatMap(([, ids]) => ids);
+  }
+  if (state.view === 'upgrades') return collectUpgradeCostAssets();
+  return [];
+}
+
+/** What signing still waits on beyond the checks: the gate read, and proof NFTs it does not spend. */
+function classicSignStops(): string[] {
+  const choice = classicChoice();
+  return choice ? signStops(choice, classicCtx, new Set(classicSpent())) : [];
+}
+
+/** What the shared checks say would be refused. The NFT shortfall is left to the slots. */
+function classicStops(): string[] {
+  return (classicVerdict()?.checks ?? [])
+    .filter((k) => (k.tone === 'block' || k.tone === 'warn') && k.about !== 'nfts')
+    .map((k) => k.text)
+    .concat(classicSignStops());
+}
+
+/**
+ * After a signature the account's uses, the recipe's supply and the wallet
+ * have all moved, so the checks are read again. A short wait first, so the
+ * reads land on a node that has the block.
+ */
+function recheckClassicSoon(): void {
+  setTimeout(() => {
+    classicCtx = emptyCheckContext();
+    classicChecked = '';
+    render();
+  }, 1500);
+}
+
+function renderClassicVerdict(): string {
+  const v = classicVerdict();
+  if (!v) return '';
+  return renderVerdictPanel(v)
+    + classicSignStops().map((t) => `<p class="status-line warn">${escapeHtml(t)}</p>`).join('');
+}
+
+/**
+ * What to show secure.nefty when signing: the account for a whitelist, the
+ * account and the NFTs that prove it for an ownership gate. The proof is
+ * taken from NFTs this transaction does not spend, because those leave the
+ * wallet before the gate is checked. It used to be the whitelist form every
+ * time, so an ownership-gated blend was refused on chain.
+ */
+function classicSecurityCheck(claimer: string, spent: string[]): SecurityCheck {
+  const choice = classicChoice();
+  const gate = choice ? gateOf(choice, classicCtx) : undefined;
+  return securityCheckFor(gate, claimer, proofFor(gate, classicCtx.assets, new Set(spent)));
+}
+
 function readyToClaim(): boolean {
   // The contract cannot mint into a collection that never authorized it,
   // so the recipe is unrunnable by anyone no matter what its status says.
@@ -2039,6 +2192,7 @@ function readyToClaim(): boolean {
   if (state.contractAuthorized === false) return false;
   const d = state.drop;
   if (!d) return false;
+  if (classicStops().length) return false;
   if (d.status !== 'active') return false;
   if (d.auth.kind === 'authkey') return false;
   if (d.auth.kind === 'unclaimable') return false;
@@ -2122,6 +2276,7 @@ async function onDropExecute() {
       String(result.resolved?.transaction.id ?? '');
     state.dropLastTrxId = trxId;
     setStatus(`Drop claimed: ${trxId}`, 'ok', trxId);
+    recheckClassicSoon();
   } catch (err) {
     setStatus(`Claim failed: ${(err as Error).message}`, 'err');
   }
@@ -2323,7 +2478,9 @@ function readyToSubmit(): boolean {
   // collection, and that must not condemn a working recipe.
   if (state.contractAuthorized === false) return false;
   if (!state.blend) return false;
-  if (state.whitelist?.required && !state.whitelist.allowed) return false;
+  // The gate, the limit and the rest come from the shared checks. The old
+  // whitelist read called every ownership gate a closed whitelist.
+  if (classicStops().length) return false;
   // NFT slots must be filled
   for (const s of nftSlots(state.slots)) {
     if ((state.selection.get(s.index) ?? []).length !== s.amount) return false;
@@ -2340,6 +2497,8 @@ async function buildPlan(): Promise<BuiltAction[]> {
   const session = getCurrentSession();
   if (!session || !state.blend) throw new Error('No session / blend loaded');
   const asset_ids = flattenNftSelection(state.slots, state.selection);
+  // A balance is spent from an NFT that stays in the wallet.
+  const own_assets = ownNftSelection(state.slots, state.selection);
   const ft_payments = ftSlots(state.slots).map((s) => s.quantity);
   if (!isDeterministic(state.blend).ok) {
     // RNG blend: simulate the TX1 leg (announce + fuse). The TX2 leg
@@ -2349,18 +2508,20 @@ async function buildPlan(): Promise<BuiltAction[]> {
       claimer: String(session.actor),
       blend_id: state.blend.blend_id,
       asset_ids,
+      own_assets,
       ft_payments,
       secure: blendIsSecure(state.blend),
-      security_check: defaultSecurityCheck(String(session.actor)),
+      security_check: classicSecurityCheck(String(session.actor), asset_ids),
     });
   }
   return buildBlendActions({
     claimer: String(session.actor),
     blend_id: state.blend.blend_id,
     asset_ids,
+    own_assets,
     ft_payments,
     secure: blendIsSecure(state.blend),
-    security_check: defaultSecurityCheck(String(session.actor)),
+    security_check: classicSecurityCheck(String(session.actor), asset_ids),
   });
 }
 
@@ -2410,15 +2571,17 @@ async function onExecute() {
     const result = await executeBlend(session, {
       blend_id: state.blend.blend_id,
       asset_ids: flattenNftSelection(state.slots, state.selection),
+      own_assets: ownNftSelection(state.slots, state.selection),
       ft_payments: ftSlots(state.slots).map((s) => s.quantity),
       secure: blendIsSecure(state.blend),
-      security_check: defaultSecurityCheck(String(session.actor)),
+      security_check: classicSecurityCheck(String(session.actor), flattenNftSelection(state.slots, state.selection)),
     });
     const trxId =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
     state.lastTrxId = trxId;
     setStatus(`Transaction broadcast: ${trxId}`, 'ok', trxId);
+    recheckClassicSoon();
   } catch (err) {
     setStatus(`Transaction failed: ${(err as Error).message}`, 'err');
   }
@@ -2426,18 +2589,6 @@ async function onExecute() {
 }
 
 // ─── RNG blend execution (fuse + wait + claim) ─────────────────────── //
-
-/**
- * Picks the right `SECURITY_CHECK` payload for the current blend. For
- * non-secured or whitelist-secured blends we send a no-op WHITELIST_CHECK
- * with the user's own account, which is also exactly what every recent
- * on-chain trace does for non-ownership-gated blends. Ownership-secured
- * blends would need extra UI to pick proof NFTs and are out of scope
- * for this first pass; we surface a friendly error in that case.
- */
-function defaultSecurityCheck(claimer: string): SecurityCheck {
-  return { kind: 'whitelist', account_name: claimer };
-}
 
 /** True when the blend is gated by a security_id (whitelist/ownership). This
  *  decides fuse (secure) vs nosecfuse (non-secure), independently of whether
@@ -2457,12 +2608,13 @@ async function onExecuteRng() {
   if (!session || !state.blend) return;
   const claimer = String(session.actor);
   // Confirm with the user (same UX as deterministic execute).
-  const security_check = defaultSecurityCheck(claimer);
+  const security_check = classicSecurityCheck(claimer, flattenNftSelection(state.slots, state.selection));
   const secure = blendIsSecure(state.blend);
   const actions = await buildFuseActions({
     claimer,
     blend_id: state.blend.blend_id,
     asset_ids: flattenNftSelection(state.slots, state.selection),
+    own_assets: ownNftSelection(state.slots, state.selection),
     ft_payments: ftSlots(state.slots).map((s) => s.quantity),
     secure,
     security_check,
@@ -2492,6 +2644,7 @@ async function onExecuteRng() {
     const result = await executeFuse(session, {
       blend_id: state.blend.blend_id,
       asset_ids: flattenNftSelection(state.slots, state.selection),
+      own_assets: ownNftSelection(state.slots, state.selection),
       ft_payments: ftSlots(state.slots).map((s) => s.quantity),
       secure,
       security_check,
@@ -2500,6 +2653,7 @@ async function onExecuteRng() {
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
     const shortTx = state.rngTx1Id ? state.rngTx1Id.slice(0, 8) : '';
+    recheckClassicSoon();
     state.rngPhase = 'waiting';
     state.rngPhaseMessage = 'Submitted. The oracle resolves the result, then it mints automatically - watching…';
     state.rngWaitElapsedMs = 0;
@@ -3513,26 +3667,21 @@ function onPickUpgradeAsset(specIdx: number, asset_id: string) {
  * Attribute requirements are not enforced client-side, the contract
  * will reject if the user picks a non-matching asset.
  */
+/**
+ * The NFTs this spec can upgrade: schema, template and attribute rules,
+ * as up.nefty checks them (specFits). It used to stop at the template,
+ * and offered every NFT of the schema when a spec named none, so an NFT
+ * at the wrong level could be picked and the upgrade refused on chain.
+ */
 function ownedAssetsForSpec(spec: DiscoveredUpgrade['specs'][number]): AtomicAsset[] {
-  const owned = state.discoveryOwnedAssets;
-  // Collect template_ids from each requirement.
-  const accepted = new Set<number>();
-  for (const req of spec.requirements) {
-    if (req.kind === 'template') accepted.add(req.template_id);
-    if (req.kind === 'templates') for (const id of req.template_ids) accepted.add(id);
-  }
-  // Filter by schema first, then by template.
-  return owned.filter((a) => {
-    if (a.schema?.schema_name && a.schema.schema_name !== spec.schema_name) return false;
-    if (accepted.size === 0) return true; // attribute-only filters: show all in the schema
-    const tid = a.template?.template_id;
-    return tid != null && accepted.has(Number(tid));
-  });
+  const collection = state.upgrades.picked?.collection_name ?? '';
+  return state.discoveryOwnedAssets.filter((a) => specFits(spec, collection, a) === true);
 }
 
 /** NFT-cost ingredients (burn these as cost) that need an asset picker. */
 function isCostNftIngredient(ing: UpgradeIngredient): boolean {
-  return ing.kind === 'template' || ing.kind === 'schema' || ing.kind === 'collection';
+  if (ing.kind === 'typed_attribute') return ing.rules.every(canJudgeTypedRule);
+  return ing.kind === 'template' || ing.kind === 'schema' || ing.kind === 'collection' || ing.kind === 'attribute';
 }
 function costIngredientAmount(ing: UpgradeIngredient): number {
   return (ing as { amount?: number }).amount ?? 1;
@@ -3553,6 +3702,9 @@ function ownedAssetsForCostIngredient(ing: UpgradeIngredient): AtomicAsset[] {
   }
   if (ing.kind === 'collection') {
     return owned.filter((a) => a.collection?.collection_name === ing.collection_name);
+  }
+  if (ing.kind === 'attribute' || ing.kind === 'typed_attribute') {
+    return owned.filter((a) => upgradeIngredientFits(ing, a) === true);
   }
   return [];
 }
@@ -3602,8 +3754,10 @@ function readyToUpgrade(): boolean {
   const u = state.upgrades;
   if (!u.picked) return false;
   if (u.picked.status !== 'active') return false;
-  if (u.picked.is_random) return false; // out of scope for v1
-  if (u.picked.whitelist_required) return false; // gated upgrades not supported in v1
+  if (u.picked.is_random) return false; // up.nefty has no random results (upgrades.ts)
+  // A gated upgrade is signed as upgradesec now; whether this wallet passes
+  // the gate is one of the shared checks.
+  if (classicStops().length) return false;
   // Every spec must have a picked asset.
   for (let i = 0; i < u.picked.specs.length; i++) {
     if (!u.selection.get(i)) return false;
@@ -3617,7 +3771,7 @@ function readyToUpgrade(): boolean {
     } else if (isCostNftIngredient(ing)) {
       if ((u.costSelection.get(i) ?? []).length < costIngredientAmount(ing)) return false;
     } else {
-      // balance / attribute / unknown cost types aren't pickable yet.
+      // balance / unknown cost types, and rules this page cannot judge, aren't pickable.
       return false;
     }
   }
@@ -3635,13 +3789,16 @@ async function buildUpgradePlan(): Promise<BuiltAction[]> {
   const ft_payments = u.picked.ingredients
     .filter((ing): ing is Extract<UpgradeIngredient, { kind: 'ft' }> => ing.kind === 'ft')
     .map((ing) => ing.quantity);
+  const transferred_assets = collectUpgradeCostAssets();
   return buildUpgradeActions({
     claimer: String(session.actor),
     upgrade_id: u.picked.upgrade_id,
     assets_to_upgrade,
-    transferred_assets: collectUpgradeCostAssets(),
+    transferred_assets,
     own_assets: [],
     ft_payments,
+    security_check: u.picked.whitelist_required
+      ? classicSecurityCheck(String(session.actor), transferred_assets) : undefined,
   });
 }
 
@@ -3675,18 +3832,24 @@ async function onExecuteUpgrade() {
       .filter((ing): ing is Extract<UpgradeIngredient, { kind: 'ft' }> => ing.kind === 'ft')
       .map((ing) => ing.quantity);
     setStatus('Awaiting wallet signature for the upgrade...', 'info');
+    const transferred_assets = collectUpgradeCostAssets();
     const result = await executeUpgrade(session, {
       upgrade_id: u.picked.upgrade_id,
       assets_to_upgrade,
-      transferred_assets: collectUpgradeCostAssets(),
+      transferred_assets,
       own_assets: [],
       ft_payments,
+      // Gated: upgradesec with the gate's check. A plain upgrade, which is
+      // what this sent before, is refused on every gated upgrade.
+      security_check: u.picked.whitelist_required
+        ? classicSecurityCheck(String(session.actor), transferred_assets) : undefined,
     });
     const trxId =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
     u.lastTrxId = trxId;
     setStatus(`Upgrade broadcast: ${trxId}`, 'ok', trxId);
+    recheckClassicSoon();
   } catch (err) {
     setStatus(`Upgrade failed: ${(err as Error).message}`, 'err');
   } finally {
@@ -3886,16 +4049,18 @@ function renderPickerPanel(): string {
   }
   const rows = visible
     .map((b) => {
-      const wlDenied = b.whitelist_required && b.whitelist_allowed === false;
-      const wlPending = b.whitelist_required && b.whitelist_allowed === undefined;
+      const wlDenied = b.whitelist_required && b.gate_kind !== 'proof' && b.whitelist_allowed === false;
+      const wlPending = b.whitelist_required && b.gate_kind !== 'proof' && b.whitelist_allowed === undefined;
       const disabled = wlDenied;
       const classes = ['picker-row'];
       if (disabled) classes.push('picker-row-disabled');
       const wlBadge = wlDenied
         ? '<span class="picker-wl-badge">not whitelisted</span>'
-        : wlPending
-          ? '<span class="picker-wl-badge pending">whitelist?</span>'
-          : '';
+        : b.gate_kind === 'proof'
+          ? '<span class="picker-wl-badge pending" title="Open the blend to see whether your NFTs prove it.">ownership gate</span>'
+          : wlPending
+            ? '<span class="picker-wl-badge pending">whitelist?</span>'
+            : '';
       const rngBadge = b.is_random
         ? '<span class="picker-wl-badge pending" title="Random blend: 2 signatures (fuse + claim) instead of 1.">RNG</span>'
         : '';
@@ -4191,9 +4356,13 @@ function renderBlendInfo(): string {
   // instead of lumping it in with multi-outcome random blends.
   const certainPool = draws.length > 0 && oddsAreCertain(b);
   const wl = state.whitelist;
+  // The gate as secure.nefty defines it, once the shared checks read it. The
+  // whitelist read alone called every ownership gate "denied".
+  const choice = classicChoice();
+  const gate = choice ? gateOf(choice, classicCtx) : undefined;
   // security_id != 0 means the blend IS gated; `wl` only gets filled once a
   // wallet is connected (that's what we check eligibility against).
-  const gatedButUnchecked = !wl && blendIsSecure(b);
+  const gatedButUnchecked = !wl && !gate && blendIsSecure(b);
   const remainingUses = b.max && Number(b.max) > 0
     ? `${b.use_count}/${b.max} (${Math.max(0, Number(b.max) - Number(b.use_count))} left)`
     : `${b.use_count}/∞`;
@@ -4210,8 +4379,14 @@ function renderBlendInfo(): string {
             ? '<span class="tag ok">guaranteed · drawn from a pool</span>'
             : '<span class="tag warn">random · oracle picks one outcome per roll</span>'}
         ${
-          wl?.required
-            ? wl.allowed
+          gate?.kind === 'proof'
+            ? gate.resolved?.satisfied
+              ? '<span class="tag ok">ownership gate · you hold what it asks</span>'
+              : gate.resolved
+                ? '<span class="tag err">ownership gate · you do not hold what it asks</span>'
+                : '<span class="tag warn">ownership gate · connect a wallet to check</span>'
+          : gate?.kind === 'whitelist' || wl?.required
+            ? (gate?.kind === 'whitelist' ? gate.allowed : wl?.allowed)
               ? '<span class="tag ok">whitelist · allowed</span>'
               : '<span class="tag err">whitelist · denied</span>'
             : gatedButUnchecked
@@ -4228,7 +4403,7 @@ function renderBlendInfo(): string {
         : certainPool
           ? `<h3>Expected reward</h3>${renderPoolReward(b)}`
           : `${renderRngOdds(b)}${draws.length > 0 ? `<h3>Pool draws</h3>${renderPoolReward(b)}` : ''}`}
-      ${wl?.required && !wl.allowed ? `<p class="status-line err">${escapeHtml(wl.reason ?? '')}</p>` : ''}
+      ${wl?.required && !wl.allowed && gate?.kind !== 'proof' ? `<p class="status-line err">${escapeHtml(wl.reason ?? '')}</p>` : ''}
       ${renderBlendManage(b)}
     </div>
   `;
@@ -4587,7 +4762,7 @@ function renderNftSlot(slot: IngredientSlot): string {
     return `
       <div class="slot unsupported">
         <div class="slot-header"><div class="slot-label">${escapeHtml(slot.label)}</div></div>
-        <p class="status-line err">This ingredient type is not handled by this app.</p>
+        <p class="status-line err">Crucible does not handle this ingredient, so this recipe cannot be run from here.</p>
       </div>`;
   }
   if (slot.kind === 'FT') return ''; // rendered separately
@@ -4619,7 +4794,10 @@ function renderNftSlot(slot: IngredientSlot): string {
       </div>
       ${
         slot.eligible.length === 0
-          ? '<p class="status-line err">No eligible NFT in your wallet for this slot.</p>'
+          ? `<p class="status-line err">No eligible NFT in your wallet for this slot.</p>${
+              slot.collection_name
+                ? hubLinks({ collection: slot.collection_name, template_id: slot.kind === 'TEMPLATE' ? slot.template_id : undefined })
+                : ''}`
           : `<div class="asset-grid">${items.join('')}</div>`
       }
     </div>`;
@@ -4724,8 +4902,8 @@ function renderActions(): string {
   const isRandom = !isDeterministic(state.blend).ok;
   // Random blends route through a 2-step state machine. The state of
   // that machine drives a different button surface below.
-  if (isRandom) return authBanner + renderRngActions(ready, totalPicked, totalRequired);
-  return authBanner + `
+  if (isRandom) return authBanner + renderClassicVerdict() + renderRngActions(ready, totalPicked, totalRequired);
+  return authBanner + renderClassicVerdict() + `
     <div class="card">
       <h2>5 · Verify &amp; execute</h2>
       <div class="row">
@@ -5321,7 +5499,7 @@ function describeProofFilter(f: import('../nefty/drops').ProofFilter): string {
     case 'COLLECTION_HOLDINGS':
       return `${verb} from collection <code>${escapeHtml(f.collection_name ?? '?')}</code>`;
     case 'TOKEN_HOLDING':
-      return `a token-holding proof (amount ${f.amount})`;
+      return `a balance of ${f.comparison_operator === 2 ? 'more than ' : 'at least '}<code>${escapeHtml(f.token_amount ?? '?')}</code>`;
     default:
       return `<span class="term">${escapeHtml(String(f.type))}</span>`;
   }
@@ -5383,7 +5561,7 @@ function renderDropActions(): string {
   const d = state.drop;
   if (!d) return '';
   const ready = readyToClaim();
-  const blockers = renderContractAuthBanner() + renderDropBlockerNotices(d);
+  const blockers = renderContractAuthBanner() + renderClassicVerdict() + renderDropBlockerNotices(d);
   return `
     <div class="card">
       <h2>4 · Verify &amp; claim</h2>
@@ -6318,8 +6496,8 @@ function ingredientLabel(ing: UpgradeIngredient, collection?: string): string {
     }
     case 'schema':       return `Burn ${ing.amount} NFT(s) from schema ${escapeHtml(ing.schema_name)}`;
     case 'collection':   return `Burn ${ing.amount} NFT(s) from collection ${escapeHtml(ing.collection_name)}`;
-    case 'attribute':    return `Burn ${ing.amount} NFT(s) matching specific attributes`;
-    case 'typed_attribute': return `Burn ${ing.amount} NFT(s) matching typed attributes`;
+    case 'attribute':
+    case 'typed_attribute': return `Burn ${ing.amount} ${ing.schema_name} NFT(s) whose ${ingredientRulesText(ing)}`;
     case 'balance':      return `Reduce ${ing.attribute_name} by ${ing.cost} on a held NFT`;
     case 'unknown':      return 'Unknown ingredient type';
   }
@@ -6356,14 +6534,16 @@ function renderUpgradePickerPanel(): string {
   const rows = visible.map((up) => {
     const random = up.is_random;
     const wl = up.whitelist_required;
-    const disabled = random || wl;
+    // Gated upgrades are signed as upgradesec now, so only randomness, which
+    // up.nefty does not support, still closes a row.
+    const disabled = random;
     const cls = ['picker-row'];
     if (disabled) cls.push('picker-row-disabled');
     const rngBadge = random
       ? '<span class="picker-wl-badge" title="Random upgrade results need an ORNG wait, not supported yet.">RNG</span>'
       : '';
     const wlBadge = wl
-      ? '<span class="picker-wl-badge" title="Whitelist or ownership gate, not supported yet.">gated</span>'
+      ? '<span class="picker-wl-badge pending" title="Behind a whitelist or ownership gate. Open it to see whether you pass.">gated</span>'
       : '';
     // Show first FT ingredient cost as the price tag (most common case).
     const ft = up.ingredients.find((ing) => ing.kind === 'ft');
@@ -6484,7 +6664,7 @@ function renderUpgradeInfo(): string {
 
   const flags: string[] = [];
   if (up.is_random) flags.push('<span class="tag warn">random results · not yet executable</span>');
-  if (up.whitelist_required) flags.push('<span class="tag warn">whitelist / ownership gate · not yet executable</span>');
+  if (up.whitelist_required) flags.push('<span class="tag warn">whitelist / ownership gate · see below whether you pass</span>');
 
   return `
     <div class="card">
@@ -6533,7 +6713,7 @@ function renderUpgradeAssetSlot(spec: DiscoveredUpgrade['specs'][number], specId
       return nm.startsWith('template #') ? `template ${req.template_id}` : `${nm} (template ${req.template_id})`;
     }
     if (req.kind === 'templates') return `one of templates [${req.template_ids.join(', ')}]`;
-    return 'attribute constraint';
+    return describeTypedRule(req.rule);
   }).join(' · ');
   const items = owned.map((a) => {
     const selected = picked === a.asset_id ? ' selected' : '';
@@ -6628,8 +6808,8 @@ function renderUpgradeActions(): string {
   const blockers: string[] = [];
   const authBanner = renderContractAuthBanner();
   if (authBanner) blockers.push(authBanner);
-  if (u.picked.is_random) blockers.push('<p class="status-line warn">Random-result upgrades use the ORNG oracle and are not yet implemented in Crucible.</p>');
-  if (u.picked.whitelist_required) blockers.push('<p class="status-line warn">Whitelist / ownership-gated upgrades are not yet implemented in Crucible.</p>');
+  if (u.picked.is_random) blockers.push('<p class="status-line warn">Random-result upgrades are not something up.nefty supports, so this page does not know how to run one.</p>');
+  blockers.push(renderClassicVerdict());
   return `
     <div class="card">
       <h2>5 · Verify &amp; execute</h2>
@@ -6813,10 +6993,10 @@ function onPickWaxdaoAsset(slot: number, asset_id: string) {
 }
 
 /**
- * Eligible NFTs for a WaxDAO slot, matching the ingredient's filter.
- * Today we support template / schema / collection filters; attribute
- * filters are surfaced but not enforced client-side (the contract
- * will catch any mismatch).
+ * Eligible NFTs for a WaxDAO slot, matching the ingredient's filter. An
+ * attribute filter is matched the way waxdaomarket checks a deposit
+ * (attributes.ts); offering the whole schema, which this did, let a
+ * wrong NFT be picked and the deposit refused.
  */
 function ownedAssetsForWaxdaoSlot(ing: WaxdaoIngredient): AtomicAsset[] {
   const owned = state.discoveryOwnedAssets;
@@ -6835,9 +7015,10 @@ function ownedAssetsForWaxdaoSlot(ing: WaxdaoIngredient): AtomicAsset[] {
       return a.collection?.collection_name === ing.collection_name;
     }
     if (ing.kind === 'nft_attribute') {
-      // Schema match only -- attribute matching is left to the contract.
       if (ing.collection_name && a.collection?.collection_name !== ing.collection_name) return false;
-      return a.schema?.schema_name === ing.schema_name;
+      if (a.schema?.schema_name !== ing.schema_name) return false;
+      if (!ing.required_attributes.every(canJudgeWaxdaoRule)) return false;
+      return passesAll(ing.required_attributes.map((r) => passesWaxdaoRule(a, r))) === true;
     }
     return false;
   });
@@ -6847,6 +7028,7 @@ function readyToWaxdaoBlend(): boolean {
   const w = state.waxdao;
   if (!w.picked) return false;
   if (w.picked.status !== 'active') return false;
+  if (classicStops().length) return false;
   // Every NFT slot must have a pick.
   for (const { slot } of w.picked.nftSlots) {
     if (!w.selection.get(slot)) return false;
@@ -6911,6 +7093,7 @@ async function onExecuteWaxdaoBlend() {
       String(result.resolved?.transaction.id ?? '');
     w.lastTrxId = trxId;
     setStatus(`WaxDAO blend broadcast: ${trxId}`, 'ok', trxId);
+    recheckClassicSoon();
   } catch (err) {
     setStatus(`WaxDAO blend failed: ${(err as Error).message}`, 'err');
   } finally {
@@ -6936,7 +7119,7 @@ function waxdaoIngredientLabel(ing: WaxdaoIngredient): string {
     case 'nft_template':   return `Burn ${ing.amount} NFT(s) of template ${ing.template_id} (${ing.collection_name})`;
     case 'nft_schema':     return `Burn ${ing.amount} NFT(s) from schema ${ing.schema_name}`;
     case 'nft_collection': return `Burn ${ing.amount} NFT(s) from collection ${ing.collection_name}`;
-    case 'nft_attribute':  return `Burn ${ing.amount} NFT(s) matching attribute filter`;
+    case 'nft_attribute':  return `Burn ${ing.amount} ${ing.schema_name} NFT(s) whose ${ing.required_attributes.map(describeWaxdaoRule).join(' and ')}`;
     case 'unknown':        return 'Unknown ingredient type';
   }
 }
@@ -6973,9 +7156,10 @@ function renderWaxdaoPickerPanel(): string {
     const disabled = b.status !== 'active';
     const cls = ['picker-row'];
     if (disabled) cls.push('picker-row-disabled');
-    const ft = b.ingredients.find((i) => i.kind === 'fungible');
-    const priceTag = ft
-      ? `<span class="picker-price">${escapeHtml((ft as Extract<WaxdaoIngredient,{kind:'fungible'}>).quantity)}</span>`
+    // Every token it charges: 100 open recipes charge two.
+    const fts = b.ingredients.filter((i): i is Extract<WaxdaoIngredient, { kind: 'fungible' }> => i.kind === 'fungible');
+    const priceTag = fts.length
+      ? `<span class="picker-price">${escapeHtml(fts.map((f) => f.quantity).join(' + '))}</span>`
       : '';
     return `
       <div class="${cls.join(' ')}" ${disabled ? '' : `data-action="pickWaxdaoBlend" data-waxdao-blend="${escapeHtml(b.blend_id)}"`}>
@@ -7179,6 +7363,7 @@ function renderWaxdaoActions(): string {
   return `
     <div class="card">
       <h2>5 · Verify &amp; execute</h2>
+      ${renderClassicVerdict()}
       <div class="row">
         <button data-action="waxdaoDryRun" ${ready ? '' : 'disabled'}>Simulate (no signature)</button>
         <button class="primary" data-action="waxdaoExecute" ${ready ? '' : 'disabled'}>${w.pending ? 'Signing…' : 'Sign &amp; broadcast'}</button>
@@ -7424,6 +7609,7 @@ function readyToBlenderizerBlend(): boolean {
   const b = bz.picked;
   if (!b) return false;
   if (blenderizerBlockers(b).some((x) => x.fatal)) return false;
+  if (classicStops().length) return false;
   for (const slot of b.slots) {
     if ((bz.selection.get(slot.index) ?? []).length !== slot.amount) return false;
   }
@@ -7487,6 +7673,7 @@ async function onExecuteBlenderizerBlend() {
     bz.lastTrxId = trxId;
     bz.selection.clear();
     setStatus(`Blenderizer blend broadcast: ${trxId}`, 'ok', trxId);
+    recheckClassicSoon();
     // The burn changes the wallet, so re-read it for the next blend.
     try {
       state.discoveryOwnedAssets = await listAssetsForOwner({
@@ -7725,7 +7912,10 @@ function renderBlenderizerSlots(): string {
           <div class="slot-progress">${picked.length}/${slot.amount} picked · ${owned.length} eligible</div>
         </div>
         ${owned.length === 0
-          ? '<p class="status-line err">No eligible NFT in your wallet for this slot.</p>'
+          ? `<p class="status-line err">No eligible NFT in your wallet for this slot.</p>${
+              state.blenderizer.picked?.collection
+                ? hubLinks({ collection: state.blenderizer.picked.collection, template_id: slot.template_id })
+                : ''}`
           : `${short ? `<p class="status-line err">You hold ${owned.length} of the ${slot.amount} needed for this slot.</p>` : ''}<div class="asset-grid">${items.join('')}</div>`}
       </div>`;
   }).join('');
@@ -7746,6 +7936,7 @@ function renderBlenderizerActions(): string {
   return `
     <div class="card">
       <h2>5 · Verify &amp; execute</h2>
+      ${renderClassicVerdict()}
       <p class="status-line">One transaction, one action: <code>atomicassets::transfer</code> to <code>blenderizerx</code>. The contract mints the target and burns your deposit in the same transaction, so there is no waiting and no second signature.</p>
       <div class="row">
         <button data-action="blenderizerDryRun" ${ready ? '' : 'disabled'}>Simulate (no signature)</button>
@@ -7769,45 +7960,6 @@ function renderBlenderizerBlendsView(): string {
     renderBlenderizerSlots() +
     renderBlenderizerActions()
   );
-}
-
-/**
- * Captures the window scroll position and the currently-focused input
- * (with its cursor offset and selection range) so we can restore them
- * after re-rendering. Without this, every state change would yank the
- * page back to the top and steal focus mid-typing, which is the visual
- * "the whole page is refreshing" effect we want to avoid.
- */
-interface RenderSnapshot {
-  scrollY: number;
-  activeId: string | null;
-  selStart: number | null;
-  selEnd: number | null;
-}
-function captureRenderSnapshot(): RenderSnapshot {
-  const el = document.activeElement as HTMLInputElement | null;
-  const tag = el?.tagName;
-  const isInput = tag === 'INPUT' || tag === 'TEXTAREA';
-  return {
-    scrollY: window.scrollY,
-    activeId: el?.id ?? null,
-    selStart: isInput ? el!.selectionStart : null,
-    selEnd: isInput ? el!.selectionEnd : null,
-  };
-}
-function restoreRenderSnapshot(snap: RenderSnapshot) {
-  // Restore scroll first, doing it after focus would cause the browser
-  // to jump back to the focused element.
-  window.scrollTo({ top: snap.scrollY, behavior: 'instant' as ScrollBehavior });
-  if (snap.activeId) {
-    const el = document.getElementById(snap.activeId) as HTMLInputElement | null;
-    if (el) {
-      el.focus({ preventScroll: true });
-      if (snap.selStart !== null && snap.selEnd !== null && typeof el.setSelectionRange === 'function') {
-        try { el.setSelectionRange(snap.selStart, snap.selEnd); } catch { /* noop */ }
-      }
-    }
-  }
 }
 
 /**

@@ -58,7 +58,7 @@ import {
   blendTitle, blendImage, listRecipes, collectionsOwned, describeRecipe, loadRecipeById,
   buildRunActions, autoPick, whatIsMissing,
   RECIPE_ACTIONS, SOURCE_INFO, actionOf, loadPackOdds,
-  type RunState, type RunStep, type RecipeAction, type RecipeSource,
+  type RunState, type RunStep, type RecipeAction, type RecipeSource, type RecipeChoice,
 } from './guidedRun';
 import { loadBlend as loadBlendRow } from '../nefty/blend';
 import { listAuthorizedCollections, isContractAuthorized } from '../atomic/collections';
@@ -93,7 +93,19 @@ import {
   buildSetDropData, buildSetDropPrice, buildEraseDrop,
 } from '../nefty/dropAdmin';
 import { dryRunActions } from './dryrun';
+import {
+  choiceFromBlendRow, emptyCheckContext, gateOf, headline, loadCheckContext, signStops, verdictFor,
+  type CheckContext, type RecipeCheck, type RecipeVerdict,
+} from './runChecks';
+import { proofFor, securityCheckFor } from '../nefty/security';
+import { isDeterministic, poolDraws } from '../nefty/blend';
+import { readKnownClaimIds } from '../nefty/rngWait';
+import {
+  buildFinishActions, readPendingFinishes, waitForPackDraw, watchBlendResult, type PendingFinish,
+} from './runFinish';
 import { renderMediaThumb } from './media';
+import type { MarketRef } from '../atomic/atomichub';
+import { hubLinks, renderVerdictPanel } from './verdictView';
 import { pickImageRef } from '../atomic/image';
 import {
   buildCreateBlendAction,
@@ -1756,10 +1768,10 @@ function shareButton(scope: ShareScope, label: string): string {
 function labHref(scope: ShareScope): string {
   const base = location.href.split('#')[0];
   if (scope === 'auction' && state.nameStatusFor) {
-    return `${base}#/lab/names/${encodeSubject(state.nameStatusFor)}`;
+    return `${base}${toolPath('names')}/${encodeSubject(state.nameStatusFor)}`;
   }
   const live = typeof location !== 'undefined' ? location.hash : '';
-  return live.startsWith('#/lab') ? `${base}${live}` : `${base}#/lab/${state.tool}`;
+  return onLabAddress(live) ? `${base}${live}` : `${base}${toolPath(state.tool)}`;
 }
 
 // A verdict is worth sharing even when the answer is "that is not a name",
@@ -1810,7 +1822,7 @@ async function onCopyLabLink(scope: ShareScope) {
  */
 function writeLabHash() {
   try {
-    if (!location.hash.startsWith('#/lab')) return;
+    if (!onLabAddress(location.hash)) return;
     const view = state.tool === 'inventory' ? encodeInventoryView(state.inv) : '';
     const subject = state.tool === 'names' && state.nameStatusFor
       ? `/${encodeSubject(state.nameStatusFor)}`
@@ -1819,7 +1831,7 @@ function writeLabHash() {
         : state.tool === 'run' && state.run.blendId
           ? `/${encodeSubject(`${state.run.source || 'blend'}~${state.run.collection}~${state.run.blendId}`)}`
         : '';
-    const target = `#/lab/${state.tool}${subject}`;
+    const target = `${toolPath(state.tool)}${subject}`;
     if (location.hash === target) return;
     history.replaceState(null, '', target);
   } catch { /* a hash we cannot write is not worth failing a render over */ }
@@ -1831,7 +1843,7 @@ function writeLabHash() {
  * in the same place.
  */
 export function applyLabRoute(tool: string, subject: string): void {
-  if (tool === 'names' || tool === 'recipes' || tool === 'crucible'
+  if (tool === 'names' || tool === 'recipes' || (tool === 'crucible' && !embedded)
       || tool === 'inventory' || tool === 'run') {
     state.tool = tool;
   }
@@ -1891,6 +1903,139 @@ export function applyLabRoute(tool: string, subject: string): void {
   if (answered || inFlight) return;
   state.nameQuery = wanted;
   void onCheckName();
+}
+
+// ─── embedding ──────────────────────────────────────────────────────────
+
+/**
+ * The v2 page uses the lab as its whole interface instead of as one page of
+ * the classic app. It draws its own navigation, so the tool bar and the link
+ * back to the classic app go, and the Crucible Contracts preview is not
+ * offered there at all, not even by link.
+ */
+let embedded = false;
+
+export function embedLab(render: () => void): void {
+  embedded = true;
+  // The host opens tools from its own home, before the lab has been drawn
+  // once and so before attachLabHandlers has handed it a repaint. Reads
+  // started then finished into a no-op and the screen never caught up.
+  rerender = render;
+  if (state.tool === 'crucible') state.tool = 'recipes';
+}
+
+/** The tools a page around the lab may open. */
+export type OpenableTool = Exclude<LabTool, 'crucible'>;
+
+/**
+ * Each tool's address on the v2 page. There the lab is the whole site, so
+ * its tools sit at the root under names a visitor would say, not under a
+ * #/lab that only made sense as one page of the classic app.
+ */
+export const V2_PATHS: Record<OpenableTool, string> = {
+  run: 'use', inventory: 'nfts', recipes: 'create', names: 'names',
+};
+
+/** Where a tool lives in the address bar of whichever page hosts the lab. */
+function toolPath(tool: LabTool): string {
+  return embedded && tool !== 'crucible' ? `#/${V2_PATHS[tool]}` : `#/lab/${tool}`;
+}
+
+/** True when the address bar is on one of the lab's own addresses. */
+function onLabAddress(hash: string): boolean {
+  if (!embedded) return hash.startsWith('#/lab');
+  return Object.values(V2_PATHS).some((p) => hash === `#/${p}` || hash.startsWith(`#/${p}/`));
+}
+
+/**
+ * The wallet, before the first render has told the lab about it. A page that
+ * opens a tool from its own menu can do so before any lab handler has run,
+ * and the tool should still start from the connected account.
+ */
+const knownActor = () => state.actor || String(getCurrentSession()?.actor ?? '');
+
+/** Puts a tool on screen, the way its button in the tool bar does. */
+function selectTool(tool: LabTool): void {
+  state.tool = tool;
+  if (tool === 'names') {
+    state.lastTx = ''; state.lastError = '';
+    if (state.actor && state.myBidsState === 'idle') void loadMyBids();
+    if (state.topBidsState === 'idle') void loadTopBids();
+  }
+  if (tool === 'inventory') {
+    if (!state.inv.loadedFor) applyInventoryPrefs(state.inv);
+    const actor = knownActor();
+    if (!state.inv.owner && actor) {
+      state.inv.owner = actor;
+      state.inv.ownerDraft = actor;
+    }
+    if (state.inv.owner && state.inv.loadedFor !== state.inv.owner && !state.inv.loading) {
+      void loadInventory(state.inv, state.inv.owner)
+        .then(() => { warmInventoryRecipes(); rerender(); });
+    }
+  }
+  writeLabHash();
+}
+
+/** Answers "What do you want to do?" on the player side. */
+function chooseRunAction(action: RecipeAction, actor: string): void {
+  state.run.action = action;
+  state.run.source = '';
+  // Choosing a different kind invalidates the list under it.
+  state.run.choices = [];
+  state.run.blendId = '';
+  state.run.blend = undefined;
+  state.run.step = 2;
+  // The collection chips come from the wallet's own NFTs, which
+  // are read here rather than on arrival at step 4, so they are
+  // already there when the question is asked.
+  if (actor && state.run.assetsFor !== actor) {
+    // loadRunAssets keeps what it reads only for the run's owner, and
+    // nothing had set one yet, so the collections you hold never showed.
+    state.run.owner = actor;
+    void loadRunAssets(state.run, actor).then(rerender);
+  }
+}
+
+/** Picks what the creator is making. */
+function chooseKind(kind: LabKind): void {
+  state.kind = kind;
+  state.step = 0;
+  // Three kinds, three contracts: the answer does not carry over.
+  if (state.collection) void refreshCreateAuth(state.collection);
+}
+
+/** Switches the recipes tool between making something and changing it. */
+function chooseMode(mode: LabMode): void {
+  state.mode = mode;
+  state.editing = undefined;
+  if (mode === 'edit') {
+    state.lastTx = ''; state.lastError = '';
+    if (state.collection) void loadExisting();
+  }
+}
+
+export function openLabTool(tool: OpenableTool): void {
+  selectTool(tool);
+}
+
+/** Opens the player side already past "What do you want to do?". */
+export function openRunFor(action: RecipeAction): void {
+  selectTool('run');
+  chooseRunAction(action, knownActor());
+}
+
+/** Opens the creator on a new recipe of this kind. */
+export function openCreatorFor(kind: LabKind): void {
+  selectTool('recipes');
+  chooseMode('create');
+  chooseKind(kind);
+}
+
+/** Opens the editor for recipes that already exist. */
+export function openRecipeEditor(): void {
+  selectTool('recipes');
+  chooseMode('edit');
 }
 
 // ─── shared UI pieces ───────────────────────────────────────────────────
@@ -3279,7 +3424,7 @@ function renderUses(inv: InventoryState): string {
     <h4><span class="inv-spark">USE</span> ${u.uses.length === 1 ? 'This NFT can be used' : `This NFT can be used ${u.uses.length} ways`}</h4>
     ${u.partial ? `<p class="lab-warn">A contract did not answer, so this list may be short.</p>${again}` : ''}
     ${u.uses.map((x) => `
-      <a class="inv-use ${x.live ? '' : 'muted'}" href="#/lab/run/${esc(x.link)}">
+      <a class="inv-use ${x.live ? '' : 'muted'}" href="${toolPath('run')}/${esc(x.link)}">
         <span class="inv-use-label">${esc(x.label)}</span>
         <span class="lab-tag">${esc(x.kind)}</span>
         <span class="lab-hint">${esc(x.because)}${x.live ? '' : ' · not running'}</span>
@@ -3594,6 +3739,297 @@ const RUN_STEPS: { n: RunStep; title: string; q: string }[] = [
 ];
 
 /** Lists the recipes of the chosen kind in the chosen collection. */
+// ─── can you run it ─────────────────────────────────────────────────────
+
+/** What the run checks have read, for one collection and one wallet. */
+let runCtx: CheckContext = emptyCheckContext();
+/** Whether the recipes that are over are listed under the rest. */
+let showFinished = false;
+/**
+ * The wallet the open recipe was read for. A link opens before the wallet
+ * is restored, and a drop read without one knows neither your limit nor
+ * whether you are let in, so it is read again once the wallet is known.
+ */
+let runReadFor = '';
+
+/** What this wallet signed half of and never finished: packs and staged blend results. */
+let pending: PendingFinish[] = [];
+let pendingFor = '';
+let pendingLoading = false;
+/** The id being claimed right now, so its button cannot be pressed twice. */
+let pendingBusy = '';
+let pendingError = '';
+
+async function loadPending(actor: string): Promise<void> {
+  pendingFor = actor;
+  pendingLoading = true;
+  pendingError = '';
+  rerender();
+  try {
+    const found = await readPendingFinishes(actor);
+    if (pendingFor === actor) pending = found;
+  } catch (e) {
+    if (pendingFor === actor) pendingError = e instanceof Error ? e.message : String(e);
+  } finally {
+    if (pendingFor === actor) pendingLoading = false;
+    rerender();
+  }
+}
+
+const finishNoun = (p: PendingFinish) =>
+  p.kind === 'blend' ? `the result of blend #${p.recipe}` : `pack #${p.id}`;
+
+/** Signs the second half of something pending, the open recipe's or an older one. */
+async function claimPending(p: PendingFinish): Promise<string | undefined> {
+  const session = getCurrentSession();
+  if (!session) throw new Error('Connect a wallet first.');
+  const actor = String(session.actor);
+  const result = await session.transact({ actions: buildFinishActions(p, actor) });
+  // The cards are in the wallet now, and off the pending list.
+  state.run.assetsFor = '';
+  void loadRunAssets(state.run, actor).then(rerender);
+  void loadPending(actor);
+  return (result.response as { transaction_id?: string } | undefined)?.transaction_id
+    ?? String(result.resolved?.transaction.id ?? '');
+}
+
+/**
+ * Left unfinished, from this page or any other: a pack sent and never
+ * minted is NFTs nobody will ever see unless something says so.
+ */
+function renderPendingFinishes(): string {
+  if (!state.actor || (!pending.length && !pendingError)) return '';
+  const rows = pending.map((p) => `
+    <div class="run-pending-row">
+      <span>${p.kind === 'blend' ? 'Blend' : 'Pack'} <strong>#${esc(p.kind === 'blend' ? p.recipe : p.id)}</strong>
+        ${p.ready
+          ? `: ${p.drawn.length} NFT${p.drawn.length === 1 ? '' : 's'} drawn, waiting to be minted`
+          : ': sent, the oracle has not drawn it yet'}</span>
+      ${p.blocked ? `<span class="lab-warn">${esc(p.blocked)}</span>`
+        : p.ready ? `<button class="lab-primary" data-lab="pending-claim" data-value="${esc(p.id)}" data-kind="${esc(p.kind)}"
+          ${pendingBusy ? 'disabled' : ''}>${pendingBusy === p.id ? 'Waiting for your wallet' : 'Mint them'}</button>` : ''}
+    </div>`).join('');
+  return `
+    <div class="run-pending">
+      <strong>Not finished yet</strong>
+      <p class="lab-hint">Signed once and never completed. The NFTs are safe in the contract
+      until one more signature mints them to your wallet.</p>
+      ${rows}
+      ${pendingError ? `<p class="lab-warn">${esc(pendingError)}</p>` : ''}
+    </div>`;
+}
+
+/** The second half of the open recipe, after its first signature. */
+function renderRunFinish(): string {
+  const f = state.run.finish;
+  if (!f) return '';
+  const tone = f.phase === 'done' ? 'ok' : f.phase === 'failed' ? 'block' : f.phase === 'ready' ? 'warn' : 'pending';
+  return `
+    <div class="run-verdict-panel run-tone-${tone}">
+      <h4>${esc(f.phase === 'done' ? 'Done' : f.phase === 'failed' ? 'Not finished'
+        : f.phase === 'ready' ? 'One more signature' : f.phase === 'claiming' ? 'Minting' : 'Drawing')}</h4>
+      <p>${esc(f.message)}</p>
+      ${f.phase === 'ready' && f.pending ? `<div class="lab-row-actions">
+        <button class="lab-primary" data-lab="run-finish-claim">${f.kind === 'blend' ? 'Claim the result' : 'Mint the cards'}</button>
+      </div>` : ''}
+      ${f.txId ? `<p class="lab-hint"><a target="_blank" rel="noreferrer"
+        href="https://waxblock.io/transaction/${esc(f.txId)}">view the second transaction on waxblock</a></p>` : ''}
+    </div>`;
+}
+
+/** After a pack is sent: wait for the draw, then ask for the signature that mints it. */
+async function followPack(kind: 'pack' | 'neftypack', packAssetId: string): Promise<void> {
+  const run = state.run;
+  const recipe = run.blendId;
+  const still = () => state.run === run && run.blendId === recipe;
+  const contract = kind === 'pack' ? 'atomicpacksx' : 'neftyblocksp';
+  run.finish = { kind, phase: 'waiting', message: `The pack is with ${contract}. The WAX oracle draws the cards, usually within 30 seconds.` };
+  rerender();
+  try {
+    const p = await waitForPackDraw(kind, packAssetId);
+    // Another recipe is open now: the pack is not lost, it waits in the list.
+    if (!still()) { if (state.actor) void loadPending(state.actor); return; }
+    run.finish = {
+      kind, phase: 'ready', pending: p,
+      message: `${p.drawn.length} card${p.drawn.length === 1 ? '' : 's'} drawn. One more signature mints them to your wallet.`,
+    };
+  } catch {
+    if (!still()) return;
+    run.finish = {
+      kind, phase: 'failed',
+      message: `The draw has not arrived yet. The pack is safe in ${contract}: it will show under "Not finished yet" once the oracle has drawn it.`,
+    };
+    if (state.actor) void loadPending(state.actor);
+  }
+  rerender();
+}
+
+/** After a random blend is signed: say where the result comes from, and offer a claim if one is staged. */
+async function followBlend(actor: string, blendId: string, known: Set<string>): Promise<void> {
+  const run = state.run;
+  const still = () => state.run === run && run.blendId === blendId;
+  run.finish = { kind: 'blend', phase: 'waiting', message: 'The WAX oracle draws the result and mints it to your wallet, usually within a few seconds.' };
+  rerender();
+  try {
+    const staged = await watchBlendResult(actor, blendId, known);
+    if (!still()) { if (staged) void loadPending(actor); return; }
+    run.finish = staged
+      ? { kind: 'blend', phase: 'ready', pending: staged, message: 'The result is drawn and waiting to be claimed. One more signature mints it.' }
+      : { kind: 'blend', phase: 'done', message: 'Drawn and minted by the oracle. It can take a minute to show in your NFTs.' };
+  } catch {
+    if (!still()) return;
+    run.finish = { kind: 'blend', phase: 'failed', message: 'Could not follow the draw. Anything left to claim will show under "Not finished yet".' };
+    void loadPending(actor);
+  }
+  run.assetsFor = '';
+  void loadRunAssets(run, actor).then(rerender);
+  rerender();
+}
+
+async function onFinishClaim(): Promise<void> {
+  const f = state.run.finish;
+  if (!f?.pending) return;
+  state.run.finish = { ...f, phase: 'claiming', message: 'Waiting for your wallet to sign the mint.' };
+  rerender();
+  try {
+    const txId = await claimPending(f.pending);
+    state.run.finish = { ...f, phase: 'done', txId,
+      message: `Minted: ${f.pending.drawn.length} NFT${f.pending.drawn.length === 1 ? '' : 's'} on the way to your wallet.` };
+  } catch (e) {
+    state.run.finish = { ...f, phase: 'ready', message: `Not minted yet: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  rerender();
+}
+
+async function onPendingClaim(id: string, kind: string): Promise<void> {
+  const p = pending.find((x) => x.id === id && x.kind === kind);
+  if (!p || pendingBusy) return;
+  pendingBusy = id;
+  pendingError = '';
+  rerender();
+  try {
+    await claimPending(p);
+  } catch (e) {
+    pendingError = `Could not mint ${finishNoun(p)}: ${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    pendingBusy = '';
+    rerender();
+  }
+}
+
+function runChecksContext(): CheckContext {
+  const run = state.run;
+  if (runCtx.collection !== run.collection || runCtx.actor !== state.actor) {
+    runCtx = emptyCheckContext();
+    runCtx.collection = run.collection;
+    runCtx.actor = state.actor;
+  }
+  runCtx.assets = run.assets;
+  runCtx.assetsKnown = Boolean(state.actor) && run.assetsFor === state.actor;
+  return runCtx;
+}
+
+/** What each action finds, for the empty list ("No packs in ..."). The labels are verbs. */
+const RUN_NOUN: Record<RecipeAction, string> = {
+  blend: 'blends', upgrade: 'upgrades', drop: 'drops', unpack: 'packs',
+};
+
+/**
+ * The inventory filter that shows the NFTs one ingredient takes. It read the
+ * template off the sentence, so a schema, a collection or an upgrade taking
+ * several templates opened the whole wallet unfiltered. Now from what the
+ * ingredient asks for, and for several accepted templates, the ones held.
+ */
+function inventoryFilterFor(r: { market?: MarketRef; role: string; candidates: string[] }): string {
+  const enc = encodeURIComponent;
+  const m = r.market;
+  if (m?.template_id !== undefined) return `~template=${enc(String(m.template_id))}`;
+  if (m?.schema) return `~collection=${enc(m.collection)}~schema=${enc(m.schema)}`;
+  if (m?.collection && r.role !== 'upgrade') return `~collection=${enc(m.collection)}`;
+  const held = new Set(r.candidates);
+  const tpls = [...new Set(state.run.assets.filter((a) => held.has(a.asset_id))
+    .map((a) => String(a.template?.template_id ?? '')).filter(Boolean))];
+  return tpls.length ? `~template=${tpls.map(enc).join(',')}` : m?.collection ? `~collection=${enc(m.collection)}` : '';
+}
+
+/** Every asset id picked for the open recipe, which leave the wallet before its gate is checked. */
+const pickedIds = () => new Set(Object.values(state.run.picked).flat());
+
+/** The gate check to sign the open recipe with, its proof taken from NFTs it does not spend. */
+function runSecurityCheck(actor: string) {
+  const run = state.run;
+  if (!run.pickedRecipe) return undefined;
+  const gate = gateOf(run.pickedRecipe, runChecksContext());
+  return securityCheckFor(gate, actor, proofFor(gate, run.assets, pickedIds()));
+}
+
+const checkChip = (k: RecipeCheck) =>
+  `<span class="run-check run-check-${k.tone}">${esc(k.text)}</span>`;
+
+/**
+ * One recipe in the list, coloured by whether you can run it, with the
+ * reason first and the other criteria under it. A recipe nothing can unlock
+ * right now is shown but not opened, as the classic panels do; one that is
+ * only missing something stays open, so the next screen can say what.
+ */
+function renderRunChoice(c: RecipeChoice, v: RecipeVerdict): string {
+  const run = state.run;
+  const top = headline(v);
+  const rest = v.checks.filter((k) => k.text !== top);
+  return `
+    <button class="run-choice run-tone-${v.tone} ${run.blendId === c.id && run.source === c.source ? 'on' : ''}"
+            data-lab="run-pick" data-value="${esc(c.id)}" data-source="${esc(c.source)}"
+            ${v.closed ? 'disabled aria-disabled="true"' : ''}>
+      <span class="run-choice-name">${esc(c.name)}</span>
+      <span class="lab-tag run-badge">${esc(SOURCE_INFO[c.source].platform)}</span>
+      <span class="run-verdict">${esc(top)}</span>
+      <span class="lab-hint">#${esc(c.id)}</span>
+      ${rest.length ? `<span class="run-checks">${rest.map(checkChip).join('')}</span>` : ''}
+    </button>`;
+}
+
+function renderRunChoices(): string {
+  const run = state.run;
+  const ctx = runChecksContext();
+  const judged = run.choices.map((c) => ({ c, v: verdictFor(c, ctx) }));
+  // Runnable first, then what only needs checking, then what needs
+  // something, then what is closed. The sort is stable, so the lister's
+  // own order (running first, then by name) survives inside each band.
+  const rank = (v: RecipeVerdict) => (v.closed ? 3 : v.tone === 'ok' ? 0 : v.tone === 'pending' ? 1 : 2);
+  const current = judged.filter((x) => !x.v.finished).sort((a, b) => rank(a.v) - rank(b.v));
+  const finished = judged.filter((x) => x.v.finished);
+  const count = (pred: (v: RecipeVerdict) => boolean) => current.filter((x) => pred(x.v)).length;
+  const can = count((v) => v.tone === 'ok');
+  const need = count((v) => v.tone === 'warn');
+  const unsure = count((v) => v.tone === 'pending');
+  const closed = count((v) => v.closed);
+  const tally = [
+    can ? `<span class="run-check run-check-ok">${can} you can run</span>` : '',
+    need ? `<span class="run-check run-check-warn">${need} need something first</span>` : '',
+    unsure ? `<span class="run-check run-check-pending">${unsure} not checked yet</span>` : '',
+    closed ? `<span class="run-check run-check-block">${closed} closed to you</span>` : '',
+  ].join('');
+  return `
+    ${judged.length ? `<div class="run-tally">${tally}
+      ${ctx.loading ? '<span class="lab-hint">Checking limits, balances and permissions.</span>' : ''}
+    </div>` : ''}
+    <div class="run-choices">
+      ${current.map((x) => renderRunChoice(x.c, x.v)).join('')}
+    </div>
+    ${finished.length ? `
+      <button class="run-more" data-lab="run-show-finished">
+        ${showFinished ? 'Hide' : 'Show'} the ${finished.length} that ${finished.length === 1 ? 'is' : 'are'} over (ended or sold out)
+      </button>
+      ${showFinished ? `<div class="run-choices">${finished.map((x) => renderRunChoice(x.c, x.v)).join('')}</div>` : ''}` : ''}`;
+}
+
+/** The criteria of the recipe that is open, all of them, at the top of the check step. */
+function renderRunVerdict(): string {
+  const run = state.run;
+  if (!run.pickedRecipe) return '';
+  return renderVerdictPanel(verdictFor(run.pickedRecipe, runChecksContext()));
+}
+
 async function loadRunChoices(): Promise<void> {
   const run = state.run;
   if (!run.action || !run.collection) return;
@@ -3602,18 +4038,26 @@ async function loadRunChoices(): Promise<void> {
   run.choices = [];
   run.unreachable = [];
   run.searched = true;
+  run.listedFor = state.actor;
   run.reading = '';
   rerender();
   const askedFor = `${run.action}::${run.collection}`;
   try {
+    // The wallet first: a drop's proof of ownership is settled against it
+    // while the list is read, and every "you hold" line depends on it.
+    if (state.actor && run.assetsFor !== state.actor) {
+      run.owner = state.actor;
+      await loadRunAssets(run, state.actor);
+    }
     const res = await listRecipes(run.action, run.collection, state.actor, (contract) => {
       run.reading = contract;
       rerender();
-    });
+    }, run.assets);
     // A slow list must not land on a question somebody has moved past.
     if (`${run.action}::${run.collection}` !== askedFor) return;
     run.choices = res.choices;
     run.unreachable = res.unreachable;
+    void loadCheckContext(runChecksContext(), run.choices, run.collection, rerender);
   } catch (e) {
     run.listError = e instanceof Error ? e.message : String(e);
   } finally {
@@ -3626,30 +4070,47 @@ async function loadRunChoices(): Promise<void> {
 /** Opens one recipe. Only Nefty blends have a detail view so far. */
 async function startRun(blendId: string): Promise<void> {
   const run = state.run;
+  // A row clicked in the list was read with the list's wallet.
+  const readFor = run.pickedRecipe ? run.listedFor : state.actor;
   run.blendId = blendId;
   run.loading = true;
   run.error = '';
+  run.signError = '';
+  run.finish = undefined;
   run.blend = undefined;
   run.picked = {};
   rerender();
   try {
+    if (state.actor && run.assetsFor !== state.actor) {
+      run.owner = state.actor;
+      await loadRunAssets(run, state.actor);
+    }
     if (run.source === 'blend' || !run.source) {
       run.blend = await loadBlendRow({ blend_id: blendId });
+      if (!run.pickedRecipe && run.blend) {
+        // Opened by a link, so there is no listing row. Build one from the
+        // contract row, so the checks below read it by the same rules as a
+        // recipe that was clicked, its secure.nefty gate included.
+        run.pickedRecipe = choiceFromBlendRow(run.blend);
+      }
     } else if (!run.pickedRecipe) {
       // Arrived by a shared link, so nothing was clicked and there is no
       // row in hand. Fetch the one the link names.
-      run.pickedRecipe = await loadRecipeById(run.source, blendId, run.collection, state.actor);
+      run.pickedRecipe = await loadRecipeById(run.source, blendId, run.collection, state.actor, run.assets);
       if (!run.pickedRecipe) {
         run.error = `Could not read #${blendId} on ${SOURCE_INFO[run.source].contract}.`;
       }
+    }
+    if (run.pickedRecipe) {
+      const raw = run.pickedRecipe.raw as { collection_name?: string; collection?: string };
+      if (!run.collection) run.collection = String(raw.collection_name ?? raw.collection ?? '');
+      void loadCheckContext(runChecksContext(), [run.pickedRecipe], run.collection, rerender);
     }
     // A pack's odds are a second read, only worth doing once one is open.
     if ((run.source === 'pack' || run.source === 'neftypack') && run.pickedRecipe) {
       const rolls = await loadPackOdds(run.source, blendId);
       (run.pickedRecipe.raw as { rolls?: unknown }).rolls = rolls;
     }
-    run.owner = state.actor;
-    if (state.actor) await loadRunAssets(run, state.actor);
     // Fill every slot the moment the NFTs are known, so somebody who
     // owns what the recipe asks for can press one button. Anyone who
     // cares which copy gets burned can change it; autoPick never
@@ -3662,6 +4123,7 @@ async function startRun(blendId: string): Promise<void> {
     run.error = e instanceof Error ? e.message : String(e);
   } finally {
     run.loading = false;
+    runReadFor = readFor;
     writeLabHash();
     rerender();
   }
@@ -3748,19 +4210,10 @@ function renderRunTool(): string {
           ? '<p class="lab-hint">Pick a collection on the previous step.</p>'
           : run.listError
             ? '<p class="lab-warn">The search failed, so this list is empty for the wrong reason. Try again.</p>'
-            : `<p class="lab-empty">No ${esc(RECIPE_ACTIONS.find((a) => a.key === run.action)?.label.toLowerCase() ?? 'recipe')}
+            : `<p class="lab-empty">No ${esc(RUN_NOUN[run.action as RecipeAction] ?? 'recipes')}
                in <code>${esc(run.collection)}</code>. Check the spelling, or try another action on
                step 1.</p>`) : ''}
-      <div class="run-choices">
-        ${run.choices.map((c) => `
-          <button class="run-choice ${run.blendId === c.id && run.source === c.source ? 'on' : ''}"
-                  data-lab="run-pick" data-value="${esc(c.id)}" data-source="${esc(c.source)}">
-            <span class="run-choice-name">${esc(c.name)}</span>
-            <span class="lab-tag run-badge">${esc(SOURCE_INFO[c.source].platform)}</span>
-            <span class="lab-hint">${esc(c.note)}${c.live ? '' : ' · not running'}</span>
-            <span class="lab-hint">#${esc(c.id)}</span>
-          </button>`).join('')}
-      </div>`;
+      ${renderRunChoices()}`;
   } else {
     body = renderRunDetail();
   }
@@ -3771,8 +4224,9 @@ function renderRunTool(): string {
     questions. The last step signs a real transaction with your wallet, and burning an NFT
     cannot be undone.</p>
     ${run.error ? `<p class="lab-warn">${esc(run.error)}</p>` : ''}
+    ${renderPendingFinishes()}
     ${rail}
-    <div class="run-body">${body}</div>
+    <div class="run-body">${run.step === 4 ? renderRunFinish() : ''}${body}</div>
     <div class="lab-row-actions run-nav">
       <button data-lab="run-back" ${run.step === 1 ? 'disabled' : ''}>Back</button>
       <span class="lab-step-of">Step ${run.step} of 4 · ${esc(RUN_STEPS[run.step - 1].q)}</span>
@@ -3796,7 +4250,9 @@ function renderCostAndReward(
   sure: boolean, known: boolean,
 ): string {
   const run = state.run;
-  const afford = canAfford(reqs);
+  // A token we checked and found short is as much a "no" as a missing NFT.
+  const tokenShort = reqs.some((r) => r.kind === 'token' && run.tokenHave[tokenKey(r)]?.enough === false);
+  const afford = canAfford(reqs) && !tokenShort;
   const max = Math.max(1, ...rewards.map((r) => r.odds ?? 0));
   const nameOf = (id: string) => {
     const a = run.assets.find((x) => x.asset_id === id);
@@ -3853,18 +4309,18 @@ function renderCostAndReward(
             return full ? `${mine.length} of ${r.need} picked` : `you have ${r.have}, none picked`;
           })()}</span>
         </div>
-        ${r.kind === 'nft' && state.actor ? (() => {
+        ${r.kind === 'nft' && state.actor && r.have !== 0 ? (() => {
           // The other half of the bridge: from an ingredient, straight to
           // the ones you hold. `template=` is an include FILTER, which is
           // what this needs. The first version wrote `tpl=`, which the
           // inventory reads as "open the template screen", so the link
           // landed on an empty page about the template with none of your
           // NFTs on it.
-          const tpl = /template #(\d+)/.exec(r.text)?.[1];
-          const view = tpl ? `~template=${tpl}` : '';
-          return `<a class="run-see-mine" href="#/lab/inventory/${esc(state.actor)}${view}">
+          const view = inventoryFilterFor(r);
+          return `<a class="run-see-mine" href="${toolPath('inventory')}/${esc(state.actor)}${view}">
             see the ones you hold</a>`;
         })() : ''}
+        ${r.kind === 'nft' && r.market && (short || r.have === undefined) ? hubLinks(r.market) : ''}
         ${r.kind === 'nft' && known && !short ? `
           <div class="run-pick-row">
             ${mine.map((id) => `<span class="lab-tag run-chosen">${esc(nameOf(id))}</span>`).join('')}
@@ -3916,19 +4372,34 @@ function renderSignBlock(reqs: ReturnType<typeof requirementsOf>, known: boolean
   }
   if (!known) return `<p class="lab-hint">Reading your NFTs before this can be built.</p>`;
   const missing = whatIsMissing(reqs, run.picked);
+  // What the chain would refuse, from the checks above. Picking every slot
+  // used to be enough to light this button, so an ended, sold-out or
+  // limit-reached recipe read "ready to sign" and failed in the wallet.
+  // The NFT shortfall is left out: the slots above already list it.
+  const v = run.pickedRecipe ? verdictFor(run.pickedRecipe, runChecksContext()) : undefined;
+  const stops = (v?.checks ?? []).filter((k) => (k.tone === 'block' || k.tone === 'warn') && k.about !== 'nfts');
+  if (run.pickedRecipe) {
+    for (const text of signStops(run.pickedRecipe, runChecksContext(), pickedIds())) stops.push({ tone: 'warn', text });
+  }
+  const blocked = missing.length > 0 || stops.length > 0;
   return `
     <div class="run-sign">
+      ${stops.length ? `
+        <ul class="run-missing">
+          ${stops.map((k) => `<li>${esc(k.text)}</li>`).join('')}
+        </ul>` : ''}
       ${missing.length ? `
         <ul class="run-missing">
           ${missing.map((m) => `<li>${esc(m)}</li>`).join('')}
-        </ul>` : '<p class="lab-ok">Everything is picked. This is ready to sign.</p>'}
+        </ul>` : stops.length ? '' : '<p class="lab-ok">Everything is picked. This is ready to sign.</p>'}
       <div class="lab-row-actions">
         <button data-lab="run-autopick" ${run.signing ? 'disabled' : ''}>Pick for me</button>
         <button class="lab-primary" data-lab="run-sign"
-                ${missing.length || run.signing ? 'disabled' : ''}>
+                ${blocked || run.signing ? 'disabled' : ''}>
           ${run.signing ? 'Waiting for your wallet' : 'Run it'}
         </button>
       </div>
+      ${run.signError ? `<p class="lab-warn">Not signed: ${esc(run.signError)}</p>` : ''}
       ${run.lastTrxId ? `<p class="lab-ok">Signed.
         <a target="_blank" rel="noreferrer"
            href="https://waxblock.io/transaction/${esc(run.lastTrxId)}">view it on waxblock</a></p>` : ''}
@@ -3957,23 +4428,33 @@ function runRequirements(): ReturnType<typeof requirementsOf> {
 async function onRunSign(): Promise<void> {
   const run = state.run;
   const session = getCurrentSession();
-  if (!session) { state.lastError = 'Connect a wallet first.'; rerender(); return; }
+  if (!session) { run.signError = 'Connect a wallet first.'; rerender(); return; }
   const actor = String(session.actor);
   // The wallet can change between reading the NFTs and pressing the
   // button. Signing one account's picks from another's wallet is the
   // failure this guard exists for.
   if (run.assetsFor && run.assetsFor !== actor) {
-    state.lastError = 'The wallet changed since this was read. Reopening before anything is signed.';
+    run.signError = 'The wallet changed since this was read. Reopening before anything is signed.';
     run.assetsFor = '';
     void loadRunAssets(run, actor).then(rerender);
     rerender();
     return;
   }
   run.signing = true;
-  state.lastError = '';
+  run.signError = '';
   run.lastTrxId = '';
+  run.finish = undefined;
   rerender();
+  const source = (run.source || 'blend') as RecipeSource;
+  // A drawn blend can leave a claim to sign. The ones already there are
+  // noted first, so the one this signature creates is told apart.
+  const drawn = source === 'blend' && run.blend
+    && (!isDeterministic(run.blend).ok || poolDraws(run.blend).length > 0);
+  const packAsset = source === 'pack' || source === 'neftypack'
+    ? runRequirements().flatMap((r, i) => (r.kind === 'nft' ? run.picked[i] ?? [] : []))[0]
+    : undefined;
   try {
+    const known = drawn ? await readKnownClaimIds(actor) : new Set<string>();
     const actions = await buildRunActions({
       source: (run.source || 'blend') as RecipeSource,
       actor,
@@ -3981,6 +4462,7 @@ async function onRunSign(): Promise<void> {
       raw: run.blend ?? run.pickedRecipe?.raw,
       requirements: runRequirements(),
       picked: run.picked,
+      security: run.pickedRecipe ? runSecurityCheck(actor) : undefined,
     });
     const result = await session.transact({ actions });
     run.lastTrxId = (result.response as { transaction_id?: string } | undefined)?.transaction_id
@@ -3994,8 +4476,15 @@ async function onRunSign(): Promise<void> {
     // NFTs and not the balances left "you have 15 UPMAX" on screen above
     // a Run button, after 10 of them had just been spent.
     void loadTokenCosts().then(rerender);
+    // Half done for these two: the pack still has to be minted, and the
+    // draw of a random blend lands a moment later.
+    if (packAsset && (source === 'pack' || source === 'neftypack')) void followPack(source, packAsset);
+    if (drawn) void followBlend(actor, run.blendId, known);
   } catch (err) {
-    state.lastError = (err as Error).message;
+    // Shown by the button: a refusal from the wallet or the chain used to
+    // land in a field this screen never drew, and the button simply came
+    // back as if nothing had been tried.
+    run.signError = err instanceof Error ? err.message : String(err);
   } finally {
     run.signing = false;
     rerender();
@@ -4034,6 +4523,7 @@ function renderRunDetail(): string {
           ${detail.note ? `<p>${esc(detail.note)}</p>` : ''}
         </div>
       </div>
+      ${renderRunVerdict()}
       ${renderCostAndReward(detail.requirements, detail.rewards, detail.sure, known)}`;
   }
 
@@ -4051,6 +4541,7 @@ function renderRunDetail(): string {
           ${esc(info?.platform ?? 'NeftyBlocks')} <code>${esc(info?.contract ?? 'blend.nefty')}</code></p>
       </div>
     </div>
+    ${renderRunVerdict()}
     ${renderCostAndReward(reqs, rewards, sure, known)}`;
 }
 
@@ -5139,7 +5630,12 @@ export function renderLabPage(): string {
 
   // The tool bar sits above everything: it decides which workbench is on
   // screen. The Create / Change switch below it belongs to one tool only.
-  const toolBar = `
+  // Embedded, the page around the lab is the menu, and it is also the way
+  // back, so neither is drawn twice.
+  const back = embedded
+    ? ''
+    : '<a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>';
+  const toolBar = embedded ? '' : `
     <div class="lab-tools">
       <button class="${state.tool === 'recipes' ? 'on' : ''}" data-lab="tool-recipes">
         Recipes<small>blends, upgrades, drops</small>
@@ -5160,7 +5656,7 @@ export function renderLabPage(): string {
 
   if (state.tool === 'crucible') {
     return `
-      <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
+      ${back}
       <section class="lab">
         ${toolBar}
         ${walletBar()}
@@ -5173,7 +5669,7 @@ export function renderLabPage(): string {
     // form, where a narrow column is easier to read; this one exists
     // because people cannot see enough of their NFTs at once.
     return `
-      <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
+      ${back}
       <section class="lab lab-wide">
         ${toolBar}
         ${walletBar()}
@@ -5183,7 +5679,7 @@ export function renderLabPage(): string {
 
   if (state.tool === 'run') {
     return `
-      <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
+      ${back}
       <section class="lab">
         ${toolBar}
         ${walletBar()}
@@ -5193,7 +5689,7 @@ export function renderLabPage(): string {
 
   if (state.tool === 'names') {
     return `
-      <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
+      ${back}
       <section class="lab">
         ${toolBar}
         ${walletBar()}
@@ -5222,7 +5718,7 @@ export function renderLabPage(): string {
 
   if (state.mode === 'edit') {
     return `
-      <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
+      ${back}
       <section class="lab">
         ${toolBar}
         ${walletBar()}
@@ -5240,7 +5736,7 @@ export function renderLabPage(): string {
 
 
   return `
-    <a class="app-link" href="#/nefty" style="margin-bottom:14px">Back to the app</a>
+    ${back}
     <section class="lab">
       ${toolBar}
       ${walletBar()}
@@ -5506,6 +6002,19 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     state.run.owner = actor;
     void loadRunAssets(state.run, actor).then(render);
   }
+  // A list read before the wallet was known has every gated drop as
+  // unverified and no limits in it. Read it again for the account now here.
+  if (state.tool === 'run' && actor && state.run.step === 3 && state.run.searched
+      && !state.run.listing && state.run.listedFor !== actor) {
+    void loadRunChoices();
+  }
+  if (state.tool === 'run' && actor && pendingFor !== actor && !pendingLoading) void loadPending(actor);
+  if (state.tool === 'run' && actor && state.run.step === 4 && state.run.blendId
+      && !state.run.loading && runReadFor !== actor) {
+    runReadFor = actor;
+    state.run.pickedRecipe = undefined;
+    void startRun(state.run.blendId);
+  }
 
   const idx = (el: HTMLElement) => Number(el.dataset.idx);
 
@@ -5628,12 +6137,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           break;
         }
         case 'prev': state.step = Math.max(0, state.step - 1); break;
-        case 'kind':
-          state.kind = el.dataset.kind as LabKind;
-          state.step = 0;
-          // Three kinds, three contracts: the answer does not carry over.
-          if (state.collection) void refreshCreateAuth(state.collection);
-          break;
+        case 'kind': chooseKind(el.dataset.kind as LabKind); break;
 
         case 'reload-collections': void loadCollections(); return;
         case 'reload-data':        void loadCollectionData(); return;
@@ -5695,36 +6199,12 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           state.tokenPickerOpen = false;
           break;
 
-        case 'tool-recipes': state.tool = 'recipes'; writeLabHash(); break;
-        case 'tool-crucible': state.tool = 'crucible'; writeLabHash(); break;
-        case 'tool-inventory':
-          state.tool = 'inventory';
-          if (!state.inv.loadedFor) applyInventoryPrefs(state.inv);
-          if (!state.inv.owner && state.actor) {
-            state.inv.owner = state.actor;
-            state.inv.ownerDraft = state.actor;
-          }
-          if (state.inv.owner && state.inv.loadedFor !== state.inv.owner && !state.inv.loading) {
-            void loadInventory(state.inv, state.inv.owner)
-              .then(() => { warmInventoryRecipes(); render(); });
-          }
-          writeLabHash();
-          break;
-        case 'tool-run': state.tool = 'run'; writeLabHash(); break;
+        case 'tool-recipes': selectTool('recipes'); break;
+        case 'tool-crucible': selectTool('crucible'); break;
+        case 'tool-inventory': selectTool('inventory'); break;
+        case 'tool-run': selectTool('run'); break;
         case 'run-kind':
-          state.run.action = (el.dataset.value ?? '') as RecipeAction;
-          state.run.source = '';
-          // Choosing a different kind invalidates the list under it.
-          state.run.choices = [];
-          state.run.blendId = '';
-          state.run.blend = undefined;
-          state.run.step = 2;
-          // The collection chips come from the wallet's own NFTs, which
-          // are read here rather than on arrival at step 4, so they are
-          // already there when the question is asked.
-          if (state.actor && state.run.assetsFor !== state.actor) {
-            void loadRunAssets(state.run, state.actor).then(render);
-          }
+          chooseRunAction((el.dataset.value ?? '') as RecipeAction, state.actor);
           break;
         case 'run-collection-pick':
           state.run.collection = el.dataset.value ?? '';
@@ -5740,6 +6220,9 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           void loadRunChoices();
           return;
         }
+        case 'run-show-finished': showFinished = !showFinished; break;
+        case 'run-finish-claim': void onFinishClaim(); return;
+        case 'pending-claim': void onPendingClaim(el.dataset.value ?? '', el.dataset.kind ?? ''); return;
         case 'run-pick': {
           const id = el.dataset.value ?? '';
           const src = (el.dataset.source ?? 'blend') as RecipeSource;
@@ -5804,13 +6287,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'run-back':
           state.run.step = Math.max(1, state.run.step - 1) as RunStep;
           break;
-        case 'tool-names':
-          state.tool = 'names';
-          state.lastTx = ''; state.lastError = '';
-          if (state.actor && state.myBidsState === 'idle') void loadMyBids();
-          if (state.topBidsState === 'idle') void loadTopBids();
-          writeLabHash();
-          break;
+        case 'tool-names': selectTool('names'); break;
         // ── inventory ────────────────────────────────────────────────
         case 'inv-load':
         case 'inv-reload': {
@@ -6102,12 +6579,8 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           void onCheckName();
           return;
 
-        case 'mode-create': state.mode = 'create'; state.editing = undefined; break;
-        case 'mode-edit':
-          state.mode = 'edit'; state.editing = undefined;
-          state.lastTx = ''; state.lastError = '';
-          if (state.collection) void loadExisting();
-          break;
+        case 'mode-create': chooseMode('create'); break;
+        case 'mode-edit': chooseMode('edit'); break;
         case 'edit-kind':
           state.kind = el.dataset.kind as LabKind;
           state.editing = undefined;

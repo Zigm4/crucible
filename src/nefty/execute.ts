@@ -63,7 +63,8 @@ export type { BuiltAction };
  * Order (matches the on-chain trace of a real blend):
  *   1. openbal          : once per token symbol the user hasn't opened yet
  *   2. <token>::transfer, one per FT ingredient, memo "deposit"
- *   3. announcedepo     : count = number of NFTs being transferred (0 ok)
+ *   3. announcedepo     : count = number of NFTs being transferred, only
+ *                         when there are some
  *   4. atomicassets::transfer, only if asset_ids.length > 0
  *   5. nosecfuse        : claimer, blend_id, transferred_assets, own_assets
  *
@@ -113,16 +114,18 @@ export async function buildBlendActions(args: PlanArgs): Promise<BuiltAction[]> 
     });
   }
 
-  // 3. announcedepo for the NFT leg (count = NFT count, even 0)
-  actions.push({
-    account: 'blend.nefty',
-    name: 'announcedepo',
-    authorization: auth,
-    data: { owner: args.claimer, count: args.asset_ids.length },
-  });
-
-  // 4. NFT transfer (skip when no NFTs, FT-only blends are valid)
+  // 3 + 4. announcedepo and the NFT transfer, only when NFTs are deposited.
+  //    An announce of 0 is refused ("Count has to be greater than 0"), so
+  //    sending it, which this did, failed every blend that takes only
+  //    tokens or a balance: blends 26391, 30174 and 30175 refused with it
+  //    and accepted without it (compute_transaction, never signed).
   if (args.asset_ids.length > 0) {
+    actions.push({
+      account: 'blend.nefty',
+      name: 'announcedepo',
+      authorization: auth,
+      data: { owner: args.claimer, count: args.asset_ids.length },
+    });
     actions.push({
       account: 'atomicassets',
       name: 'transfer',

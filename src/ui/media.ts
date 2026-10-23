@@ -14,6 +14,13 @@
  *   cloudflare-ipfs.com   no DNS record (Cloudflare sunset it)
  *   ipfs.neftyblocks.io   resolves, serves a domain-parking page
  *
+ * And again in October 2026: ipfs.io, dweb.link, nftstorage.link and
+ * w3s.link (which redirects to dweb.link) answer every request with a
+ * 429 saying the gateway "is switching to a service worker gateway
+ * only", and gateway.pinata.cloud hangs. Four of the six gateways this
+ * list had were dead, and the two WAX ones only hold some collections'
+ * files: shadowsquads artwork hung on both.
+ *
  * The two ecosystems whose contracts this app drives have both let
  * their gateways lapse, which is the same decay that took their
  * websites. So there is no "correct" gateway to hardcode: the list
@@ -32,25 +39,25 @@
  */
 
 /**
- * Raced, not tried in strict order (see loadHedged). WAX-ecosystem
- * gateways come first on purpose: they are run by WAX block producers
- * who pin WAX NFT media, so they hold this content when a generic
- * public gateway has never heard of it. Measured against real
- * underpunks55 hashes, `ipfs.eosdac.io` and `ipfs.alienworlds.io` both
- * returned 512x512 images in ~1-1.3s, ahead of ipfs.io at ~1.7s.
+ * Raced, not tried in strict order (see loadHedged). `{cid}` is where the
+ * hash goes. `ipfs.eosdac.io` comes first: run by a WAX block producer
+ * that pins WAX NFT media, it answers in ~0.2s when it holds a file.
  *
- * The generic gateways stay as a backstop for collections whose media
- * is pinned outside the WAX world.
+ * AtomicHub's image service is second. It fetched every hash tried while
+ * writing this, including the shadowsquads ones no gateway would serve,
+ * in ~0.4s, and returns a 370px webp, which is what a thumbnail needs.
+ * It is a third party like the others: it learns your IP and which NFT
+ * you are looking at, and nothing else (no referrer is sent).
+ *
+ * `ipfs.alienworlds.io` stays as a backstop: slower (~2.4s), but another
+ * operator holding the WAX files.
  *
  * Emptying this list disables artwork everywhere, with no other change.
  */
 export const IPFS_GATEWAYS = [
-  'https://ipfs.eosdac.io/ipfs/',
-  'https://ipfs.alienworlds.io/ipfs/',
-  'https://ipfs.io/ipfs/',
-  'https://dweb.link/ipfs/',
-  'https://w3s.link/ipfs/',
-  'https://gateway.pinata.cloud/ipfs/',
+  'https://ipfs.eosdac.io/ipfs/{cid}',
+  'https://resizer.atomichub.io/images/v1/preview?ipfs={cid}&size=370',
+  'https://ipfs.alienworlds.io/ipfs/{cid}',
 ];
 
 /** Expands ONE reference into its candidate URLs. */
@@ -63,7 +70,7 @@ function candidatesForRef(ref: string | undefined): string[] {
   // CIDv0 (Qm…) and CIDv1 (baf…) are the two forms in the wild. Anything
   // else is author junk we should not turn into a network request.
   if (!/^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{20,})$/.test(hash)) return [];
-  return IPFS_GATEWAYS.map((g) => g + hash);
+  return IPFS_GATEWAYS.map((g) => g.replace('{cid}', hash));
 }
 
 /**
@@ -258,14 +265,23 @@ export function attachMediaFallbacks(root: HTMLElement): void {
  * Probes are detached `Image` objects, never the element on screen, so
  * a losing gateway can never paint over a winner. A gateway answering
  * with an HTML error page decodes to 0x0 and counts as a failure.
+ *
+ * Exported for scripts/verify-media.mjs, which races it against fake
+ * gateways.
  */
-function loadHedged(
+export function loadHedged(
   candidates: string[],
   cb: { onWin: (url: string) => void; onFail: () => void; onAttempt?: (n: number) => void },
 ): void {
   let settled = false;
-  let started = 0;
-  let failed = 0;
+  // By candidate index, so each gateway is asked once and counted once.
+  // A fast failure promoted the next gateway while the failed one's hedge
+  // timer started it again, so gateways were asked twice, and each second
+  // failure counted: "every candidate failed" arrived while a slow one was
+  // still on its way, and the thumbnail gave up seconds early
+  // (scripts/verify-media.mjs).
+  const begun = new Set<number>();
+  const failed = new Set<number>();
   const timers: ReturnType<typeof setTimeout>[] = [];
 
   const stop = () => {
@@ -280,27 +296,34 @@ function loadHedged(
   }, OVERALL_TIMEOUT_MS);
   timers.push(overall);
 
+  const nextIndex = () => candidates.findIndex((_, i) => !begun.has(i));
+
   const startOne = (i: number) => {
-    if (settled || i >= candidates.length) return;
-    started = Math.max(started, i + 1);
+    if (settled || i < 0 || i >= candidates.length || begun.has(i)) return;
+    begun.add(i);
     cb.onAttempt?.(i);
 
     const probe = new Image();
     probe.decoding = 'async';
     probe.referrerPolicy = 'no-referrer';
+    // Hedge: bring the next gateway in if this one is still silent.
+    const hedge = setTimeout(() => { if (!settled) startOne(nextIndex()); }, HEDGE_MS);
+    timers.push(hedge);
     const fail = () => {
-      if (settled) return;
-      failed += 1;
+      if (settled || failed.has(i)) return;
+      failed.add(i);
+      // This one is done, so its hedge has nothing left to cover.
+      clearTimeout(hedge);
       // Every candidate answered and none worked: stop early rather
       // than sitting out the remaining budget.
-      if (failed >= candidates.length) {
+      if (failed.size >= candidates.length) {
         stop();
         cb.onFail();
         return;
       }
       // A fast failure should immediately promote the next candidate
       // instead of waiting for its hedge timer.
-      if (started < candidates.length) startOne(started);
+      startOne(nextIndex());
     };
     probe.onerror = fail;
     probe.onload = () => {
@@ -310,11 +333,6 @@ function loadHedged(
       cb.onWin(candidates[i]);
     };
     probe.src = candidates[i];
-
-    // Hedge: bring the next gateway in if this one is still silent.
-    if (i + 1 < candidates.length) {
-      timers.push(setTimeout(() => { if (!settled) startOne(i + 1); }, HEDGE_MS));
-    }
   };
 
   startOne(0);

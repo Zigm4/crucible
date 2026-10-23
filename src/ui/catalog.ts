@@ -43,7 +43,7 @@ import { listAssetsForOwner, type AtomicAsset } from '../atomic/assets';
 import { buildSlots, nftSlots, ftSlots } from '../atomic/matcher';
 import { listBlends, type DiscoveredBlend } from '../nefty/discover';
 import { listDrops, type DiscoveredDrop } from '../nefty/drops';
-import { listUpgrades, type DiscoveredUpgrade } from '../nefty/upgrades';
+import { listUpgrades, upgradeTargetFits, type DiscoveredUpgrade } from '../nefty/upgrades';
 import { listPackDesigns, pickOwnedPacks, type PackDesign } from '../nefty/packs';
 import { listNeftyPackDesigns } from '../nefty/neftyPacks';
 import { listWaxdaoBlends, type DiscoveredWaxdaoBlend } from '../waxdao/blends';
@@ -445,6 +445,11 @@ function fromNeftyBlend(b: DiscoveredBlend, owned: AtomicAsset[], hasWallet: boo
       blocked = 'not on the whitelist';
     }
   }
+  // A chest or a cooldown cannot be run from Crucible, whatever the wallet holds.
+  if (slots.some((s) => s.kind === 'UNSUPPORTED')) {
+    doable = false;
+    blocked = 'Crucible does not handle one of its ingredients';
+  }
 
   return {
     kind: 'blend',
@@ -495,11 +500,10 @@ function fromUpgrade(u: DiscoveredUpgrade, owned: AtomicAsset[], hasWallet: bool
   let doable: boolean | undefined;
   let blocked: string | undefined;
   if (hasWallet) {
-    // An upgrade needs an NFT it accepts; the token cost is separate.
-    const accepted = new Set((u.acceptedTemplateIds ?? []).map(Number));
-    const has = accepted.size === 0
-      ? undefined
-      : owned.some((a) => a.template?.template_id != null && accepted.has(Number(a.template.template_id)));
+    // An upgrade needs an NFT it accepts, template and attribute rules
+    // both; the token cost is separate.
+    const fits = owned.map((a) => upgradeTargetFits(u, a));
+    const has = fits.includes(true) ? true : fits.includes(undefined) ? undefined : false;
     doable = has;
     if (has === false) blocked = 'you hold no NFT this upgrade accepts';
   }
