@@ -35,6 +35,7 @@ import {
 } from '../nefty/blendLimits';
 import { blendStatusOf, type DiscoveredBlend } from '../nefty/discover';
 import { proofShortfall, type DiscoveredDrop, type ProofFilter } from '../nefty/drops';
+import { bytesPerClaim, readDropRam } from '../nefty/dropRam';
 import type { MarketRef } from '../atomic/atomichub';
 import type { PackDesign } from '../nefty/packs';
 import { proofFor, readSecurityGate, type SecurityGate } from '../nefty/security';
@@ -96,6 +97,8 @@ export interface CheckContext {
   ncFarms?: Set<string>;
   /** Bytes the collection has on blenderizerx, undefined while unread or unreadable. */
   blenderizerRam?: number;
+  /** Bytes the collection has on neftyblocksd for its drops to mint with (dropRam.ts). */
+  dropRam?: number;
   /** Balance checks, keyed by tokenCheckKey. */
   tokens: Map<string, TokenCost>;
   /** Reads still on their way, for a "still checking" line. */
@@ -390,6 +393,14 @@ function dropChecks(d: DiscoveredDrop, ctx: CheckContext): RecipeCheck[] {
   if (d.is_free) out.push({ tone: 'ok', text: 'Free' });
   else out.push(...holdingChecks(reqs, ctx));
 
+  // neftyblocksd mints from the collection's own RAM; with none, every claim is refused whoever claims.
+  const need = bytesPerClaim(d.assets_to_mint ?? []);
+  if (need && ctx.dropRam !== undefined && ctx.dropRam < need) {
+    out.push(ctx.dropRam <= 0
+      ? { tone: 'block', text: `${d.collection_name} has no RAM left on neftyblocksd to mint with: nobody can claim until its author deposits some` }
+      : { tone: 'warn', text: `${d.collection_name} has only ${ctx.dropRam} bytes of RAM left on neftyblocksd, less than one claim usually takes (up to ${need}): it will likely be refused` });
+  }
+
   const auth = authCheck(ctx, 'drop', d.collection_name);
   if (auth) out.push(auth);
   return out;
@@ -680,6 +691,9 @@ export async function loadCheckContext(
 
   if (choices.some((c) => c.source === 'blenderizer') && ctx.blenderizerRam === undefined) {
     track(readBlenderizerRam(collection).then((r) => { ctx.blenderizerRam = r ? r.bytes : 0; }));
+  }
+  if (choices.some((c) => c.source === 'drop') && ctx.dropRam === undefined) {
+    track(readDropRam(collection).then((r) => { ctx.dropRam = r.bytes; }));
   }
 
   if (actor) {

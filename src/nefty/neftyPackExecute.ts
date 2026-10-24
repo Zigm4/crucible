@@ -41,11 +41,16 @@ export function buildNeftyUnboxAnnounce(args: {
   ];
 }
 
-/** TX2: claim the staged results. roll_indexes is [0..roll_count-1]. */
+/**
+ * TX2: claim the staged results. roll_indexes is [0..roll_count-1], or the
+ * indexes given: a claim partly minted already refuses the indexes it has
+ * minted ("Index 0 is already claimed").
+ */
 export function buildNeftyUnboxClaim(args: {
   claimer: string;
   claim_id: string | number;
   roll_count: number;
+  roll_indexes?: number[];
 }): BuiltAction[] {
   const auth = [{ actor: args.claimer, permission: 'active' }];
   return [
@@ -55,7 +60,8 @@ export function buildNeftyUnboxClaim(args: {
       authorization: auth,
       data: {
         claim_id: String(args.claim_id),
-        roll_indexes: Array.from({ length: Math.max(1, args.roll_count) }, (_, i) => i),
+        roll_indexes: args.roll_indexes?.length ? args.roll_indexes
+          : Array.from({ length: Math.max(1, args.roll_count) }, (_, i) => i),
       },
     },
   ];

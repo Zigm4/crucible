@@ -441,12 +441,23 @@ async function main() {
     const src = (f) => fs.readFile(new URL(`../src/${f}`, import.meta.url), 'utf8');
 
     // 1. get_tokens defaults to 50 rows and says nothing about the rest.
-    // fees.nefty holds balances on 156 issuers; the first version of this
-    // feature would have shown a third of them under a footer claiming
-    // the list had been confirmed.
+    // fees.nefty held balances on 156 issuers when this was written; the
+    // first version of this feature would have shown a third of them under
+    // a footer claiming the list had been confirmed. The count moves as
+    // the account empties (121 in October 2026), so it is not a constant
+    // here: the indexer is asked directly, page by page, and the module
+    // must go past the first 50 and find about as many as it lists.
     const heavy = await w.listWalletTokens('fees.nefty');
-    say(heavy.tokens.length > 150,
-        `a wallet with hundreds of tokens gets them all (${heavy.tokens.length}, was 50 unpaged)`);
+    const listed = new Set();
+    for (let skip = 0; skip < 1000; skip += 100) {
+      const res = await fetch(`https://wax.eosusa.io/v2/state/get_tokens?account=fees.nefty&limit=100&skip=${skip}`)
+        .then((r) => r.json()).catch(() => ({}));
+      for (const t of res.tokens ?? []) listed.add(t.contract);
+      if ((res.tokens ?? []).length < 100) break;
+    }
+    const issuers = new Set(heavy.tokens.map((t) => t.contract)).size;
+    say(listed.size > 50 && issuers > 50 && issuers >= Math.floor(listed.size * 0.9),
+        `a wallet with more tokens than one page gets them all (${issuers} issuers read; the indexer lists ${listed.size}, one unpaged answer holds 50)`);
     say(heavy.tokens.some((t) => t.symbol === 'WAX' && t.contract === 'eosio.token'),
         'and WAX is there, which the alphabetical cut could have dropped');
 

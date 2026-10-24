@@ -23,10 +23,25 @@
  *
  * The same reads find what an account left unfinished, whichever page it
  * started on: all three tables have an index by account.
+ *
+ * Every one of them is then asked of the chain, without signing, so what
+ * cannot be finished says why instead of offering a refused signature. On
+ * 2026-10-24, 39 packs left by 24 accounts gave:
+ *   - "Missing authorization for this collection": the collection removed
+ *     the pack contract from its authorized accounts
+ *   - "The collection does not have enough RAM to mint the assets"
+ *   - "Native backing has been deprecated on the AtomicAssets Contract":
+ *     the cards are NFTs backed with tokens, which AtomicAssets no longer
+ *     mints
+ *   - "Index 0 is already claimed": a neftyblocksp pack whose first card
+ *     (a pool draw) went out and whose next ones did not. claim refuses an
+ *     index already claimed, so only the open ones are asked for; that
+ *     finished all 25 such packs tried, out of 180 on chain.
  */
 import { isContractAuthorized } from '../atomic/collections';
 import type { BuiltAction } from '../chain/action';
 import { getTableRows } from '../chain/rpc';
+import { simulateActions } from '../chain/simulate';
 import { loadBlend } from '../nefty/blend';
 import { buildNeftyUnboxClaim } from '../nefty/neftyPackExecute';
 import { waitForNeftyClaim } from '../nefty/neftyPackWait';
@@ -53,6 +68,8 @@ export interface PendingFinish {
   rollIds?: (string | number)[];
   /** blend.nefty and neftyblocksp want one index per roll. */
   rollCount?: number;
+  /** neftyblocksp: the claims not minted yet, the only indexes its claim accepts. */
+  rollIndexes?: number[];
   /**
    * Why no signature can finish it: the collection does not let the pack
    * contract mint. Seen live: a neftyblocksp claim refused with "Missing
@@ -60,7 +77,32 @@ export interface PendingFinish {
    * collection adds the contract back.
    */
   blocked?: string;
+  /** What blocked it, for pages that explain each kind once (nefty/leftovers). */
+  blockedBy?: BlockedBy;
 }
+
+export type BlockedBy = 'authorization' | 'ram' | 'backing' | 'refused';
+
+/** Which of the known refusals a contract's reason is. */
+export function refusalKind(reason: string): BlockedBy {
+  if (/authorization for this collection/i.test(reason)) return 'authorization';
+  if (/enough RAM/i.test(reason)) return 'ram';
+  if (/native backing has been deprecated/i.test(reason)) return 'backing';
+  return 'refused';
+}
+
+/**
+ * Read per table and account. A few accounts have far more (2,700 packs
+ * on atomicpacksx for one): finishing these brings the next ones up.
+ */
+export const PENDING_LIMIT = 100;
+
+/**
+ * Finishes signed, or asked of the chain, together. One refusal sinks a
+ * whole transaction, so a batch the chain refuses is asked again one by
+ * one; ten single-NFT packs went through as one on 2026-10-24.
+ */
+export const FINISHES_PER_TRANSACTION = 10;
 
 /** Where the open recipe is after its first transaction. */
 export interface RunFinish {
@@ -101,14 +143,14 @@ async function blendPending(row: BlendClaimRow): Promise<PendingFinish> {
 export async function readPendingFinishes(actor: string): Promise<PendingFinish[]> {
   const out: PendingFinish[] = [];
   const [blends, packs, nefty] = await Promise.allSettled([
-    getTableRows<BlendClaimRow>({ code: 'blend.nefty', scope: actor, table: 'claimassets', limit: 100 }),
+    getTableRows<BlendClaimRow>({ code: 'blend.nefty', scope: actor, table: 'claimassets', limit: PENDING_LIMIT }),
     getTableRows<{ pack_asset_id: string | number; pack_id: string | number; unboxer: string }>({
       code: 'atomicpacksx', scope: 'atomicpacksx', table: 'unboxpacks',
-      index_position: 'secondary', key_type: 'name', lower_bound: actor, upper_bound: actor, limit: 100,
+      index_position: 'secondary', key_type: 'name', lower_bound: actor, upper_bound: actor, limit: PENDING_LIMIT,
     }),
     getTableRows<BlendClaimRow>({
       code: 'neftyblocksp', scope: 'neftyblocksp', table: 'claimassets',
-      index_position: 'secondary', key_type: 'name', lower_bound: actor, upper_bound: actor, limit: 100,
+      index_position: 'secondary', key_type: 'name', lower_bound: actor, upper_bound: actor, limit: PENDING_LIMIT,
     }),
   ]);
   if (blends.status === 'fulfilled') {
@@ -129,14 +171,17 @@ export async function readPendingFinishes(actor: string): Promise<PendingFinish[
   }
   if (nefty.status === 'fulfilled') {
     for (const r of nefty.value.filter((x) => x.recipient === actor)) {
-      const drawn = templatesOf(r.claims);
+      const open = (r.claims ?? []).map((c, i) => ({ c, i })).filter(({ c }) => !Number(c?.is_claimed ?? 0));
+      const drawn = templatesOf(open.map(({ c }) => c));
       out.push({
         kind: 'neftypack', id: String(r.claim_id), recipe: String(r.recipe_id),
         collection: String(r.collection_name), drawn, ready: drawn.length > 0, rollCount: drawn.length,
+        rollIndexes: open.map(({ i }) => i),
       });
     }
   }
   await markBlocked(out);
+  await markRefused(out, actor);
   return out;
 }
 
@@ -145,18 +190,66 @@ const MINTER: Record<FinishKind, string> = { blend: 'blend.nefty', pack: 'atomic
 
 /** Marks what no signature can finish, and fills in an atomicpacksx pack's collection. */
 async function markBlocked(list: PendingFinish[]): Promise<void> {
+  // Packs left in numbers are mostly of one design: one read each.
+  const designs = new Map<string, Promise<string>>();
   for (const p of list) {
     if (p.kind === 'pack' && !p.collection) {
-      const [row] = await getTableRows<{ pack_id: string | number; collection_name: string }>({
-        code: 'atomicpacksx', scope: 'atomicpacksx', table: 'packs',
-        lower_bound: p.recipe, upper_bound: p.recipe, limit: 1,
-      }).catch(() => []);
-      if (row) p.collection = String(row.collection_name);
+      if (!designs.has(p.recipe)) {
+        designs.set(p.recipe, getTableRows<{ pack_id: string | number; collection_name: string }>({
+          code: 'atomicpacksx', scope: 'atomicpacksx', table: 'packs',
+          lower_bound: p.recipe, upper_bound: p.recipe, limit: 1,
+        }).then(([row]) => String(row?.collection_name ?? '')).catch(() => ''));
+      }
+      p.collection = await designs.get(p.recipe)!;
     }
     if (!p.collection) continue;
     // Unreadable is not "no": only a clear refusal marks it.
     if (await isContractAuthorized(p.collection, MINTER[p.kind]) === false) {
-      p.blocked = `${p.collection} does not let ${MINTER[p.kind]} mint, so it cannot be finished until the collection allows it again`;
+      block(p, 'Missing authorization for this collection');
+    }
+  }
+}
+
+/** What a refusal to finish means for the person who left it. */
+export function whyRefused(p: PendingFinish, reason: string): string {
+  const who = p.collection || 'its collection';
+  switch (refusalKind(reason)) {
+    case 'authorization': return `${who} does not let ${MINTER[p.kind]} mint, so it cannot be finished until the collection allows it again`;
+    case 'ram': return `${who} has run out of the RAM ${MINTER[p.kind]} mints from, so it cannot be finished until the collection's author tops it up`;
+    case 'backing': return 'its cards are NFTs backed with tokens, which AtomicAssets no longer mints, so it cannot be finished';
+    default: return `the chain refuses to finish it: ${reason}`;
+  }
+}
+
+/** Marks one as unfinishable, with the sentence and its kind. */
+function block(p: PendingFinish, reason: string): void {
+  p.blocked = whyRefused(p, reason);
+  p.blockedBy = refusalKind(reason);
+}
+
+/**
+ * Asks the chain about each one still offered; a clear refusal takes the
+ * offer back, with why. Asked by batches of one collection: a batch the
+ * chain takes is taken one by one too, and only a refused batch is asked
+ * again pack by pack. No answer, or only the simulating account's CPU, is
+ * not a refusal.
+ */
+async function markRefused(list: PendingFinish[], actor: string): Promise<void> {
+  const groups = new Map<string, PendingFinish[]>();
+  for (const p of list.filter((x) => x.ready && !x.blocked)) {
+    const k = `${p.kind}:${p.collection}`;
+    groups.set(k, [...(groups.get(k) ?? []), p]);
+  }
+  const ask = (ps: PendingFinish[]) =>
+    simulateActions(ps.flatMap((p) => buildFinishActions(p, actor))).catch(() => undefined);
+  for (const ps of groups.values()) {
+    for (let i = 0; i < ps.length; i += FINISHES_PER_TRANSACTION) {
+      const batch = ps.slice(i, i + FINISHES_PER_TRANSACTION);
+      if (batch.length > 1 && (await ask(batch))?.kind !== 'refused') continue;
+      for (const p of batch) {
+        const r = await ask([p]);
+        if (r?.kind === 'refused') block(p, r.reason);
+      }
     }
   }
 }
@@ -167,7 +260,7 @@ export function buildFinishActions(p: PendingFinish, actor: string): BuiltAction
     return buildUnboxClaim({ claimer: actor, pack_asset_id: p.id, origin_roll_ids: p.rollIds ?? [] });
   }
   if (p.kind === 'neftypack') {
-    return buildNeftyUnboxClaim({ claimer: actor, claim_id: p.id, roll_count: p.rollCount ?? p.drawn.length });
+    return buildNeftyUnboxClaim({ claimer: actor, claim_id: p.id, roll_count: p.rollCount ?? p.drawn.length, roll_indexes: p.rollIndexes });
   }
   return [buildClaimAction({ claimer: actor, claim_id: p.id, roll_count: p.rollCount ?? 1 })];
 }

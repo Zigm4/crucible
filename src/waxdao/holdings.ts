@@ -26,6 +26,13 @@
  * the transaction opens that balance first. An NFT counts as
  * held only when AtomicAssets says the contract owns it: rows outlive the
  * stake, and 12,717 of the NFTs listed in such rows are back in a wallet.
+ *
+ * Not here: waxdaomarket's `blendorderz`. Its rows look like blends left
+ * half-paid, but they are the per-account usage counters (blends done,
+ * cooldown) that blends.ts reads for a blend's per-wallet limit. A blend
+ * is asserted and paid in one transaction, so an order cannot keep what
+ * it was sent: on 2026-10-24 one row of the table's 9,791 was unfinished,
+ * still waiting for its only ingredient, with no asset in it.
  */
 import type { BuiltAction } from '../chain/action';
 import { atomicFetch, getTableRows, withFailover } from '../chain/rpc';

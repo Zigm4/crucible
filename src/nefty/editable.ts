@@ -46,6 +46,8 @@ export interface EditableRecipe {
   listingPrice: string;
   /** Blends and upgrades: the ingredient variants as the contract holds them. */
   ingredients: unknown[];
+  /** Drops: how many NFTs one claim mints (pool draws excluded), for its RAM. */
+  mintsPerClaim: number;
 }
 
 function parseDisplay(raw: unknown): Record<string, unknown> {
@@ -79,6 +81,8 @@ export async function readEditable(kind: EditableKind, id: string): Promise<Edit
     securityId: gate(r.security_id),
     authRequired: false, listingPrice: '',
     ingredients: Array.isArray(r.ingredients) ? r.ingredients : [],
+    mintsPerClaim: Array.isArray(r.assets_to_mint)
+      ? (r.assets_to_mint as { use_pool?: boolean | number }[]).filter((a) => !Number(a.use_pool ?? 0)).length : 0,
   };
   if (kind === 'blend') {
     // A blend's per-wallet limit lives in its own table, one row per limited blend.

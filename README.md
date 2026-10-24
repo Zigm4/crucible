@@ -25,46 +25,61 @@
 
 ## tl;dr
 
-A **static page** with bundled JavaScript (two HTML pages, the app
-and a standalone guide; one JS file, one CSS file) that talks straight to eight public WAX smart
-contracts (`blend.nefty`, `neftyblocksd`, `neftyblocksp`,
-`atomicpacksx`, `up.nefty`, `secure.nefty`, `waxdaomarket`,
-`blenderizerx`), plus `atomicassets` for the NFT transfers
-themselves. Your wallet signs the
-transactions; the page never sees a private key, never phones home,
-never stores anything. The blend / drop / upgrade / craft fees that
-always existed still go where they always went, nothing comes to me.
+A **static site** with bundled JavaScript that talks straight to the
+public WAX smart contracts NeftyBlocks, WaxDAO and the Blenderizer left
+running: `blend.nefty`, `neftyblocksd`, `neftyblocksp`, `up.nefty`,
+`secure.nefty`, `stake.nefty`, `waxdaomarket`, WaxDAO's staking
+contracts and `blenderizerx`, plus `atomicassets` and `atomicpacksx` for
+the NFTs themselves. Your wallet signs the transactions; the page never
+sees a private key, never phones home, never stores anything of yours.
+Every transaction is first run by a WAX node as a rehearsal
+(`compute_transaction`, executed and never written), so a contract's
+refusal is shown before your wallet opens. The blend / drop / upgrade /
+craft fees that always existed still go where they always went, nothing
+comes to me.
 
+Two front ends share the same chain code:
+
+- **[Crucible v2](https://zigm4.github.io/crucible/v2/)**, the guided
+  site: start from what you want to do, one question per screen. It is
+  where new work lands, and where [the user guide](https://zigm4.github.io/crucible/v2/#/guide)
+  lives.
+- **The classic page**, at the root: one dense panel per contract, for
+  people who know which contract they want.
 
 ```
-$ crucible --layout
-                                                       wallet
-   ┌─────────────────────────────────────────────────────●──┐
-   │  [ NEFTYBLOCKS ] [ WAXDAO ] [ BLENDERIZER ]            │  <- platform pills
-   ├─────────────────────────────────────────────────────────┤
-   │  Blend | Claim | Unpack | Upgrade                       │  <- tabs (per platform)
-   └─────────────────────────────────────────────────────────┘
-   addressable via hash:  #/nefty/blend/43444
-                          #/nefty/claim/237418
-                          #/nefty/upgrade/447
-                          #/waxdao/blend/1921
-                          #/blenderizer/blend/336429
-                          #/catalog/underpunks55   <- everything, one page
-                          #/status                 <- contract health monitor
-                          #/lab                    <- guided creator (unlisted)
+$ crucible v2 --layout                                         wallet
+   ┌──────────────────────────────────────────────────────────────●──┐
+   │ Home · Use a recipe · Explore · My NFTs · Create · WAX names · Guide │
+   └──────────────────────────────────────────────────────────────────┘
+   v2/#/use                  blend, upgrade, claim a drop, open a pack
+   v2/#/explore/<coll>       everything one collection offers
+   v2/#/nfts/<account>       a wallet's NFTs, and what each is good for
+   v2/#/create               make or change a blend, upgrade or drop
+   v2/#/stake/<account>      get back what stake.nefty and WaxDAO still hold
+   v2/#/names/<name>         WAX premium name auctions
+   v2/#/status/<contract>    is each contract still the code that was checked?
+   v2/#/guide/<section>      the user guide
+
+$ crucible classic --layout
+   [ NEFTYBLOCKS ] [ WAXDAO ] [ BLENDERIZER ]   platform pills
+   Blend | Claim | Unpack | Upgrade             tabs, per platform
+   #/nefty/blend/43444  #/waxdao/blend/1921  #/blenderizer/blend/336429
+   #/catalog/underpunks55   #/status   #/lab
 ```
 
 ---
 
 ## Contents
 
-**Use it** &middot; [What it does](#what-it-does) &middot; [Shareable links](#shareable-links) &middot; [Limitations](#limitations) &middot; [Themes](#themes)
+**Use it** &middot; [Crucible v2](#crucible-v2) &middot; [What it does](#what-it-does) &middot; [Shareable links](#shareable-links) &middot; [Limitations](#limitations) &middot; [Themes](#themes)
 
 **Audit it** &middot; [Threat model](#threat-model) &middot; [Privacy](#privacy) &middot; [Verify everything](#verify-everything)
 
 **Fork it** &middot; [Run your own copy](#run-your-own-copy) &middot; [Architecture](#architecture) &middot; [Taking the mechanics out](INTEGRATING.md)
 
-Also here: [the user guide](guide.html) for players, and
+Also here: [the user guide](https://zigm4.github.io/crucible/v2/#/guide) for players
+(`src/v2/guide.ts`; the old `guide.html` forwards to it), and
 [CHANGELOG.md](CHANGELOG.md) for what changed when.
 
 ---
@@ -90,20 +105,26 @@ has been running for years and is enforced byte-for-byte by the chain.
 | `up.nefty` contract         | Its on-chain code         | Same |
 | `waxdaomarket` contract     | Its on-chain code         | Same |
 | `blenderizerx` contract     | Its on-chain code         | Same |
+| `stake.nefty`, `waxdaofarmer`, `farms.waxdao`, `tf.waxdao`, `dao.waxdao`, `waxdaolocker`, `waxdaobacker` | Their on-chain code | Same; the v2 Staking page only takes back what they hold for you |
+| `eosio` (name auctions)     | WAX's system contract     | Same, updated by WAX |
 | WharfKit (signing library)  | Greymass + audit-friendly | Open source on GitHub |
 | Crucible's front-end        | **You. Read it.**         | This repo + the [verifier scripts](#verify-everything) below |
 
 Remove every Crucible-specific layer from that table and trust only
-WAX and the nine contracts above: the worst Crucible can do is *fail
+WAX and the contracts above: the worst Crucible can do is *fail
 to build the right transaction*. It can't steal funds, drain wallets,
 or front-run you. Your wallet shows every action before signing and
-would refuse anything weird.
+would refuse anything weird. Whether each of those contracts still runs
+the code it was checked against is what
+[the contract monitor](https://zigm4.github.io/crucible/v2/#/status)
+reads live, with who could change it and, when it changed, what changed.
 
 One caveat for collection authors. A create or edit action that is
 wrong but still VALID is accepted by the chain rather than reverted,
-and then has to be deleted and rebuilt. That is why the blend and
-upgrade author flows go through a tick-to-confirm summary of the exact
-payload; the older drop panels still use a plain browser `confirm()`.
+and then has to be deleted and rebuilt. That is why the guided creator
+reads the collection before writing to it, rehearses the exact
+transaction on chain, and ends on a tick-to-confirm summary; the
+classic drop panels still use a plain browser `confirm()`.
 
 ---
 
@@ -113,8 +134,8 @@ payload; the older drop panels still use a plain browser `confirm()`.
 
 - no backend, no server, no API key, no database
 - no analytics, no telemetry, no Sentry, no Google Tag, nothing
-- no cookies. localStorage holds exactly two things, both from code you can delete in one edit: the theme you picked (`crucible-theme`, written by the inline script in index.html) and WharfKit's wallet session (`wharf-*`), so you do not reconnect on every visit. Neither is ever sent anywhere. Log out to drop the session key
-- third-party requests are limited to public WAX RPC nodes (chain reads), WAX Hyperion history nodes (`wax.eosphere.io`, `api.waxsweden.org`, used by #/status), the public AtomicAssets indexers (`aa.wax.atomichub.io`, failing over to `wax.api.atomicassets.io` and `aa-wax-public1.neftyblocks.com`) for NFT name enrichment, an IPFS gateway (NFT artwork, see below), and Google Fonts (purely cosmetic, remove in 30s by editing index.html). Clicking "connect wallet" adds that wallet's own hosts: `cb.anchor.link` for Anchor, `*.mycloudwallet.com` for WAX Cloud Wallet
+- no cookies. localStorage holds display choices and the wallet session, nothing else: the theme (`crucible-theme`, `crucible-v2-theme`), how the v2 explorer lays out its cards (`crucible-v2-explore-view`), a few remembered tool settings such as the inventory's sort (`crucible.prefs.v1`), and WharfKit's wallet session (`wharf-*`), so you do not reconnect on every visit. None of it is ever sent anywhere. Log out to drop the session key
+- third-party requests are limited to public WAX RPC nodes (chain reads, with failover), WAX Hyperion history nodes (`wax.eosusa.io`, `api.waxsweden.org`, `wax.eosphere.io`: recent bids, unfinished packs, the contract monitor), the public AtomicAssets indexers (`wax.api.atomicassets.io`, failing over to `aa-wax-public1.neftyblocks.com`) for NFT names and owners, public image servers for NFT artwork (see below), and on the classic page Google Fonts (purely cosmetic, remove in 30s by editing index.html; v2 loads none). Clicking "connect wallet" adds that wallet's own hosts: `cb.anchor.link` for Anchor, `*.mycloudwallet.com` for WAX Cloud Wallet
 - your private key never leaves your wallet. WharfKit hands the unsigned transaction to Anchor / WAX Cloud Wallet, which signs locally and returns a signature. The page never sees a secret.
 
 **On the IPFS gateway.** Artwork is stored on-chain only as an IPFS
@@ -142,10 +163,11 @@ gateways.
 
 What replaced them matters for coverage: **WAX block-producer gateways
 hold WAX NFT media that generic public gateways have never seen**.
-`ipfs.eosdac.io` and `ipfs.alienworlds.io` are tried first for exactly
-that reason, with `ipfs.io` / `dweb.link` / `w3s.link` /
-`gateway.pinata.cloud` behind them for collections pinned outside the
-WAX world.
+`ipfs.eosdac.io` and `ipfs.alienworlds.io` are tried for exactly that
+reason, next to AtomicHub's own image service (`resizer.atomichub.io`),
+which answers for almost any WAX NFT. The generic gateways (`ipfs.io`,
+`dweb.link`, `nftstorage.link`) were dropped in October 2026: they now
+answer 429 "switching to a service worker gateway only".
 
 Gateways are also **raced, not queued**. A dead IPFS gateway usually
 does not fail, it hangs. So a strict try-then-timeout chain spends the
@@ -156,9 +178,69 @@ that decodes wins.
 
 ---
 
+<a id="crucible-v2"></a>
+
+## --- Crucible v2 ---
+
+[`/v2/`](https://zigm4.github.io/crucible/v2/) is the same chain code
+behind a site that starts from what a person wants to do. Every tool
+reads and signs through the modules the classic page uses
+(`src/nefty`, `src/waxdao`, `src/blenderizer`, `src/atomic`), so both
+show the same recipes and sign the same actions; what v2 adds is the
+guidance, and the pages below.
+
+- **Use a recipe** (`#/use`): blend, upgrade, claim a drop or open a pack
+  in four questions (what, which collection, which one, check). Blends
+  are searched across `blend.nefty`, `waxdaomarket` and `blenderizerx`
+  together, packs across `atomicpacksx` and `neftyblocksp`. Every recipe
+  carries a verdict read from the chain (status, supply, per-wallet
+  limits, whitelists and holder gates, WaxDAO farm requirements, token
+  balances), and what the wallet is short of links to AtomicHub.
+- **Asked before signing**: every transaction runs through
+  `compute_transaction` first (`src/chain/simulate.ts`). A refusal shows
+  the contract's own words and the wallet never opens; a shortfall of
+  the account's own CPU or NET is not treated as a refusal, since a
+  paying wallet covers it.
+- **Explore** (`#/explore/<collection>`): everything one collection
+  offers, across every contract, as cards with the same verdicts;
+  grouped by result or by contract, three sizes, grid or list.
+- **My NFTs** (`#/nfts/<account>`): any wallet's NFTs, searched and
+  filtered, each with what it is good for (the pack it opens, the blends
+  and upgrades that take it), and its token balances.
+- **Create and Change** (`#/create`): the guided creator described
+  [below](#guided-creator), with who can use a recipe (everyone, a list
+  of accounts, or holders of NFTs or tokens), up.nefty's fee rule, and a
+  Change screen that reads the recipe's own row so only what is touched
+  is signed, ingredients included.
+- **Staking** (`#/stake/<account>`): what `stake.nefty` and WaxDAO's
+  farms, pools, DAOs, locks and market still hold for a wallet, and the
+  transactions to take it back, in the order that loses nothing. Also
+  what NeftyBlocks' other contracts kept (`src/nefty/leftovers.ts`):
+  tokens deposited for a drop, a blend or an upgrade and never used
+  (`withdraw`, `withdrawubal`), packs opened and never minted ("Finish",
+  or ten at once), draws the oracle never answered, and NFTs `blend.nefty`
+  kept. Scanned whole on 2026-10-24, that was about 24,566 WAX, 547,032
+  AGAR and 42,964 RUST in deposits, and 5,147 packs. What cannot be signed
+  is explained once, in notes above the cards that point to them: a
+  collection that removed the pack contract or ran out of its RAM, cards
+  backed with tokens AtomicAssets no longer mints, and draws only
+  NeftyBlocks' own permission could relaunch (`retryrand`).
+- **WAX names** (`#/names/<name>`): the premium name auctions in
+  `eosio`: bid, follow where a bid stands in the chain-wide queue,
+  collect refunds, create the won account.
+- **Contract monitor** (`#/status/<contract>`): each contract's code
+  against the version that was checked, who can redeploy it, its
+  activity, and when it moved, the deploying transaction or multisig
+  proposal and its interface before and after.
+- **User guide** (`#/guide/<section>`): how all of it works, step by
+  step, checked against the code.
+
 <a id="what-it-does"></a>
 
 ## --- What it does ---
+
+The sections below describe the classic page, one tab per contract. The
+transactions are the same in v2.
 
 ### BLEND tab · `blend.nefty`
 
@@ -623,17 +705,20 @@ chain will not catch: exactly why the guided creator reads it from the
 schema instead of asking. Verified against every createupgrde on chain,
 see the verify section.
 
-### GUIDED CREATOR · `#/lab`  (unlisted)
+<a id="guided-creator"></a>
 
-Nothing links to it: you reach it by knowing the path. It is a **real**
-creator and it signs real transactions.
+### GUIDED CREATOR · v2 `#/create`, classic `#/lab`
+
+In v2 it is the **Create** menu; on the classic page it stays at `#/lab`,
+which nothing links to. It is a **real** creator and it signs real
+transactions.
 
 It is also the **only** way to create a blend or an upgrade. Those panels
 used to sit on the BLEND and UPGRADE tabs behind a safety toggle; they
 were removed rather than kept alongside: two creation paths mean two
 sets of mistakes to guard against, and only one of them reads the
-schema before writing to it. Editing an existing blend, whitelists, and
-drop creation stay on the main page.
+schema before writing to it. The classic page keeps its Manage panels
+and drop creation.
 
 ```
 $ crucible #/lab
@@ -656,9 +741,12 @@ first, so none of that is asked:
 - templates picked from a searchable grid with artwork, name, schema and supply, read live from the collection
 - weights drawn as a stacked bar, so "50 / 30 / 20" is a shape before it is arithmetic
 - one plain sentence on every step. If the sentence is wrong, the recipe is wrong, with no payload to decode
-- Simulate before signing, then a confirmation you have to tick
+- Simulate before signing (the transaction rehearsed on chain), then a confirmation you have to tick
 - one roll per blend and one spec per upgrade. The contract allows several of each (a second roll is a second, independent draw paid out on the same blend); that shape has to be built elsewhere
-- whitelists are read, not created: the creator offers the collection's existing lists, and a drop it creates with the whitelist flag is still empty, so both finish in the Manage panels on the main page
+- who can use it, written with the recipe in the same transaction (the new id is the contract counter's value, so a race can only cost a refusal): a `secure.nefty` list of accounts or a holder gate for blends and upgrades, a drop's own list and holder rule for drops. Pasted accounts are looked up on chain, a long list is split into transactions signed in turn, and a drop's list can give each account a claim limit, which can only lower the drop's own (`src/nefty/accessLists.ts`, `src/nefty/holderGates.ts`)
+- up.nefty's fee rule: below level.3 of NEFTY staking an upgrade must carry the fixed fee, 0.01 WAX to `fees.nefty`, and one more ingredient, or the contract refuses it; the creator offers the fee line in one click (`src/nefty/upgradeGate.ts`)
+- the RAM a drop mints from: `neftyblocksd` pays for every NFT a claim mints out of RAM the collection deposited (`rambalances`), about 151 bytes each, and refuses every claim once it runs out. Create and Change show the balance, how many claims it covers, and take an optional deposit signed with the drop (a WAX transfer to `neftyblocksd`, memo `deposit_collection_ram:<collection>`; a first one must buy at least 128 bytes). Only claims of the collection's own drops spend it, within each drop's supply, limits and gate, and only its authors can withdraw it. Use a recipe blocks a drop whose collection has none (`src/nefty/dropRam.ts`)
+- Change reads the recipe's own row (`src/nefty/editable.ts`): hidden flags, dates to the second, every display key and the per-wallet cooldown are kept unless touched, and ingredients are edited only when the rows write the list back exactly. It also lists the collection's lists and holder gates, the recipes behind each, and deletes one only when nothing uses it and the chain accepts it
 
 **The attribute question.** An upgrade's `attribute_type` must match what
 the schema declares, and the README's own warning about the classic form
@@ -688,7 +776,9 @@ page is that file plus its import and route in `app.ts`.
 
 ### CATALOGUE · `#/catalog/<collection>`
 
-Every tab above is organised the way the CHAIN is: one per contract,
+The classic page's version of what v2 calls **Explore**
+(`v2/#/explore/<collection>`, which a catalogue link opens). Every tab
+above is organised the way the CHAIN is: one per contract,
 because that is what you need when you are about to sign. For a player
 browsing, that is the wrong axis. They want *boots*, and the boots
 might be a blend, a Blenderizer recipe, a drop or a pack, on four
@@ -727,8 +817,14 @@ $ crucible #/catalog/underpunks55
 
 ## --- Shareable links ---
 
-Every blend, drop, and upgrade has its own deep-link URL. Once you've
-picked one, the page address updates automatically:
+In v2 every screen keeps its own address: `#/explore/<collection>`,
+`#/nfts/<account>`, `#/stake/<account>`, `#/names/<name>`,
+`#/status/<contract>`, `#/guide/<section>`, and a recipe open at its
+check step. The classic links below open the same recipe in v2 too.
+
+On the classic page, every blend, drop, and upgrade has its own
+deep-link URL. Once you've picked one, the page address updates
+automatically:
 
 ```
 #/nefty/blend/43444     -- a NeftyBlocks blend
@@ -849,6 +945,26 @@ $ node scripts/verify-discover-chain.mjs
 # on-chain and that two specific reference blends appear.
 ```
 
+Rules that no historical transaction can show are settled the other way:
+the transaction is built by the real module and run through
+`compute_transaction` on real accounts, executed by a node and never
+signed. Each has its suite, run with `npm run <name>`:
+
+| Suite | What it holds the code to |
+| --- | --- |
+| `verify:simulate` | the four answers of the rehearsal: accepted, refused, resources, no answer |
+| `verify:attributes` | attribute rules on up.nefty and WaxDAO, read mutable data first like the contracts |
+| `verify:staking` | stake.nefty's claim, unstake and refund collection |
+| `verify:waxdao-holdings` | every WaxDAO recovery button, on accounts holding each kind |
+| `verify:signed-recently` | the staking page never asks for the same signature twice |
+| `verify:drop-ram` | a claim without RAM, a first deposit under 128 bytes and a deposit with a claim, each held to the chain's answer, and what Use a recipe says |
+| `verify:nefty-leftovers` | every Withdraw and Finish the Staking page offers real holders is accepted, a partly minted pack asks only for its open cards, and each refusal or unanswered draw points to the note that explains it, `retryrand` included |
+| `verify:access-lists` | lists of accounts made, filled and changed, on secure.nefty and neftyblocksd |
+| `verify:holder-gates` | holder rules for blends, upgrades and drops, and deleting a gate |
+| `verify:upgrade-fee` | up.nefty's fixed fee: the creator warns exactly when the chain refuses |
+| `verify:change` | Change signs only what was touched (run with a non-UTC `TZ`) |
+| `verify:media` | which image servers still answer |
+
 Translation: I didn't write the action structures from memory or a
 spec PDF. I pulled real transactions from a user's own on-chain
 history (thanks zigm4.gm), decoded each action's parameters, then
@@ -939,8 +1055,9 @@ ipfs add -r dist
 ```
 
 Same bundle, no single point of failure. The build is multi-page:
-`dist/index.html` (the app) and `dist/guide.html` (the user guide),
-plus everything under `public/`.
+`dist/index.html` (the classic app), `dist/v2/index.html` (v2) and
+`dist/guide.html` (which forwards to the guide in v2), plus everything
+under `public/`.
 
 ---
 
@@ -949,9 +1066,10 @@ plus everything under `public/`.
 ## --- Architecture ---
 
 ```
-index.html            : app shell (loads src/main.ts + src/ui/style.css)
-guide.html            : standalone themed user guide, 2nd Vite build input
-                        (vite.config.ts rollupOptions.input.guide)
+index.html            : classic app shell (loads src/main.ts + src/ui/style.css)
+v2/index.html         : v2 shell (loads src/v2/main.ts + src/v2/v2.css)
+guide.html            : forwards to v2/#/guide, its old #anchors to the
+                        matching sections (kept so old links still work)
 src/
   main.ts              : entry point - hands off to ui/app::mount(),
                          renders a fail-safe error card if mount throws
@@ -960,11 +1078,27 @@ src/
     rpc.ts             : APIClient + failover across 4 public WAX RPCs,
                          per-request timeouts so a hung host can't stall
     session.ts         : WharfKit SessionKit (Anchor + WAX Cloud Wallet)
+    simulate.ts        : compute_transaction, the rehearsal before signing
     index.ts           : the facade for this folder
+  v2/
+    main.ts, app.ts    : v2's entry, router, menu and home
+    explore.ts         : #/explore - one collection, every contract
+    stake.ts           : #/stake - stake.nefty, NeftyBlocks' deposits and
+                         packs, and WaxDAO, taken back
+    signedRecently.ts  : what was just signed, until the chain shows it
+    guide.ts           : #/guide - the user guide
+    status.ts          : #/status - the contract monitor, with who can
+                         redeploy each contract and what changed
   nefty/
     index.ts           : the facade, grouped by mechanic. Says what each
                          one needs at minimum. See INTEGRATING.md
     abi.ts             : verifies blend.nefty ABI shape at startup
+    accessLists.ts     : lists of accounts on secure.nefty and drops
+    holderGates.ts     : holder rules on secure.nefty and drops
+    editable.ts        : a recipe as Change reads it, from its own row
+    dropRam.ts         : the RAM a drop mints from, and a deposit for it
+    leftovers.ts       : what neftyblocksd, blend.nefty, up.nefty and the
+                         pack contracts kept for a wallet (Staking)
     blend.ts           : reads a blend's recipe, isDeterministic
     pools.ts           : reads blend.nefty pools + escrowed asset_ids
                          (POOL_NFT_RESULT rewards)
@@ -1020,10 +1154,12 @@ src/
                          contracts share one), grouped by category
     media.ts           : IPFS resolution + non-distorting thumbnails
                          (gateway fallback, removes itself on failure)
-    lab.ts             : #/lab - unlisted workbench. Two tools: the
-                         guided creator for blends, upgrades and drops,
-                         and the WAX premium-name auctions
-    status.ts          : #/status - contract health monitor
+    lab.ts             : the guided tools both pages use: the creator
+                         and editor for blends, upgrades and drops, the
+                         recipe runner, the inventory, the WAX name
+                         auctions (v2's menu; #/lab on the classic page)
+    status.ts          : #/status - contract health monitor, and the
+                         shared list of watched contracts and baselines
     dryrun.ts          : local ABI serialisation, "simulate without signing"
     style.css          : entry point - @imports the five files below in order
     theme.css          : default "cyber" skin: palette, fonts, scanlines,
@@ -1101,61 +1237,46 @@ theme, copy the pattern in those files. No application code is involved.
 Honesty up front. Grouped by *why* each one isn't done, so you know
 which are a few hours of UI work and which are impossible by design.
 
-### Builder is ready, only the UI is missing
-
-For these, the transaction builder already emits the exact on-chain
-shape, proven against real traces (trx ids given). What's missing is
-the front-end wiring, so they're the highest-value things to add next.
-
-- **Ownership-secured blends.** Random blends gated by `OWNERSHIP_CHECK`
-  ask you to prove you *hold* a specific NFT (which is **not** burned).
-  Not an edge case: every one of the 40 most recent `blend.nefty::fuse`
-  actions is ownership-gated. `rngExecute.ts` already encodes `OWNERSHIP_CHECK`,
-  but the UI still sends only the no-op `WHITELIST_CHECK` and can't tell
-  an ownership gate from a whitelist gate, so an ownership blend today
-  shows a misleading *"not on the whitelist"* message. To finish: read
-  the `secure.nefty/proofown` rule, show a proof-NFT picker, pass the
-  `asset_ids`. Traces: `e9720eaf…` (blend 36262), `432629ce…` (blend
-  30186).
-- **Gated upgrades** (`up.nefty::upgradesec`). Whitelist- and
-  ownership-gated upgrades. `buildUpgradeActions` already emits
-  `upgradesec` with the right `security_check`; the UI blocks them.
-  Whitelist is the easy half (reuse the blend whitelist check); ownership
-  reuses the same proof-NFT picker as above. Traces: `64054c0b…`
-  (whitelist, upgrade 37), `b5aa7b89…` (ownership, upgrade 994).
-- ~~**RNG upgrades.**~~ **Withdrawn: this path does not exist.** It was
-  listed here as a few hours of UI work. It is not work at all, because
-  there is nothing to wire up to. `up.nefty` declares an `orngjobs`
-  table, and that table is the only trace of the idea: the contract has
-  **no `receiverand` action** and no `retryrand`, so nothing can ever
-  write a row into it, and it is empty. Check it yourself with
-  `get_abi up.nefty`. The picker's `RNG` tag comes from our own reader
-  flagging any result value whose wrapper is not `IMMEDIATE_VALUE`, and
-  since `RESULT_VALUE` is a variant with exactly one member, that branch
-  cannot fire either. Random upgrades are a NeftyBlocks extension point
-  that was named and never built, like the value variant itself. Making
-  them work needs a contract change by NeftyBlocks, or a different
-  contract.
+Gated recipes used to head this list as "builder ready, UI missing".
+They are done: ownership-gated blends are signed with `OWNERSHIP_CHECK`
+and the NFTs that prove the holding (never one the blend consumes), and
+whitelist- and ownership-gated upgrades go through `upgradesec`.
 
 ### Partial coverage (common cases work, exotic variants don't)
 
-- **Exotic blend ingredients.** `BALANCE_INGREDIENT` (chest/balance) and
-  `COOLDOWN_INGREDIENT` blends are decoded but flagged `UNSUPPORTED` by
-  the matcher. Signable ingredient kinds: TEMPLATE, SCHEMA, ATTRIBUTE,
-  COLLECTION, FT.
-- **Exotic upgrade costs.** FT plus NFT (TEMPLATE / SCHEMA / COLLECTION)
-  costs are signable. `BALANCE`, `ATTRIBUTE` and `TYPED_ATTRIBUTE` costs
-  are decoded but not pickable yet.
-- **Attribute-targeted upgrades.** Upgrade specs that select which NFTs
-  you can upgrade by *attribute* (rather than by template) aren't
-  matched yet; only `template` / `templates` requirements feed the
-  picker.
+- **Blend ingredients.** Signable: TEMPLATE, SCHEMA, ATTRIBUTE,
+  COLLECTION, FT, and BALANCE (an NFT that must hold a token balance,
+  passed in `own_assets`). Not handled: `COOLDOWN_INGREDIENT`, a time gate
+  on an NFT; the recipe says so instead of letting a transaction fail.
+  The `CHEST_INGREDIENT` the ABI declares has never been used on chain.
+- **Upgrade costs.** Signable: FT, TEMPLATE, SCHEMA, COLLECTION, and
+  ATTRIBUTE / TYPED_ATTRIBUTE costs matched the way up.nefty checks them
+  (mutable data, then immutable, then the template's). A BALANCE cost is
+  decoded and shown, not pickable.
+- **Attribute rules.** Upgrades that choose which NFTs qualify by
+  attribute are matched, as are attribute ingredients on up.nefty and
+  WaxDAO, when the rule is an equality: the only form in use on chain. A
+  rule in another form is shown, and the NFT is left for the player to
+  pick rather than guessed.
+- **Guided editor ingredients.** Change edits a recipe's ingredients
+  only when its rows write them back exactly; see the roadmap below.
 
 ### Out of scope by design, or external
 
 - **`claimdropkey` drops.** Cryptographic-key gated: the creator must
   sign a per-user message off-chain. No third-party client can fabricate
   it. Genuinely impossible, not a TODO.
+- **RNG upgrades.** Once listed as a few hours of UI work; the path does
+  not exist. `up.nefty` declares an `orngjobs` table, and that table is
+  the only trace of the idea: the contract has **no `receiverand`
+  action** and no `retryrand`, so nothing can ever write a row into it,
+  and it is empty (`get_abi up.nefty`). Random upgrades are a NeftyBlocks
+  extension point that was named and never built; making them work needs
+  a contract change by NeftyBlocks, or a different contract.
+- **What no author can change after creation.** A blend's outcomes
+  (`setrolls` takes no `authorized_account`), an upgrade's attribute
+  rewrites (no action exists), a drop's templates. Changing those means
+  deleting the recipe and creating a new one.
 - **CPU.** Nefty's `neftybrespay` used to pay CPU for users; that account
   no longer signs, so you stake ~5-10 WAX of CPU yourself (or sign with
   WAX Cloud Wallet). External to this tool. If the wallet falls back to a
@@ -1170,13 +1291,6 @@ Both items from tester feedback on the guided creator are done: the token
 list is read from the contract with type-ahead, and `#/lab` now edits as
 well as creates. What is left:
 
-- **Warn when a collection has no RAM with neftyblocksd.** A drop mints
-  from RAM its collection deposited on `neftyblocksd` (`rambalances`).
-  Without it every claim is refused with "The collection does not have
-  enough RAM to mint the assets", whoever claims: pearlhorizon's drop
-  #239019 is in that state. The creator and Change say nothing about it
-  today; they should read the balance when a drop is created or opened,
-  and say how much a claim needs.
 - **Ingredients the editor cannot write back.** Change edits a blend's or
   an upgrade's ingredients (`setblendmix`, `setupgrdmix`) only when its
   rows reproduce the list exactly, because both actions replace the whole
@@ -1186,9 +1300,10 @@ well as creates. What is left:
   (`COOLDOWN_INGREDIENT`). Supporting them means extending the ingredient
   editor, and the same rows would let creation offer them too.
 
-- **WaxDAO drops / packs / farms.** Only WaxDAO *blends* are wired today.
-  The rest of the `waxdao*` family (drops, farms, pack openings on
-  waxdaobacker, etc.) follows the same ABI-driven method.
+- **WaxDAO drops and packs.** For players, WaxDAO *blends* are wired, and
+  v2's Staking page takes back what its farms, pools, DAOs, locks and
+  market hold. Its drops, and creating farms or pools, follow the same
+  ABI-driven method and are not built.
 - **Creating templates / schemas.** Drops mint from templates that
   already exist. Making new templates/schemas (irreversible, riskier)
   isn't in the app yet. Create them on AtomicHub, then build the drop

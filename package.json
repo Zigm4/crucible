@@ -22,7 +22,9 @@
     "verify:upgrade-fee": "npm run build:verify && node scripts/verify-upgrade-fee.mjs",
     "verify:change": "npm run build:verify && node scripts/verify-change.mjs",
     "verify:holder-gates": "npm run build:verify && node scripts/verify-holder-gates.mjs",
-    "verify:signed-recently": "npm run build:verify && node scripts/verify-signed-recently.mjs"
+    "verify:signed-recently": "npm run build:verify && node scripts/verify-signed-recently.mjs",
+    "verify:drop-ram": "npm run build:verify && node scripts/verify-drop-ram.mjs",
+    "verify:nefty-leftovers": "npm run build:verify && node scripts/verify-nefty-leftovers.mjs"
   },
   "dependencies": {
     "@wharfkit/session": "^4.0.2",

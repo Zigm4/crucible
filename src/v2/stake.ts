@@ -17,6 +17,10 @@
  * for it. Collections staked by this wallet, an author's matter with its
  * own consequence, come last.
  *
+ * NeftyBlocks' other contracts follow (nefty/leftovers): tokens deposited
+ * for a drop, a blend or an upgrade that never used them, packs opened and
+ * never minted, and what can only be shown.
+ *
  * Every button asks the chain first (chain/simulate): a refusal is shown
  * with the contract's reason and the wallet never opens for it.
  */
@@ -24,6 +28,9 @@ import type { BuiltAction } from '../chain/action';
 import { getCurrentSession } from '../chain/session';
 import { simulateActions } from '../chain/simulate';
 import { SignedRecently } from './signedRecently';
+import {
+  FINISHES_PER_TRANSACTION, LEFTOVER_NOTES, readNeftyLeftovers, type LeftoverGroup, type NeftyLeftover, type NoteId,
+} from '../nefty/leftovers';
 import {
   claimAllFarms, FARMS_PER_TRANSACTION, readWaxdaoHoldings, unstakeManyFarms,
   type HoldingGroup, type WaxdaoHolding,
@@ -42,14 +49,23 @@ const wd: { actor: string; loading: boolean; loaded: boolean; items: WaxdaoHoldi
 export interface Slot { build: BuiltAction[]; marks: string[] }
 /** The WaxDAO buttons on screen, by button key. */
 const wdActions = new Map<string, Slot>();
+/** NeftyBlocks beyond staking, read for one wallet (nefty/leftovers), and its buttons. */
+const lf: { actor: string; loading: boolean; loaded: boolean; items: NeftyLeftover[]; error: string; again: boolean } =
+  { actor: '', loading: false, loaded: false, items: [], error: '', again: false };
+const lfActions = new Map<string, Slot>();
+/** The kinds of card button: one map of transactions each. */
+type CardKind = 'waxdao' | 'leftover';
+const slotsOf = (kind: CardKind) => (kind === 'waxdao' ? wdActions : lfActions);
 /**
  * What this page just signed, until a read shows it. A mark is
  * `account|thing`: `wd:<holding>:second` for a holding's NFTs or tokens,
- * `wd:<holding>:rewards` for its rewards, `sn:<button>` on stake.nefty.
+ * `wd:<holding>:rewards` for its rewards, `sn:<button>` on stake.nefty,
+ * `lf:<leftover>` for a NeftyBlocks withdrawal or pack.
  */
 const signed = new SignedRecently();
 const mark = (actor: string, thing: string) => `${actor}|${thing}`;
 export const wdMark = (actor: string, h: WaxdaoHolding, part: 'second' | 'rewards') => mark(actor, `wd:${h.key}:${part}`);
+export const lfMark = (actor: string, h: NeftyLeftover) => mark(actor, `lf:${h.key}`);
 /** Reads again after a signature: soon, and once more a little later, without clearing the screen. */
 const REREAD_MS = [2_500, 8_000];
 /** The one action in flight, by its key, and how far it got. */
@@ -84,6 +100,40 @@ function ensureLoaded(repaint: () => void, actor: string): void {
     wd.items = [];
     readWaxdao(actor, repaint);
   }
+  if (!lf.loading && !(lf.loaded && lf.actor === actor)) {
+    lf.actor = actor;
+    lf.loaded = false;
+    lf.items = [];
+    readLeftovers(actor, repaint);
+  }
+}
+
+/** Whether a fresh NeftyBlocks read still shows what a mark covers. */
+export function lfStillThere(items: NeftyLeftover[]): (key: string) => boolean {
+  return (key) => {
+    const m = /\|lf:(.+)$/.exec(key);
+    return !m || items.some((x) => x.key === m[1] && Boolean(x.action));
+  };
+}
+
+/** Reads NeftyBlocks' other contracts for `actor`, keeping the screen until the answer lands. */
+function readLeftovers(actor: string, repaint: () => void): void {
+  if (lf.loading) { lf.again = true; return; }
+  lf.loading = true;
+  lf.error = '';
+  void readNeftyLeftovers(actor)
+    .then((items) => {
+      if (lf.actor !== actor) return;
+      lf.items = items;
+      lf.loaded = true;
+      signed.settle(`${actor}|lf:`, lfStillThere(items));
+    })
+    .catch((e: unknown) => { lf.error = e instanceof Error ? e.message : String(e); })
+    .finally(() => {
+      lf.loading = false;
+      if (lf.again) { lf.again = false; readLeftovers(lf.actor, repaint); }
+      repaint();
+    });
 }
 
 /** Whether a fresh WaxDAO read still shows what a mark covers. */
@@ -202,8 +252,9 @@ export function renderStake(repaint: () => void, walletLine: string, subject = '
       <div>
         <p class="v2-eyebrow">Staking · NeftyBlocks and WaxDAO</p>
         <h1>Get back what you staked</h1>
-        <p class="v2-lead">NeftyBlocks' and WaxDAO's websites are gone; their staking contracts still pay out.
-        This reads what they hold for your wallet and walks you through taking it back.</p>
+        <p class="v2-lead">NeftyBlocks' and WaxDAO's websites are gone; their contracts still pay out.
+        This reads what they hold for your wallet, staked, deposited or left half done, and walks you through
+        taking it back.</p>
       </div>
     </div>`;
   if (!actor) return `<section class="v2-explore v2-stake">${head}${walletLine}${lookup()}</section>`;
@@ -214,6 +265,10 @@ export function renderStake(repaint: () => void, walletLine: string, subject = '
     <section class="v2-stake-block">
       <h2 class="v2-stake-block-title">NeftyBlocks · stake.nefty</h2>
       ${renderNefty(actor)}
+    </section>
+    <section class="v2-stake-block">
+      <h2 class="v2-stake-block-title">NeftyBlocks · deposits and unfinished packs</h2>
+      ${renderLeftovers(actor)}
     </section>
     <section class="v2-stake-block">
       <h2 class="v2-stake-block-title">WaxDAO · farms, pools, DAOs, locks</h2>
@@ -363,14 +418,14 @@ const GROUPS: { group: HoldingGroup; title: string; blurb: string }[] = [
  * other one slide over. The amounts are in the card's text, not on the
  * button, which is what keeps every button the same width.
  */
-function wdSlot(key: string, label: string, slot: Slot | undefined): string {
+function wdSlot(key: string, label: string, slot: Slot | undefined, kind: CardKind = 'waxdao'): string {
   if (!slot) return '<span class="v2-wd-slot" aria-hidden="true"></span>';
   // Its first mark is what it is for: signed, and not yet gone from the read.
   if (signed.has(slot.marks[0] ?? '')) return '<span class="v2-wd-slot v2-wd-btn v2-wd-signed">Signed</span>';
-  wdActions.set(key, slot);
+  slotsOf(kind).set(key, slot);
   if (!canSign()) return `<span class="v2-wd-slot v2-wd-btn v2-wd-would" title="Only ${esc(viewing)} can sign this">${esc(label)}</span>`;
   const busy = doing?.key === key;
-  return `<button class="v2-wd-slot v2-wd-btn lab-primary" data-stake-act="${esc(key)}" data-kind="waxdao" ${doing ? 'disabled' : ''}>
+  return `<button class="v2-wd-slot v2-wd-btn lab-primary" data-stake-act="${esc(key)}" data-kind="${kind}" ${doing ? 'disabled' : ''}>
     ${busy ? (doing!.phase === 'checking' ? 'Checking…' : 'Signing…') : esc(label)}</button>`;
 }
 
@@ -387,16 +442,19 @@ function wdOutcome(keys: string[]): string {
 const SECOND: [RegExp, string][] = [[/^Unstake/, 'Unstake'], [/^Withdraw/, 'Withdraw'], [/^Take back/, 'Take back']];
 
 /** A card: what is there on the left, the two slots on the right. */
-function wdCard(keyBase: string, text: string, claim: Slot | undefined, second: (Slot & { label: string }) | undefined, extra = 'v2-stake-card'): string {
+function wdCard(keyBase: string, text: string, claim: Slot | undefined, second: (Slot & { label: string }) | undefined,
+  extra = 'v2-stake-card', kind: CardKind = 'waxdao'): string {
   const keys = [`${keyBase}:claim`, `${keyBase}:second`];
   const done = [claim, second].map((s) => (s ? signed.get(s.marks[0] ?? '') : undefined)).find(Boolean);
+  // Nothing to sign: the text takes the whole card instead of two empty slots.
+  const bare = !claim && !second;
   return `
-    <div class="${extra} v2-wd-card">
+    <div class="${extra} v2-wd-card${bare ? ' v2-wd-bare' : ''}">
       <div class="v2-wd-text">${text}</div>
-      <div class="v2-wd-slots">
-        ${wdSlot(keys[0], 'Claim', claim)}
-        ${wdSlot(keys[1], second?.label ?? '', second)}
-      </div>
+      ${bare ? '' : `<div class="v2-wd-slots">
+        ${wdSlot(keys[0], 'Claim', claim, kind)}
+        ${wdSlot(keys[1], second?.label ?? '', second, kind)}
+      </div>`}
       ${done ? `<p class="lab-hint v2-wd-outcome">${signedNote(done)}</p>` : wdOutcome(keys)}
     </div>`;
 }
@@ -480,12 +538,113 @@ function renderWaxdao(actor: string): string {
   }).join('');
 }
 
+const LEFTOVER_GROUPS: { group: LeftoverGroup; title: string; blurb: string }[] = [
+  { group: 'deposit', title: 'Deposits never used', blurb: 'Tokens sent to pay for a drop, a blend or an upgrade that did not use them. The contract gives them back on request.' },
+  { group: 'finish', title: 'Opened, never minted', blurb: 'Packs sent to be opened, or blends drawn, whose NFTs were never minted. One more signature mints them to you.' },
+  { group: 'draw', title: 'Draws never answered', blurb: 'Waiting for a random number the WAX oracle never sent.' },
+  { group: 'held', title: 'NFTs blend.nefty kept', blurb: 'Sent for a blend that never ran.' },
+];
+
+/**
+ * Several packs to finish: the next FINISHES_PER_TRANSACTION not just
+ * signed, in one signature, so a second one goes on to the next even
+ * before a read has caught up with the first.
+ */
+export function finishShortcut(actor: string, items: NeftyLeftover[], recent: { has(key: string): boolean } = signed) {
+  const open = items.filter((h) => h.group === 'finish' && h.action && !recent.has(lfMark(actor, h)));
+  if (open.length < 2) return undefined;
+  const chosen = open.slice(0, FINISHES_PER_TRANSACTION);
+  const slot: Slot = { build: chosen.flatMap((h) => h.action!.build), marks: chosen.map((h) => lfMark(actor, h)) };
+  return { ...slot, count: chosen.length, total: open.length };
+}
+
+/**
+ * The notes the cards on screen point to, numbered in the order they first
+ * appear: each is explained once, above the cards, and every card it
+ * concerns says "See note n" instead of repeating it.
+ */
+export function noteNumbers(items: NeftyLeftover[], groups: LeftoverGroup[]): Map<NoteId, number> {
+  const out = new Map<NoteId, number>();
+  for (const g of groups) {
+    for (const h of items.filter((x) => x.group === g)) {
+      for (const n of h.notes ?? []) if (!out.has(n)) out.set(n, out.size + 1);
+    }
+  }
+  return out;
+}
+
+/** The notes, highlighted, above every card. */
+function notesBlock(numbers: Map<NoteId, number>): string {
+  if (!numbers.size) return '';
+  return `
+    <div class="v2-lf-notes" role="note">
+      <p class="v2-lf-notes-head">${numbers.size === 1 ? 'Read this first: it explains the cards marked "See note 1".'
+        : `Read these ${numbers.size} notes first: each explains the cards marked with its number.`}</p>
+      ${[...numbers].map(([id, n]) => `
+        <div class="v2-lf-note" id="lf-note-${id}">
+          <strong><span class="v2-lf-n">Note ${n}</span> ${esc(LEFTOVER_NOTES[id].title)}</strong>
+          <p>${esc(LEFTOVER_NOTES[id].body)}</p>
+        </div>`).join('')}
+    </div>`;
+}
+
+/** A card's pointers to its notes. */
+function noteRefs(h: NeftyLeftover, numbers: Map<NoteId, number>): string {
+  const refs = (h.notes ?? []).filter((id) => numbers.has(id));
+  if (!refs.length) return '';
+  return `<span class="v2-lf-refs">${refs.map((id) =>
+    `<button type="button" class="v2-lf-ref" data-lf-note="${id}">See note ${numbers.get(id)}</button>`).join('')}</span>`;
+}
+
+/** What NeftyBlocks' other contracts hold for this wallet, by kind, each with its button. */
+function renderLeftovers(actor: string): string {
+  if (!lf.loaded || lf.actor !== actor) {
+    return `<p class="lab-hint">Reading what NeftyBlocks' drop, blend, upgrade and pack contracts hold for <code>${esc(actor)}</code>.</p>
+      ${lf.error ? `<p class="v2-error">${esc(lf.error)}</p>` : ''}`;
+  }
+  lfActions.clear();
+  // A withdrawal empties its card, so the confirmation is said up here.
+  const done = outcome?.kind === 'done' && outcome.key.startsWith('leftover:')
+    ? `<p class="lab-ok">Signed. <a target="_blank" rel="noreferrer" href="https://waxblock.io/transaction/${esc(outcome.trx ?? '')}">view it on waxblock</a></p>` : '';
+  if (!lf.items.length) {
+    return done + `<p class="lab-hint">Nothing here: no unused deposit on neftyblocksd, blend.nefty or up.nefty, and no pack
+      or blend left unfinished.</p>`;
+  }
+  const numbers = noteNumbers(lf.items, LEFTOVER_GROUPS.map((g) => g.group));
+  return done + notesBlock(numbers) + LEFTOVER_GROUPS.map(({ group, title, blurb }) => {
+    const items = lf.items.filter((h) => h.group === group);
+    if (!items.length) return '';
+    const all = group === 'finish' ? finishShortcut(actor, items) : undefined;
+    const shortcut = all ? wdCard('leftover:all', `<strong>All at once</strong><span>${all.count === all.total
+      ? `All ${all.total} in one signature.`
+      : `The first ${all.count} of ${all.total} in one signature, then the next ones.`}</span>`,
+      undefined, { label: 'Finish all', build: all.build, marks: all.marks }, 'v2-stake-card v2-stake-shortcuts', 'leftover') : '';
+    return `
+      <div class="v2-stake-section">
+        <h3>${esc(title)} <span>${items.length}</span></h3>
+        <p class="lab-hint">${esc(blurb)}</p>
+        ${shortcut}
+        ${items.map((h) => wdCard(`leftover:${h.key}`, `
+          <strong>${esc(h.title)}</strong>
+          ${h.detail ? `<span>${esc(h.detail)}</span>` : ''}
+          ${noteRefs(h, numbers)}`,
+          undefined,
+          h.action ? { label: h.action.label, build: h.action.build, marks: [lfMark(actor, h)] } : undefined,
+          'v2-stake-card', 'leftover')).join('')}
+      </div>`;
+  }).join('');
+}
+
 /** The transaction for one button, built the way the classic page builds it. */
 function actionsFor(kind: string, el: HTMLElement, actor: string): BuiltAction[] | string {
   if (kind === 'waxdao') {
     // Built for wd.actor; another wallet must not sign them.
     if (wd.actor !== actor) return 'The wallet changed since this was read.';
     return wdActions.get(el.dataset.stakeAct ?? '')?.build ?? 'That one is gone.';
+  }
+  if (kind === 'leftover') {
+    if (lf.actor !== actor) return 'The wallet changed since this was read.';
+    return lfActions.get(el.dataset.stakeAct ?? '')?.build ?? 'That one is gone.';
   }
   const p = st.positions.find((x) => x.scope === el.dataset.scope);
   if (kind === 'claim' && p) return buildClaimFor(actor, p);
@@ -517,6 +676,14 @@ export function attachStakeHandlers(root: HTMLElement, repaint: () => void, go?:
     const v = String(new FormData(ev.target as HTMLFormElement).get('account') ?? '').trim().toLowerCase();
     if (/^[a-z1-5.]{1,12}$/.test(v)) go?.(`#/stake/${v}`);
   });
+  // A card's "See note n": the router owns the hash, so this scrolls instead of linking.
+  root.querySelectorAll<HTMLElement>('[data-lf-note]').forEach((el) => el.addEventListener('click', () => {
+    const note = root.querySelector<HTMLElement>(`#lf-note-${el.dataset.lfNote}`);
+    if (!note) return;
+    note.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    note.classList.add('v2-lf-flash');
+    setTimeout(() => note.classList.remove('v2-lf-flash'), 1600);
+  }));
   root.querySelectorAll<HTMLElement>('[data-stake-act]').forEach((el) => el.addEventListener('click', async () => {
     const session = getCurrentSession();
     if (!session || doing) return;
@@ -542,10 +709,11 @@ export function attachStakeHandlers(root: HTMLElement, repaint: () => void, go?:
       // What is on screen is stale, and a read made at once may be too: the
       // node asked can lag the one the wallet sent through. The marks keep
       // these buttons from coming back until a read no longer shows them.
-      const waxdao = el.dataset.kind === 'waxdao';
-      signed.add(waxdao ? wdActions.get(key)?.marks ?? [] : [mark(actor, `sn:${key}`)], trx);
+      const kind = el.dataset.kind;
+      signed.add(kind === 'waxdao' || kind === 'leftover' ? slotsOf(kind).get(key)?.marks ?? [] : [mark(actor, `sn:${key}`)], trx);
       for (const ms of REREAD_MS) {
-        setTimeout(() => (waxdao ? readWaxdao(actor, repaint) : rereadNefty(actor, repaint)), ms);
+        setTimeout(() => (kind === 'waxdao' ? readWaxdao(actor, repaint)
+          : kind === 'leftover' ? readLeftovers(actor, repaint) : rereadNefty(actor, repaint)), ms);
       }
     } catch (e) {
       outcome = { key, kind: 'failed', text: e instanceof Error ? e.message : String(e) };

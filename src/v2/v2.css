@@ -493,6 +493,39 @@ a.v2-card:hover { border-color: var(--accent); transform: translateY(-1px); }
   align-items: center;
   gap: 8px 16px;
 }
+.v2-wd-card.v2-wd-bare { grid-template-columns: minmax(0, 1fr); }
+/* NeftyBlocks leftovers: what cannot be signed is explained once, up top,
+   and every card it concerns points to it. */
+.v2-lf-notes {
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-left: 4px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin: 4px 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.v2-lf-notes-head { margin: 0; font-weight: 600; color: var(--fg); }
+.v2-lf-note { scroll-margin: 80px; border-radius: 8px; padding: 2px 0; transition: background 0.6s; }
+.v2-lf-note strong { display: flex; align-items: baseline; gap: 8px; color: var(--fg); }
+.v2-lf-note p { margin: 4px 0 0; color: var(--fg-dim); font-size: 13px; line-height: 1.5; }
+.v2-lf-n, .v2-lf-refs .v2-lf-ref {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+.v2-lf-refs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.v2-lf-refs .v2-lf-ref { cursor: pointer; font-family: inherit; line-height: 1.6; height: auto; min-height: 0; box-shadow: none; }
+.v2-lf-refs .v2-lf-ref:hover { background: color-mix(in srgb, var(--warn) 22%, transparent); }
+.v2-lf-flash { background: color-mix(in srgb, var(--warn) 18%, transparent); }
 .v2-wd-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .v2-wd-text span { color: var(--fg-dim); font-size: 13px; }
 .v2-wd-text .lab-hint { margin: 2px 0 0; }

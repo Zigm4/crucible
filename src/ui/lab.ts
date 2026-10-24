@@ -105,6 +105,9 @@ import {
 } from '../nefty/accessLists';
 import type { BuiltAction } from '../chain/action';
 import {
+  readDropRam, bytesPerWax as readBytesPerWax, buildRamDeposit, waxAmount, BYTES_PER_MINT, FIRST_DEPOSIT_BYTES,
+} from '../nefty/dropRam';
+import {
   encodeGroup, describeGroup, groupProblems, symbolOf, tokenDecimals, readCollectionRule, readDropRule,
   buildAddHolderGate, buildSetHolderGate, buildDeleteHolderGate, buildDeleteList, buildSetDropRule, buildDelDropRule,
   TOKEN_OPS, MAX_GATE_NAME, type HolderGroup, type HolderRule,
@@ -245,6 +248,8 @@ interface LabExisting {
   ingredients?: LabIngredient[];
   /** Why they cannot be edited here; '' when they can. */
   ingredientsWhy: string;
+  /** Drops: NFTs one claim mints, for the RAM it needs. */
+  mintsPerClaim: number;
 }
 
 /**
@@ -447,6 +452,12 @@ interface LabState extends LabForm {
   list: ListDraft;
   rule: RuleDraft;
   gates: GatesInfo;
+  /** Drops: the collection's RAM on neftyblocksd, which every claim mints from (dropRam.ts). */
+  dropRam: { for: string; state: LoadState; bytes: number; hasRow: boolean };
+  /** WAX to deposit as RAM with the drop being created or changed; '' for none. */
+  ramDeposit: string;
+  /** About how many bytes a WAX buys today, read once. */
+  bytesPerWax: number;
   /**
    * The ids a list and a drop made in this transaction will get, read from
    * their contracts' counters right before simulating or signing
@@ -584,6 +595,9 @@ const state: LabState = {
   securities: [],
   list: emptyListDraft(),
   rule: emptyRuleDraft(''),
+  dropRam: { for: '', state: 'idle', bytes: 0, hasRow: false },
+  ramDeposit: '',
+  bytesPerWax: 0,
   gates: { for: '', state: 'idle', users: {}, counts: {}, rules: {}, deletable: {}, error: '' },
   newListId: '',
   newDropId: '',
@@ -1036,6 +1050,7 @@ const BLANK_EXISTING = {
   cooldown: '', description: '', image: '', category: '', securityId: '',
   free: true, priceAmount: '', priceToken: '', authRequired: false,
   loaded: false, startRaw: 0, endRaw: 0, display: {}, ingredientsRaw: [], ingredients: undefined, ingredientsWhy: '',
+  mintsPerClaim: 0,
 };
 
 /** '' for no gate. The editor used to start every recipe on '', and so showed a gated one as open to everyone. */
@@ -1130,6 +1145,7 @@ function fromEditable(picked: LabExisting, r: EditableRecipe): LabExisting {
     display: r.display,
     ...(r.kind === 'drop' ? { free, priceAmount: free ? '' : amount ?? '', priceToken: free ? '' : ticker ?? '' } : {}),
     ingredientsRaw: r.ingredients, ingredients: undefined, ingredientsWhy: '',
+    mintsPerClaim: r.mintsPerClaim,
   };
   if (r.kind === 'drop') return e;
   const decoded = decodeIngredients(r.ingredients);
@@ -1270,6 +1286,7 @@ function editActions(): { label: string; action: BuiltAction }[] {
   const t = listTarget();
   if (t) out.push(...listActions(t));
   out.push(...ruleActions());
+  if (e.kind === 'drop') out.push(...ramActions());
   return out;
 }
 
@@ -1514,6 +1531,12 @@ async function resolveNewIds(): Promise<void> {
  * into several transactions; the list and the recipe are always in the first.
  */
 function createActions(): BuiltAction[] {
+  const ram = state.kind === 'drop' ? ramActions().map((c) => c.action) : [];
+  return [...ram, ...recipeActions()];
+}
+
+/** The recipe and what it is created with, without a RAM deposit. */
+function recipeActions(): BuiltAction[] {
   const own = builtAction();
   const rule = ruleActions().map((c) => c.action);
   if (state.kind !== 'drop' && state.securityId === 'new-holders') {
@@ -1806,6 +1829,94 @@ function alsoUsedBy(securityId: string): string[] {
   if (g.state !== 'done') return [];
   const self = state.mode === 'edit' && state.editing ? `${state.editing.kind} #${state.editing.id}` : '';
   return (g.users[securityId] ?? []).filter((u) => u !== self);
+}
+
+// ─── drops: the RAM a claim mints from ──────────────────────────────────
+//
+// neftyblocksd pays for every NFT a claim mints out of RAM the collection
+// deposited with it; with none, every claim is refused whoever claims. The
+// rules are in nefty/dropRam.ts.
+
+/** The collection's drop RAM, read once per collection, and what a WAX buys. */
+function ensureDropRam(): LabState['dropRam'] {
+  const collection = state.collection.trim();
+  const r = state.dropRam;
+  if (!collection || (r.for === collection && r.state !== 'idle')) return r;
+  const next: LabState['dropRam'] = { for: collection, state: 'loading', bytes: 0, hasRow: false };
+  state.dropRam = next;
+  readDropRam(collection).then(
+    (x) => { if (state.dropRam !== next) return; next.bytes = x.bytes; next.hasRow = x.hasRow; next.state = 'done'; rerender(); },
+    () => { if (state.dropRam !== next) return; next.state = 'error'; rerender(); },
+  );
+  if (!state.bytesPerWax) readBytesPerWax().then((b) => { state.bytesPerWax = b; rerender(); }, () => { /* estimates stay off */ });
+  return next;
+}
+
+/** NFTs one claim mints: the drop being created, or the one open in Change. */
+function mintsPerClaim(): number {
+  if (state.mode === 'edit') return state.editing?.mintsPerClaim ?? 0;
+  return totalMints(state.mints.map((m) => ({ template_id: m.template_id, quantity: m.quantity })));
+}
+
+/** About how many bytes the typed deposit buys. */
+function depositBytes(): number {
+  const q = waxAmount(state.ramDeposit);
+  return q && state.bytesPerWax ? Math.floor(parseFloat(q) * state.bytesPerWax) : 0;
+}
+
+/** The collection's RAM, what one claim needs, and an optional deposit. */
+function ramPanel(): string {
+  const r = ensureDropRam();
+  const per = mintsPerClaim() * BYTES_PER_MINT;
+  const coll = esc(state.collection.trim());
+  let status: string;
+  if (r.state === 'loading' || r.state === 'idle') status = '<p class="lab-note">Reading the collection\'s RAM on neftyblocksd.</p>';
+  else if (r.state === 'error') status = '<p class="lab-warn">The collection\'s RAM on neftyblocksd could not be read.</p>';
+  else if (per && r.bytes < per) {
+    status = `<div class="lab-callout danger"><strong>${coll} has ${r.bytes.toLocaleString('en')} bytes of RAM on neftyblocksd.</strong>
+      Every NFT a claim mints is paid from it, about ${BYTES_PER_MINT} bytes each (${per} for one claim of this drop),
+      so nobody can claim it until the collection has more.</div>`;
+  } else {
+    status = `<p class="lab-ok">${coll} has ${r.bytes.toLocaleString('en')} bytes of RAM on neftyblocksd${per
+      ? `: about ${Math.floor(r.bytes / per).toLocaleString('en')} claim(s) of this drop, at ${per} bytes each` : ''}.</p>`;
+  }
+  const add = depositBytes();
+  return `
+    <div class="lab-field">
+      <label>RAM to mint with</label>
+      ${status}
+      <label class="lab-mini">Deposit WAX as RAM ${state.mode === 'edit' ? 'now' : 'with the drop'} <span class="lab-note">optional</span>
+        <input id="lab-ram-deposit" type="text" value="${esc(state.ramDeposit)}" placeholder="e.g. 1" autocomplete="off" />
+      </label>
+      <p class="lab-note">${add ? `About ${add.toLocaleString('en')} bytes at today's price${!per ? '' : add < per ? ', less than one claim'
+        : `, about ${Math.floor(add / per).toLocaleString('en')} more claim(s)`}. ` : ''}
+        neftyblocksd buys it for ${coll}, and only claims of its drops spend it, each within its supply, its per-wallet
+        limit and who can claim it. Only the collection's authors can withdraw what is left. Anyone can top it up by
+        sending WAX to neftyblocksd with the memo <code>deposit_collection_ram:${coll}</code>.</p>
+    </div>`;
+}
+
+function ramActions(): { label: string; action: BuiltAction }[] {
+  const q = waxAmount(state.ramDeposit);
+  const collection = state.collection.trim();
+  return q ? [{ label: `buy ${q} of RAM for ${collection}'s drops`, action: buildRamDeposit(state.actor, collection, q) }] : [];
+}
+
+function ramProblems(): string[] {
+  if (!state.ramDeposit.trim()) return [];
+  if (!waxAmount(state.ramDeposit)) return ['The RAM deposit must be a WAX amount above 0, with at most 8 decimals.'];
+  const r = state.dropRam;
+  if (r.state === 'done' && !r.hasRow && state.bytesPerWax && depositBytes() < FIRST_DEPOSIT_BYTES) {
+    return [`A collection's first RAM deposit must buy at least ${FIRST_DEPOSIT_BYTES} bytes: about ${(FIRST_DEPOSIT_BYTES / state.bytesPerWax).toFixed(4)} WAX today.`];
+  }
+  return [];
+}
+
+/** Whether a claim would be refused for RAM, deposit included. */
+function ramShort(): boolean {
+  const r = state.dropRam;
+  const per = mintsPerClaim() * BYTES_PER_MINT;
+  return r.state === 'done' && per > 0 && r.bytes + depositBytes() < per;
 }
 
 /** A list goes in one action, a holder gate in two: its rule, then the gate (holderGates.ts). */
@@ -2225,6 +2336,7 @@ function taggedProblems(): Problem[] {
 
   for (const t of listProblems(listTarget())) at(3, t);
   for (const t of ruleProblems()) at(3, t);
+  if (state.kind === 'drop') for (const t of ramProblems()) at(3, t);
 
   const start = toUnix(state.startTime);
   const end = toUnix(state.endTime);
@@ -2300,6 +2412,9 @@ function warnings(): string[] {
     out.push('The contract applies every change in order to the same NFT, so all of them happen together. This is not a draw.');
   }
 
+  if (state.kind === 'drop' && ramShort()) {
+    out.push(`${state.collection.trim()} has too little RAM on neftyblocksd for one claim: nobody can claim this drop until it has more. A deposit can go with it, or come later from Change.`);
+  }
   const listed = listTarget();
   if (listed) {
     const p = listPlan(listed);
@@ -2883,6 +2998,7 @@ function chooseKind(kind: LabKind): void {
   state.kind = kind;
   state.step = 0;
   resetListDraft();
+  state.ramDeposit = '';
   // Three kinds, three contracts: the answer does not carry over.
   if (state.collection) void refreshCreateAuth(state.collection);
 }
@@ -2892,6 +3008,7 @@ function chooseMode(mode: LabMode): void {
   state.mode = mode;
   state.editing = undefined;
   resetListDraft();
+  state.ramDeposit = '';
   if (mode === 'edit') {
     state.lastTx = ''; state.lastError = '';
     if (state.collection) void loadExisting();
@@ -3641,7 +3758,8 @@ function stepRules(): string {
         </div>
         ${listPanel()}
         ${rulePanel()}
-      </div>`
+      </div>
+      ${ramPanel()}`
     : `
       <div class="lab-field">
         <label>Who can use it</label>
@@ -3912,6 +4030,13 @@ function reviewRows(): string {
     rows.push(['Price', state.free ? 'free' : `${state.priceAmount} ${state.priceToken}`]);
     rows.push(['Supply', state.unlimited ? 'unlimited' : String(intOr(state.maxClaimable))]);
     rows.push(['Paid to', state.priceRecipient.trim() || state.actor || 'the signing wallet']);
+    const r = ensureDropRam();
+    if (r.state === 'done') {
+      const per = mintsPerClaim() * BYTES_PER_MINT;
+      const total = r.bytes + depositBytes();
+      rows.push(['RAM to mint with', per && total < per ? `${total.toLocaleString('en')} bytes: not enough for one claim`
+        : `${total.toLocaleString('en')} bytes${per ? `, about ${Math.floor(total / per).toLocaleString('en')} claim(s)` : ''}`]);
+    }
   } else {
     rows.push(['Cost', state.ingredients.map(describeIngredient).join(', ') || 'nothing']);
     if (state.kind === 'blend') {
@@ -4066,7 +4191,8 @@ function editProblems(): string[] {
   const e = state.editing;
   if (!e) return [];
   const touched = e.ingredients && ingredientsChanged(e.ingredientsRaw, e.ingredients.map(toIngredient));
-  return [...listProblems(listTarget()), ...ruleProblems(), ...(touched ? ingredientProblems(e.ingredients!) : [])];
+  return [...listProblems(listTarget()), ...ruleProblems(), ...(e.kind === 'drop' ? ramProblems() : []),
+    ...(touched ? ingredientProblems(e.ingredients!) : [])];
 }
 
 function editForm(): string {
@@ -4168,7 +4294,8 @@ function editForm(): string {
           : ''}
         ${listPanel()}
         ${rulePanel()}
-      </div>` : `
+      </div>
+      ${ramPanel()}` : `
       <div class="lab-field">
         <label>Who can use it</label>
         ${gateSelect('lab-edit-security', e.securityId)}
@@ -7187,6 +7314,8 @@ async function onSubmit() {
     await signInTurn(session, packTransactions(createActions()));
     resetListDraft();
     state.rule = emptyRuleDraft('');
+    state.ramDeposit = '';
+    state.dropRam = { for: '', state: 'idle', bytes: 0, hasRow: false };
   } catch (err) {
     state.lastError = err instanceof Error ? err.message : String(err);
     // The recipe and the start of its list are in the first transaction.
@@ -7250,6 +7379,8 @@ async function onSaveEdits() {
     }
     state.rule = emptyRuleDraft('');
     state.gates = { ...state.gates, state: 'idle', for: '' };
+    state.ramDeposit = '';
+    state.dropRam = { for: '', state: 'idle', bytes: 0, hasRow: false };
     settleEditing(e, state.editingOriginal!);
     state.editingOriginal = copyRecipe(e);
     if (complete) resetListDraft();
@@ -7984,6 +8115,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
             state.editingOriginal = { ...picked };
             state.lastTx = ''; state.lastError = ''; state.signedTxs = [];
             resetListDraft();
+            state.ramDeposit = '';
             void loadEditing(picked);
             if (picked.kind === 'drop') void loadDropTokens();
           }
@@ -8084,6 +8216,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     // A gate belongs to one collection: another collection's id would be refused.
     state.securityId = '';
     resetListDraft();
+    state.ramDeposit = '';
     if (state.collection) void loadCollectionData();
     if (state.mode === 'edit' && state.collection) void loadExisting();
   };
@@ -8116,6 +8249,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   bind('lab-list-q', (v) => { state.list.memberQuery = v; }, 'live');
   bind('lab-list-limit', (v) => { state.list.limit = v; });
   bind('lab-rule-name', (v) => { state.rule.name = v; });
+  bind('lab-ram-deposit', (v) => { state.ramDeposit = v; });
   // Looked up once the box is left: per keystroke, every half-typed name
   // would be its own round trip.
   root.querySelector('#lab-list-add')?.addEventListener('change', () => { void checkListAccounts(); });

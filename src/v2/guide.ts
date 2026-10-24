@@ -136,7 +136,8 @@ const SECTIONS: Section[] = [
       </ul>
       <p>The Check step shows the price in the token the drop asks for, the per-wallet limit and what
       you have already claimed.</p>
-      ${note('<strong>Key-gated drops</strong> need a one-time secret only their creator can issue: no outside tool can sign those.', 'warn')}`,
+      ${note('<strong>Key-gated drops</strong> need a one-time secret only their creator can issue: no outside tool can sign those.', 'warn')}
+      ${note('<strong>A drop mints from its collection\'s RAM.</strong> When the collection has none left, the contract refuses every claim, whoever claims. Crucible reads it before you sign and says so: only the collection\'s author can fix it.', 'warn')}`,
   },
   {
     id: 'packs', group: 'use', title: 'Packs',
@@ -150,7 +151,7 @@ const SECTIONS: Section[] = [
         '<strong>Wait a few seconds</strong> while the WAX oracle draws the cards. Crucible shows what was drawn.',
         '<strong>Sign once more</strong> to mint them into your wallet.',
       ])}
-      ${note('<strong>Interrupted between the two?</strong> Nothing is lost: the pack is held by its contract, waiting. Crucible finds packs you sent but never finished, whichever page you started on, and offers the second signature.', 'ok')}`,
+      ${note('<strong>Interrupted between the two?</strong> Nothing is lost: the pack is held by its contract, waiting. Crucible finds packs you sent but never finished, whichever page you started on, and offers the second signature; <em>Staking</em> lists them too. Before offering it, Crucible asks the chain: a pack whose collection stopped the pack contract, ran out of RAM, or holds token-backed cards says so instead.', 'ok')}`,
   },
   {
     id: 'explore', group: 'use', title: 'Explore a collection',
@@ -181,7 +182,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: 'staking', group: 'wallet', title: 'Staking: get back what you staked',
-    blurb: 'stake.nefty and WaxDAO still hold tokens and NFTs',
+    blurb: 'stake.nefty, NeftyBlocks\' other contracts and WaxDAO still hold tokens and NFTs',
     body: `
       <p>NeftyBlocks' and WaxDAO's websites are gone, but their staking contracts still hold what
       people put in, and still pay it out. <em>Staking</em> reads what they hold for your wallet and
@@ -193,6 +194,13 @@ const SECTIONS: Section[] = [
         '<strong>Collect what finished unstaking.</strong> Nothing returns on its own: this second step is the one people forget.',
       ])}
       <p>A pool retired in 2022 is shown apart, with why nothing can be taken from it.</p>
+      <h3>NeftyBlocks · deposits and unfinished packs</h3>
+      <ul class="v2-guide-list">
+        <li><strong>Deposits never used</strong>: tokens sent to pay for a drop, a blend or an upgrade that did not use them. Each contract gives them back with one signature: <em>Withdraw</em>.</li>
+        <li><strong>Opened, never minted</strong>: packs sent to be opened whose NFTs were never minted. <em>Finish</em> mints them, and <em>Finish all</em> does ten in one signature.</li>
+        <li><strong>Draws never answered</strong>, and NFTs <code>blend.nefty</code> kept: shown, with nothing to sign.</li>
+      </ul>
+      ${note('<strong>What cannot be signed is explained once, at the top.</strong> A highlighted block holds one note per reason: a collection that removed the pack contract or ran out of RAM, cards backed with tokens, a draw only NeftyBlocks can relaunch. Each card it concerns says <em>See note 1</em>, <em>See note 2</em>…: click it to jump to the note, which says who could still fix it, and how.', 'warn')}
       <h3>WaxDAO</h3>
       <p>NFT farms (old and new), token pools and farms, DAO staking, token locks, token-backed NFTs,
       and what a creator left on the market. Each line has its buttons, always in the same place: Claim
@@ -241,6 +249,7 @@ const SECTIONS: Section[] = [
         <li><strong>Holders</strong>: whoever holds NFTs of a template, a schema or a collection, or a token amount, with "all of these" or "any one of these". A drop can have a list and a holder rule together.</li>
       </ul>
       ${note('<strong>Create it hidden first.</strong> It exists on chain but appears in no list: test it with one NFT, then reveal it from Change. Creation is permanent and costs RAM.', 'ok')}
+      ${note('<strong>A drop needs RAM to mint.</strong> Every NFT a claim mints, about 151 bytes, is paid from RAM your collection deposited on the drop contract, and with none left every claim is refused. Create and Change show your balance, how many claims it covers, and let you deposit WAX with the drop (a first deposit buys at least 128 bytes, about 0.06 WAX). Only claims of your own drops spend it, within each drop\'s supply, limits and list, and only your collection\'s authors can take it back.', 'warn')}
       ${note('<strong>Upgrades below level 3 of NEFTY staking</strong> must carry NeftyBlocks\' fixed fee (0.01 WAX to fees.nefty) and at least one other ingredient, or the contract refuses them. The creator says so and adds the fee line in one click.', 'warn')}
       <p>Crucible also checks that your collection has authorized the contract it is creating on:
       without that, nobody could ever run the recipe. If it has not, add the contract on AtomicHub
@@ -256,6 +265,7 @@ const SECTIONS: Section[] = [
       what it really holds, and only what you touch is signed.</p>
       <ul class="v2-guide-list">
         <li>Name, description, image, category, price (drops), time window, total uses or supply, limit per wallet, hidden or visible.</li>
+        <li><strong>RAM</strong> (drops): what your collection has left to mint with, and a deposit to top it up.</li>
         <li><strong>What players give</strong> (blends and upgrades): edited as rows, written back only if you changed them. A recipe whose ingredients the editor cannot reproduce exactly shows why and leaves them untouched.</li>
         <li><strong>Who can use it</strong>: move a recipe to another list or holder rule; add or take accounts off a list (one by one, pasted, or "start over"); rewrite a holder rule; open a drop to everyone.</li>
         <li><strong>Your collection's lists and holder rules</strong>: what each holds, which recipes share it (a change to it reaches all of them), and a delete button for the ones nothing uses, offered only when the chain accepts it.</li>
