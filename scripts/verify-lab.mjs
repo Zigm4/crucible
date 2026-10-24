@@ -181,7 +181,7 @@ const FIXTURES = [
       kind: 'blend', templates: TEMPLATES_FIXTURE, schemas: [SCHEMA_FIXTURE],
       ingredients: [
         ing({ kind: 'schema', schema_name: 'gear', amount: 2 }),
-        ing({ kind: 'attribute', schema_name: 'gear', attribute_name: 'rarity', values: 'Rare | Epic', amount: 1 }),
+        ing({ kind: 'attribute', schema_name: 'gear', attributes: [{ attribute_name: 'rarity', values: 'Rare | Epic' }], amount: 1 }),
         ing({ kind: 'collection', amount: 1 }),
         { kind: 'token', quantity: '10.00000000 WAX', to: 'payout.wam' },
       ],
@@ -194,7 +194,7 @@ const FIXTURES = [
   {
     label: 'blend / four-way lottery with token, pool and blank branches',
     form: {
-      kind: 'blend', templates: TEMPLATES_FIXTURE,
+      kind: 'blend', maxUses: '1000', templates: TEMPLATES_FIXTURE,
       ingredients: [ing({ kind: 'template', template_id: 111, amount: 1 })],
       outcomes: [
         { kind: 'nft', template_id: 222, weight: 50 },
@@ -223,6 +223,16 @@ const FIXTURES = [
     valid: true,
     expect: (a) => a.data.security_id === '831' && a.data.account_limit_cooldown === 86400
       && JSON.parse(a.data.display_data).name === 'Named',
+  },
+  {
+    // blend.nefty: "Token results cannot be used with unlimited blends".
+    label: 'blend / a token payout with no total number of uses is REJECTED',
+    form: {
+      kind: 'blend', templates: TEMPLATES_FIXTURE,
+      ingredients: [ing({ kind: 'template', template_id: 111, amount: 1 })],
+      outcomes: [{ kind: 'token', quantity: '1.00000000 WAX', contract: 'eosio.token', weight: 1 }],
+    },
+    valid: false, because: /total number of uses/i,
   },
   {
     label: 'blend / token cost with no receiver is REJECTED',

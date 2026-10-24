@@ -9,7 +9,7 @@
  *   - BALANCE    : "an NFT of template X with at least N in attribute Y",
  *                  which stays in the wallet and has N taken off Y
  *   - FT         : token payment ("105.00000000 UPMAX")
- *   - UNSUPPORTED, variants this app cannot satisfy (CHEST, COOLDOWN)
+ *   - UNSUPPORTED, variants this app cannot satisfy (CHEST)
  *
  * For NFT slots: the matcher filters the user's owned assets to the
  * ones that actually satisfy the rule (collection + template/schema +
@@ -40,12 +40,13 @@ interface BaseSlot {
   rawType: IngredientVariant[0];
 }
 export interface NftSlot extends BaseSlot {
-  kind: 'TEMPLATE' | 'SCHEMA' | 'ATTRIBUTE' | 'COLLECTION' | 'BALANCE';
+  kind: 'TEMPLATE' | 'SCHEMA' | 'ATTRIBUTE' | 'COLLECTION' | 'BALANCE' | 'COOLDOWN';
   amount: number;
   eligible: AtomicAsset[];
   /**
    * True when the NFT stays in the wallet: blend.nefty reads it from
-   * `own_assets` instead of taking it in the deposit. A BALANCE slot.
+   * `own_assets` instead of taking it in the deposit. A BALANCE or
+   * COOLDOWN slot.
    */
   keep?: boolean;
   /** For TEMPLATE slots: the required template + its collection, so the UI
@@ -171,12 +172,35 @@ export function buildSlots(
           template_id: Number(p.template_id),
         };
       }
+      case 'COOLDOWN_INGREDIENT': {
+        // A time gate: an NFT of the template, meeting the requirements, that
+        // stays in the wallet (own_assets) and has rested wait_time seconds
+        // since the time its attribute holds. Settled through
+        // compute_transaction on blend #37724 (guidedRun.cooldownRequirement).
+        const p = payload as { template_id: number; attribute_name: string; wait_time: number;
+          requirements?: { attribute_name: string; allowed_values: unknown[] }[] };
+        const reqs = (p.requirements ?? []).map((r) => ({ attribute_name: r.attribute_name, allowed_values: (r.allowed_values ?? []).map(String) }));
+        const now = Date.now() / 1000;
+        const eligible = ownedAssets.filter(
+          (a) => a.template?.template_id === String(p.template_id) && passesAttributeList(a, reqs)
+            && (Number(attributeOf(a, p.attribute_name)) || 0) + Number(p.wait_time) <= now,
+        );
+        return {
+          index,
+          kind: 'COOLDOWN',
+          amount: 1,
+          keep: true,
+          label: `1× NFT of template ${p.template_id} that has rested ${p.wait_time}s since its ${p.attribute_name} (you keep it)`,
+          eligible,
+          rawType: type,
+          template_id: Number(p.template_id),
+        };
+      }
       default:
         return {
           index,
           kind: 'UNSUPPORTED',
-          label: type === 'COOLDOWN_INGREDIENT' ? 'A cooldown on one of your NFTs'
-            : type === 'CHEST_INGREDIENT' ? 'A chest ingredient' : `Ingredient type ${type}`,
+          label: type === 'CHEST_INGREDIENT' ? 'A chest ingredient' : `Ingredient type ${type}`,
           rawType: type,
         };
     }
@@ -223,7 +247,7 @@ export function nftSlots(slots: IngredientSlot[]): NftSlot[] {
   return slots.filter(
     (s): s is NftSlot =>
       s.kind === 'TEMPLATE' || s.kind === 'SCHEMA' || s.kind === 'ATTRIBUTE' || s.kind === 'COLLECTION'
-      || s.kind === 'BALANCE',
+      || s.kind === 'BALANCE' || s.kind === 'COOLDOWN',
   );
 }
 

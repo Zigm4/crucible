@@ -104,10 +104,11 @@ const SECTIONS: Section[] = [
         <li><strong>A random result</strong> is drawn by the WAX oracle a few seconds after you sign, and the contract mints it to you on its own. Crucible waits and shows what you got. If a draw ever waits for a second signature, Crucible offers it.</li>
         <li><strong>Gated blends</strong> are handled: a whitelist (your account must be on it) or a holder rule (you must hold certain NFTs or tokens; Crucible picks the NFTs that prove it, and never one that the blend itself consumes).</li>
         <li><strong>Ingredients that must hold a token balance</strong> are supported: Crucible checks the NFT holds enough.</li>
+        <li><strong>Time gates</strong>: some blends ask you to show an NFT that you keep, and only once it has rested since its last use. Crucible picks one that has rested, or says when yours will be ready.</li>
       </ul>
       <p>Each ingredient says what happens to it: most are <strong>burned</strong>, some are sent to an
       account the author chose. Either way they leave your wallet; the Check step says which.</p>
-      ${note('<strong>Not handled:</strong> blends with a time gate (an NFT must have waited a while) or a "chest" ingredient. Crucible says so on the recipe rather than letting you try.', 'warn')}
+      ${note('<strong>Not handled:</strong> a "chest" ingredient, which the contract declares and no blend has ever used. Crucible says so on the recipe rather than letting you try.', 'warn')}
       ${note('<strong>Blenderizer:</strong> the simplest of the three. One signature, no odds, no whitelist. It mints from RAM the collection pre-paid, so a collection without RAM there cannot pay out until its author tops it up; Crucible checks that before you send anything.')}`,
   },
   {
@@ -127,7 +128,8 @@ const SECTIONS: Section[] = [
     id: 'drops', group: 'use', title: 'Drops',
     blurb: 'Claim or buy fresh mints',
     body: `
-      <p>A drop (<code>neftyblocksd</code>) mints new NFTs when you claim it, free or for a price.
+      <p>A drop mints new NFTs when you claim it, free or for a price. <em>Claim a drop</em> searches
+      NeftyBlocks (<code>neftyblocksd</code>) and WaxDAO (<code>waxdaomarket</code>) together, and
       Crucible signs every kind a player can sign:</p>
       <ul class="v2-guide-list">
         <li><strong>Public</strong>: open to anyone.</li>
@@ -136,16 +138,20 @@ const SECTIONS: Section[] = [
       </ul>
       <p>The Check step shows the price in the token the drop asks for, the per-wallet limit and what
       you have already claimed.</p>
+      <p>WaxDAO's website is gone, its drops are not: a free one is claimed, a paid one bought, in one
+      signature, and the Check step reads the same things (dates, stock, your limit, the price against
+      your balance, and the RAM the collection keeps on waxdaomarket to mint with).</p>
       ${note('<strong>Key-gated drops</strong> need a one-time secret only their creator can issue: no outside tool can sign those.', 'warn')}
       ${note('<strong>A drop mints from its collection\'s RAM.</strong> When the collection has none left, the contract refuses every claim, whoever claims. Crucible reads it before you sign and says so: only the collection\'s author can fix it.', 'warn')}`,
   },
   {
     id: 'packs', group: 'use', title: 'Packs',
-    blurb: 'Open a pack you own, safely, in two signatures',
+    blurb: 'Open a pack you own, safely',
     body: `
-      <p><em>Open a pack</em> lists the packs your wallet holds from both pack contracts, AtomicHub's
-      (<code>atomicpacksx</code>) and NeftyBlocks' (<code>neftyblocksp</code>). Opening one takes two
-      signatures:</p>
+      <p><em>Open a pack</em> lists the packs of three pack contracts: AtomicHub's (<code>atomicpacksx</code>),
+      NeftyBlocks' (<code>neftyblocksp</code>) and WaxDAO's (<code>waxdaomarket</code>). A WaxDAO pack opens in
+      one signature: the contract burns it and sends an NFT drawn from its pool at once, and the Check
+      step says how many are left to draw. The other two take two signatures:</p>
       ${steps([
         '<strong>Send the pack</strong> to its contract.',
         '<strong>Wait a few seconds</strong> while the WAX oracle draws the cards. Crucible shows what was drawn.',
@@ -209,6 +215,7 @@ const SECTIONS: Section[] = [
         <li><strong>All farms at once</strong>: every farm's rewards in one signature, and farms unstaked eight per signature.</li>
         <li>A reward paid in a token you have never held needs that token "opened" in your wallet first; Crucible adds that step for you.</li>
         <li>Some farms pay from a contract that no longer exists: your NFTs come back, their rewards cannot. Where WaxDAO refuses even that, the line says so and offers no button.</li>
+        <li>A token farm offers <em>Claim</em> only when the chain says something is owed, and a pool whose token no longer exists (Alcor's old WAXWOJA, supply 0) says so instead of offering an Unstake the chain refuses.</li>
         <li>Right after you sign, the line shows <strong>Signed, waiting for the chain to show it</strong>, and offers nothing to sign again until it is gone.</li>
       </ul>
       ${note('Anyone can check a wallet: type an account in <em>Look</em>, or use <code>#/stake/account.wam</code>. Someone else\'s holdings are read only.')}
@@ -237,7 +244,7 @@ const SECTIONS: Section[] = [
       makes blends, upgrades and drops for it, one question per screen.</p>
       ${steps([
         '<strong>What, and where:</strong> the kind of recipe and your collection.',
-        '<strong>What players give:</strong> NFTs picked from your own templates and schemas, with their artwork, or a token amount. Each NFT is burned or sent to an account you name.',
+        '<strong>What players give:</strong> NFTs picked from your own templates and schemas, with their artwork, or from another collection\'s; NFTs matched on one or several attributes; or a token amount. Each NFT is burned or sent to an account you name. A blend can also have a <em>time gate</em>: the player shows an NFT and keeps it, and blends again only once it has rested.',
         '<strong>What they get:</strong> for a blend, one or several outcomes with their odds drawn as a bar; for an upgrade, the attributes to rewrite, their types read from your schema; for a drop, the templates to mint and the price, in any token the drop contract accepts, or free.',
         '<strong>Any limits:</strong> start and end, total uses or supply, a limit per wallet, and who can use it (see below).',
         '<strong>Review:</strong> the recipe as one sentence, every check, then <em>Simulate</em> (the rehearsal) and <em>Sign and create</em>.',

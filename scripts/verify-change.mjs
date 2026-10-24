@@ -54,7 +54,7 @@ async function open(kind, id, collection) {
 /** Puts the form back to what was read, so each case starts clean. */
 function reset() {
   const { editing, original } = __editingState();
-  Object.assign(editing, { ...original, ingredients: original.ingredients?.map((i) => ({ ...i })) });
+  Object.assign(editing, { ...original, ingredients: original.ingredients?.map((i) => structuredClone(i)) });
 }
 
 async function saves(label, expect) {
@@ -152,13 +152,22 @@ console.log('\n=== blend 45781: per-wallet limit and cooldown ===');
   }
 }
 
-console.log('\n=== blend 45766 (streamingart): ingredients it cannot write back ===');
+console.log('\n=== blend 45766 (streamingart): an NFT of another collection ===');
 {
+  // Shown read-only until 2026-10-24: the rows had no collection of their own.
   const o = await open('blend', 45766, 'streamingart');
   if (o) {
-    say(!o.e.ingredients && /another collection/.test(o.e.ingredientsWhy), `not editable: ${o.e.ingredientsWhy}`);
+    const foreign = o.e.ingredients?.find((i) => i.collection && i.collection !== 'streamingart');
+    say(Boolean(o.e.ingredients) && Boolean(foreign), `editable, with its ${foreign?.collection ?? '?'} NFT kept as ${foreign?.collection ?? '?'}'s${o.e.ingredientsWhy ? ` (${o.e.ingredientsWhy})` : ''}`);
     o.e.category = 'check';
     await saves('a category alone', (a) => a.length === 1 && a[0].name === 'setblendcat');
+    reset();
+    const row = __editingState().editing.ingredients?.find((i) => i.collection && i.collection !== 'streamingart');
+    if (row && 'amount' in row) {
+      row.amount += 1;
+      await saves(`one more ${row.collection} NFT`, (a) => a.length === 1 && a[0].name === 'setblendmix'
+        && a[0].data.ingredients.some(([, d]) => d.collection_name === row.collection && d.amount === row.amount));
+    }
   }
 }
 

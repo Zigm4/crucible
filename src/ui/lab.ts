@@ -323,22 +323,50 @@ interface GatesInfo {
   error: string;
 }
 
-/** What a player hands over. Mirrors the NewIngredient variants worth a UI. */
+/** One attribute an NFT must match: its name, and the values allowed, written "Rare | Epic". */
+interface LabAttrFilter { attribute_name: string; values: string }
+
+/**
+ * What a player hands over. Mirrors the NewIngredient variants worth a UI.
+ *
+ * `collection` is set when the NFT comes from another collection than the
+ * recipe's: 1,226 ingredients of 914 live blends do. `display_data` is the
+ * contract's text for the slot, kept as read so a save does not drop it.
+ */
 type LabIngredient =
-  | { kind: 'template'; template_id: number; amount: number; sendTo: string }
-  /** `display_data` is the contract's text for the slot, kept as read so a save does not drop it. */
-  | { kind: 'schema'; schema_name: string; amount: number; sendTo: string; display_data?: string }
+  | { kind: 'template'; template_id: number; amount: number; sendTo: string; collection?: string }
+  | { kind: 'schema'; schema_name: string; amount: number; sendTo: string; display_data?: string; collection?: string }
+  /** Every attribute must match: 362 live ingredients ask for several at once. */
   | {
       kind: 'attribute';
       schema_name: string;
-      attribute_name: string;
-      values: string;
+      attributes: LabAttrFilter[];
       amount: number;
       sendTo: string;
       display_data?: string;
+      collection?: string;
     }
-  | { kind: 'collection'; amount: number; sendTo: string }
-  | { kind: 'token'; quantity: string; to: string };
+  | { kind: 'collection'; amount: number; sendTo: string; collection?: string }
+  | { kind: 'token'; quantity: string; to: string }
+  /**
+   * A time gate (blend.nefty only): the player shows an NFT of this template
+   * matching `requirements`, keeps it, and may blend again once `wait`
+   * seconds have passed since the time its attribute holds, which the
+   * contract then rewrites. Blend #37724 of uncutnefties ran 1,081,706
+   * times on one, a mining game paying RJUAN about once an hour.
+   */
+  | {
+      kind: 'cooldown';
+      template_id: number;
+      schema_name: string;
+      attribute_name: string;
+      wait: string;
+      requirements: LabAttrFilter[];
+      display_data?: string;
+    };
+
+/** A collection's schemas and templates, read for ingredients that come from it. */
+interface ForeignCollection { state: LoadState; templates: LabTemplate[]; schemas: LabSchema[]; error: string }
 
 /** One branch of a blend's draw. `kind: 'nothing'` is the blank branch. */
 type LabOutcome =
@@ -449,6 +477,14 @@ interface LabState extends LabForm {
   truncated: boolean;
   /** The collection's secure.nefty gates. Type 0 is a list of accounts, 1 a proof of holding. */
   securities: { id: string; name: string; type: number }[];
+  /** Where the next NFT ingredient comes from: '' for the recipe's own collection. */
+  ingFrom: string;
+  /** What the author is typing in "another collection", until it is loaded. */
+  ingFromDraft: string;
+  /** The "another collection" box is open. */
+  ingFromOpen: boolean;
+  /** Other collections read for their ingredients, by name. */
+  foreign: Record<string, ForeignCollection>;
   list: ListDraft;
   rule: RuleDraft;
   gates: GatesInfo;
@@ -564,7 +600,7 @@ interface LabState extends LabForm {
    */
   topBidsWanted: number;
 
-  picking?: { target: 'ingredient' | 'outcome' | 'mint' | 'requirement' };
+  picking?: { target: 'ingredient' | 'outcome' | 'mint' | 'requirement' | 'cooldown' };
   search: string;
   busy: boolean;
   dryRun: string;
@@ -593,6 +629,10 @@ const state: LabState = {
   dataError: '',
   truncated: false,
   securities: [],
+  ingFrom: '',
+  ingFromDraft: '',
+  ingFromOpen: false,
+  foreign: {},
   list: emptyListDraft(),
   rule: emptyRuleDraft(''),
   dropRam: { for: '', state: 'idle', bytes: 0, hasRow: false },
@@ -693,6 +733,19 @@ const tpl = (id: number) => state.templates.find((t) => t.template_id === id);
 const tplName = (id: number) => tpl(id)?.name || `template ${id}`;
 
 const schema = (name: string) => state.schemas.find((s) => s.schema_name === name);
+
+/** The collection an ingredient's NFT comes from. */
+const rowColl = (i: LabIngredient) => ('collection' in i && i.collection) || state.collection.trim();
+/** The recipe's own collection, or another one once it is read (ensureForeign). */
+function collData(coll: string): { templates: LabTemplate[]; schemas: LabSchema[] } {
+  if (!coll || coll === state.collection.trim()) return { templates: state.templates, schemas: state.schemas };
+  return state.foreign[coll] ?? { templates: [], schemas: [] };
+}
+const tplIn = (coll: string, id: number) => collData(coll).templates.find((t) => t.template_id === id);
+const schemaIn = (coll: string, name: string) => collData(coll).schemas.find((s) => s.schema_name === name);
+/** The attributes an ingredient matches on, for the rows that edit them. */
+const filtersOf = (g: LabIngredient | undefined): LabAttrFilter[] | undefined =>
+  g?.kind === 'attribute' ? g.attributes : g?.kind === 'cooldown' ? g.requirements : undefined;
 
 /**
  * The declared type of an attribute on the active schema. This is the
@@ -934,6 +987,65 @@ interface RawTemplate {
  */
 const TEMPLATE_PAGE = 1000;
 
+/** One collection's schemas and templates, as the pickers and the attribute checks read them. */
+async function readCollectionData(collection: string): Promise<{ templates: LabTemplate[]; schemas: LabSchema[]; truncated: boolean }> {
+  const [rawSchemas, rawTemplates] = await Promise.all([
+    atomicFetch<RawSchema[]>(
+      `/atomicassets/v1/schemas?collection_name=${encodeURIComponent(collection)}&limit=100&order=asc&sort=schema_name`,
+    ),
+    atomicFetch<RawTemplate[]>(
+      `/atomicassets/v1/templates?collection_name=${encodeURIComponent(collection)}&limit=${TEMPLATE_PAGE}&order=desc&sort=created`,
+    ),
+  ]);
+  const templates = (rawTemplates ?? []).map((t) => ({
+    template_id: Number(t.template_id),
+    name: String(t.name || t.immutable_data?.name || `template ${t.template_id}`),
+    schema_name: String(t.schema?.schema_name ?? ''),
+    image: pickImageRef(t.immutable_data as Record<string, unknown> | undefined),
+    issued: Number(t.issued_supply ?? 0),
+    max: Number(t.max_supply ?? 0),
+  }));
+  // An attribute a template pins in immutable_data is frozen for every
+  // asset of that template. Counting them here is what lets the upgrade
+  // step warn instead of silently building a no-op.
+  const schemas = (rawSchemas ?? []).map((s) => {
+    const pinned = new Map<string, number>();
+    const pinnedBy = new Map<number, Set<string>>();
+    let templateCount = 0;
+    for (const raw of rawTemplates ?? []) {
+      if (String(raw.schema?.schema_name ?? '') !== s.schema_name) continue;
+      templateCount++;
+      const keys = Object.keys(raw.immutable_data ?? {});
+      pinnedBy.set(Number(raw.template_id), new Set(keys));
+      for (const key of keys) pinned.set(key, (pinned.get(key) ?? 0) + 1);
+    }
+    return {
+      schema_name: s.schema_name,
+      format: (s.format ?? []).map((f) => ({ name: f.name, type: f.type })),
+      pinned,
+      pinnedBy,
+      templateCount,
+    };
+  });
+  return { templates, schemas, truncated: (rawTemplates ?? []).length >= TEMPLATE_PAGE };
+}
+
+/** Another collection's data, read once, for the ingredients that come from it. */
+function ensureForeign(coll: string): ForeignCollection | undefined {
+  const c = coll.trim().toLowerCase();
+  if (!c || c === state.collection.trim()) return undefined;
+  if (!state.foreign[c]) {
+    state.foreign[c] = { state: 'loading', templates: [], schemas: [], error: '' };
+    void readCollectionData(c).then((d) => {
+      state.foreign[c] = { state: d.templates.length || d.schemas.length ? 'done' : 'error', templates: d.templates, schemas: d.schemas,
+        error: d.templates.length || d.schemas.length ? '' : `${c} has no schema or template, or is not a collection` };
+    }).catch((e: unknown) => {
+      state.foreign[c] = { state: 'error', templates: [], schemas: [], error: e instanceof Error ? e.message : String(e) };
+    }).finally(() => rerender());
+  }
+  return state.foreign[c];
+}
+
 async function loadCollectionData() {
   const collection = state.collection.trim();
   if (!collection) return;
@@ -941,49 +1053,13 @@ async function loadCollectionData() {
   state.dataError = '';
   rerender();
   try {
-    const [rawSchemas, rawTemplates, securities] = await Promise.all([
-      atomicFetch<RawSchema[]>(
-        `/atomicassets/v1/schemas?collection_name=${encodeURIComponent(collection)}&limit=100&order=asc&sort=schema_name`,
-      ),
-      atomicFetch<RawTemplate[]>(
-        `/atomicassets/v1/templates?collection_name=${encodeURIComponent(collection)}&limit=${TEMPLATE_PAGE}&order=desc&sort=created`,
-      ),
+    const [data, securities] = await Promise.all([
+      readCollectionData(collection),
       readCollectionSecurities(collection).catch(() => []),
     ]);
-
-    state.templates = (rawTemplates ?? []).map((t) => ({
-      template_id: Number(t.template_id),
-      name: String(t.name || t.immutable_data?.name || `template ${t.template_id}`),
-      schema_name: String(t.schema?.schema_name ?? ''),
-      image: pickImageRef(t.immutable_data as Record<string, unknown> | undefined),
-      issued: Number(t.issued_supply ?? 0),
-      max: Number(t.max_supply ?? 0),
-    }));
-    state.truncated = (rawTemplates ?? []).length >= TEMPLATE_PAGE;
-
-    // An attribute a template pins in immutable_data is frozen for every
-    // asset of that template. Counting them here is what lets the upgrade
-    // step warn instead of silently building a no-op.
-    state.schemas = (rawSchemas ?? []).map((s) => {
-      const pinned = new Map<string, number>();
-      const pinnedBy = new Map<number, Set<string>>();
-      let templateCount = 0;
-      for (const raw of rawTemplates ?? []) {
-        if (String(raw.schema?.schema_name ?? '') !== s.schema_name) continue;
-        templateCount++;
-        const keys = Object.keys(raw.immutable_data ?? {});
-        pinnedBy.set(Number(raw.template_id), new Set(keys));
-        for (const key of keys) pinned.set(key, (pinned.get(key) ?? 0) + 1);
-      }
-      return {
-        schema_name: s.schema_name,
-        format: (s.format ?? []).map((f) => ({ name: f.name, type: f.type })),
-        pinned,
-        pinnedBy,
-        templateCount,
-      };
-    });
-
+    state.templates = data.templates;
+    state.truncated = data.truncated;
+    state.schemas = data.schemas;
     state.securities = (securities ?? []).map((r) => ({ id: String(r.id), name: r.name, type: Number(r.type) }));
     // Checked here rather than at review time: an author who learns this
     // on the last screen has already done all the work.
@@ -1095,27 +1171,29 @@ function fromDrop(d: DiscoveredDrop): LabExisting {
   };
 }
 
+const toFilters = (list: { attribute_name: string; allowed_values: string[] }[]): LabAttrFilter[] =>
+  list.map((a) => ({ attribute_name: a.attribute_name, values: a.allowed_values.join(' | ') }));
+const fromFilters = (list: LabAttrFilter[]) =>
+  list.map((a) => ({ attribute_name: a.attribute_name, allowed_values: splitValues(a.values) }));
+
 /** The editor's row for a contract ingredient, or what keeps it from having one. */
 function labIngredientOf(n: NewIngredient, collection: string): LabIngredient | string {
-  if ('collection_name' in n && n.collection_name !== collection) return `an NFT from another collection (${n.collection_name})`;
+  // Another collection's NFT keeps its collection on the row.
+  const from = 'collection_name' in n && n.collection_name !== collection ? { collection: n.collection_name } : {};
   const sendTo = 'transfer_to' in n && n.transfer_to ? n.transfer_to : '';
+  const dd = 'display_data' in n && n.display_data ? { display_data: n.display_data } : {};
   switch (n.kind) {
-    case 'template':   return { kind: 'template', template_id: n.template_id, amount: n.amount, sendTo };
-    case 'collection': return { kind: 'collection', amount: n.amount, sendTo };
+    case 'template':   return { kind: 'template', template_id: n.template_id, amount: n.amount, sendTo, ...from };
+    case 'collection': return { kind: 'collection', amount: n.amount, sendTo, ...from };
     case 'ft':         return { kind: 'token', quantity: n.quantity, to: n.to ?? '' };
-    case 'schema':
-      return { kind: 'schema', schema_name: n.schema_name, amount: n.amount, sendTo, ...(n.display_data ? { display_data: n.display_data } : {}) };
-    case 'attribute': {
-      // The editor matches one attribute per row; several would be rewritten as one.
-      if (n.attributes.length !== 1) return 'NFTs matched on several attributes at once';
-      const [a] = n.attributes;
+    case 'schema':     return { kind: 'schema', schema_name: n.schema_name, amount: n.amount, sendTo, ...dd, ...from };
+    case 'attribute':
+      return { kind: 'attribute', schema_name: n.schema_name, attributes: toFilters(n.attributes), amount: n.amount, sendTo, ...dd, ...from };
+    case 'cooldown':
       return {
-        kind: 'attribute', schema_name: n.schema_name, attribute_name: a.attribute_name,
-        values: a.allowed_values.join(' | '), amount: n.amount, sendTo,
-        ...(n.display_data ? { display_data: n.display_data } : {}),
+        kind: 'cooldown', template_id: n.template_id, schema_name: n.schema_name, attribute_name: n.attribute_name,
+        wait: String(n.wait_time), requirements: toFilters(n.requirements), ...dd,
       };
-    }
-    default: return 'a time gate';
   }
 }
 
@@ -1148,21 +1226,31 @@ function fromEditable(picked: LabExisting, r: EditableRecipe): LabExisting {
     mintsPerClaim: r.mintsPerClaim,
   };
   if (r.kind === 'drop') return e;
-  const decoded = decodeIngredients(r.ingredients);
-  if (!decoded.ok) { e.ingredientsWhy = decoded.reason; return e; }
-  const rows = decoded.list.map((n) => labIngredientOf(n, r.collection));
-  const odd = rows.find((x): x is string => typeof x === 'string');
-  if (odd) { e.ingredientsWhy = `it uses ${odd}`; return e; }
-  const list = rows as LabIngredient[];
-  if (ingredientsChanged(r.ingredients, list.map(toIngredient))) {
-    e.ingredientsWhy = 'one of its ingredients would not be written back exactly as it is';
-    return e;
-  }
-  e.ingredients = list;
+  const rows = editableRows(r.ingredients, r.collection);
+  if ('why' in rows) e.ingredientsWhy = rows.why;
+  else e.ingredients = rows.rows;
   return e;
 }
 
-const copyRecipe = (e: LabExisting): LabExisting => ({ ...e, ingredients: e.ingredients?.map((i) => ({ ...i })) });
+/**
+ * A recipe's ingredients as editor rows, or why they cannot be: accepted
+ * only when the rows write back exactly what the contract holds.
+ */
+function editableRows(raw: unknown[], collection: string): { rows: LabIngredient[] } | { why: string } {
+  const decoded = decodeIngredients(raw);
+  if (!decoded.ok) return { why: decoded.reason };
+  const rows = decoded.list.map((n) => labIngredientOf(n, collection));
+  const odd = rows.find((x): x is string => typeof x === 'string');
+  if (odd) return { why: `it uses ${odd}` };
+  const list = rows as LabIngredient[];
+  if (ingredientsChanged(raw, list.map((i) => toIngredient(i, collection)))) {
+    return { why: 'one of its ingredients would not be written back exactly as it is' };
+  }
+  return { rows: list };
+}
+
+// Deep: an attribute row holds a list, and the copy must not share it with what it is compared to.
+const copyRecipe = (e: LabExisting): LabExisting => ({ ...e, ingredients: e.ingredients?.map((i) => structuredClone(i)) });
 
 /** Reads the opened recipe's own row. Until it lands the form says so and nothing can be saved. */
 async function loadEditing(picked: LabExisting): Promise<void> {
@@ -1222,7 +1310,7 @@ function editActions(): { label: string; action: BuiltAction }[] {
   const startAt = () => (e.startTime === o.startTime ? e.startRaw : toUnix(e.startTime));
   const endAt = () => (e.endTime === o.endTime ? e.endRaw : toUnix(e.endTime));
   // The mix actions replace the whole list, so they are sent only for a real change.
-  const mix = e.ingredients && !e.ingredientsWhy && ingredientsChanged(e.ingredientsRaw, e.ingredients.map(toIngredient))
+  const mix = e.ingredients && !e.ingredientsWhy && ingredientsChanged(e.ingredientsRaw, e.ingredients.map((i) => toIngredient(i)))
     ? e.ingredients.map((i) => encodeIngredient(toIngredient(i)))
     : undefined;
 
@@ -2004,13 +2092,34 @@ async function refreshUpgradeGate(collection: string) {
 
 // ─── the sentence ───────────────────────────────────────────────────────
 
+/** "rarity is Rare or Epic and sport is Golf". */
+const describeFilters = (list: LabAttrFilter[]) =>
+  list.map((a) => `${a.attribute_name || 'an attribute'} is ${splitValues(a.values).join(' or ') || 'anything'}`).join(' and ');
+
+/** "an hour", "3 days", "90 seconds". */
+function describeWait(seconds: number): string {
+  const units: [number, string][] = [[86400, 'day'], [3600, 'hour'], [60, 'minute']];
+  for (const [n, name] of units) {
+    if (seconds >= n && seconds % n === 0) return `${seconds / n} ${name}${seconds / n === 1 ? '' : 's'}`;
+  }
+  return `${seconds} second${seconds === 1 ? '' : 's'}`;
+}
+
 function describeIngredient(i: LabIngredient): string {
   const fate = 'sendTo' in i && i.sendTo ? ` (sent to ${i.sendTo})` : ' (destroyed)';
+  const own = state.collection.trim();
+  const from = 'collection' in i && i.collection && i.collection !== own ? ` from ${i.collection}` : '';
   switch (i.kind) {
-    case 'template':   return `${i.amount} x ${tplName(i.template_id)}${fate}`;
-    case 'schema':     return `${i.amount} x any ${i.schema_name} NFT${fate}`;
-    case 'attribute':  return `${i.amount} x ${i.schema_name} where ${i.attribute_name} is ${splitValues(i.values).join(' or ') || 'anything'}${fate}`;
-    case 'collection': return `${i.amount} x any NFT from the collection${fate}`;
+    case 'template':   return `${i.amount} x ${tplIn(rowColl(i), i.template_id)?.name ?? `template ${i.template_id}`}${from}${fate}`;
+    case 'schema':     return `${i.amount} x any ${i.schema_name} NFT${from}${fate}`;
+    case 'attribute':  return `${i.amount} x ${i.schema_name}${from} where ${describeFilters(i.attributes)}${fate}`;
+    case 'collection': return `${i.amount} x any NFT from ${from ? i.collection : 'the collection'}${fate}`;
+    case 'cooldown': {
+      const t = tplIn(own, i.template_id)?.name ?? `template ${i.template_id}`;
+      const w = Math.floor(Number(i.wait) || 0);
+      // "once per hour", "once per 3 days".
+      return `a ${t}${i.requirements.length ? ` where ${describeFilters(i.requirements)}` : ''}, kept, once per ${w > 0 ? describeWait(w).replace(/^1 /, '') : 'interval you have not set yet'}`;
+    }
     case 'token':      return i.quantity.trim()
       ? `${i.quantity.trim()}${i.to.trim() ? ` paid to ${i.to.trim()}` : ''}`
       : 'a token cost you have not set yet';
@@ -2088,8 +2197,8 @@ function displayData(): string {
   return JSON.stringify(dd);
 }
 
-function toIngredient(i: LabIngredient): NewIngredient {
-  const collection_name = state.collection.trim();
+function toIngredient(i: LabIngredient, own = state.collection.trim()): NewIngredient {
+  const collection_name = ('collection' in i && i.collection) || own;
   const disposal = 'sendTo' in i && i.sendTo.trim() ? { transfer_to: i.sendTo.trim() } : {};
   switch (i.kind) {
     case 'template':
@@ -2105,7 +2214,7 @@ function toIngredient(i: LabIngredient): NewIngredient {
         collection_name,
         schema_name: i.schema_name,
         amount: i.amount,
-        attributes: [{ attribute_name: i.attribute_name, allowed_values: splitValues(i.values) }],
+        attributes: fromFilters(i.attributes),
         ...(i.display_data ? { display_data: i.display_data } : {}),
         ...disposal,
       };
@@ -2113,6 +2222,12 @@ function toIngredient(i: LabIngredient): NewIngredient {
       return { kind: 'collection', collection_name, amount: i.amount, ...disposal };
     case 'token':
       return { kind: 'ft', quantity: i.quantity.trim(), to: i.to.trim() || undefined };
+    case 'cooldown':
+      return {
+        kind: 'cooldown', schema_name: i.schema_name, template_id: i.template_id, attribute_name: i.attribute_name,
+        wait_time: Math.floor(Number(i.wait) || 0), requirements: fromFilters(i.requirements),
+        ...(i.display_data ? { display_data: i.display_data } : {}),
+      };
   }
 }
 
@@ -2130,7 +2245,7 @@ function blendArgs(): CreateBlendArgs {
   return {
     authorized_account: state.actor,
     collection_name: state.collection.trim(),
-    ingredients: state.ingredients.map(toIngredient),
+    ingredients: state.ingredients.map((i) => toIngredient(i)),
     rolls: [{ outcomes }],
     start_time: toUnix(state.startTime),
     end_time: toUnix(state.endTime),
@@ -2171,7 +2286,7 @@ function upgradeArgs(): CreateUpgradeArgs {
   return {
     authorized_account: state.actor,
     collection_name: state.collection.trim(),
-    ingredients: state.ingredients.map(toIngredient),
+    ingredients: state.ingredients.map((i) => toIngredient(i)),
     specs: [{ schema_name: sn, requirements, results }],
     start_time: toUnix(state.startTime),
     end_time: toUnix(state.endTime),
@@ -2303,6 +2418,11 @@ function taggedProblems(): Problem[] {
     if (state.outcomes.length && state.outcomes.every((o) => o.kind === 'nothing')) {
       at(2, 'Every outcome is blank, so a player could never win anything.');
     }
+    // blend.nefty refuses token results on a blend with no total ("Token
+    // results cannot be used with unlimited blends"), found by simulation.
+    if (state.outcomes.some((o) => o.kind === 'token') && intOr(state.maxUses) === 0) {
+      at(3, 'A blend that pays tokens needs a total number of uses: blend.nefty refuses token results on an unlimited blend.');
+    }
     // The whole-recipe validators are filed under Rules, the last step before
     // review. They judge the assembled arguments rather than one field, so
     // pinning them to an earlier step would block a page whose own fields are
@@ -2367,8 +2487,27 @@ function ingredientProblems(list: LabIngredient[]): string[] {
     } else if ('amount' in i && i.amount < 1) {
       out.push('An ingredient asks for fewer than one NFT.');
     }
-    if (i.kind === 'attribute' && splitValues(i.values).length === 0) {
-      out.push(`Ingredient on ${i.attribute_name} lists no allowed value.`);
+    for (const a of filtersOf(i) ?? []) {
+      if (!a.attribute_name) out.push('An attribute line names no attribute.');
+      else if (splitValues(a.values).length === 0) out.push(`The line on ${a.attribute_name} lists no allowed value.`);
+    }
+    const names = (filtersOf(i) ?? []).map((a) => a.attribute_name).filter(Boolean);
+    if (new Set(names).size !== names.length) out.push(`An ingredient names the same attribute twice (${names.join(', ')}): write its values on one line.`);
+    if (i.kind === 'attribute' && i.attributes.length === 0) out.push('An attribute ingredient needs at least one attribute to match.');
+    const from = 'collection' in i ? i.collection : '';
+    if (from && state.foreign[from]?.state === 'error') out.push(`${from}: ${state.foreign[from].error}.`);
+    if (i.kind === 'cooldown') {
+      if (state.kind !== 'blend') out.push('Only a blend can have a time gate: up.nefty has none.');
+      if (!(i.template_id > 0)) out.push('A time gate names no template.');
+      if (!i.attribute_name) out.push(`A time gate needs a uint64 attribute of ${i.schema_name} to keep the time in.`);
+      else {
+        // The contract's rule: "The attribute (..., attribute_type: uint64) pair is not present in schema".
+        const f = schemaIn(state.collection.trim(), i.schema_name)?.format.find((x) => x.name === i.attribute_name);
+        if (f && f.type !== 'uint64') out.push(`"${i.attribute_name}" is a ${f.type} in ${i.schema_name}: blend.nefty keeps the time in a uint64 attribute and refuses any other.`);
+        if (schemaIn(state.collection.trim(), i.schema_name) && !f) out.push(`${i.schema_name} has no attribute "${i.attribute_name}" to keep the time in.`);
+      }
+      const w = Number(i.wait);
+      if (!Number.isInteger(w) || w < 1) out.push('A time gate waits a whole number of seconds, at least 1.');
     }
   }
   if (state.kind === 'upgrade' && state.upgradeGate) {
@@ -2484,6 +2623,8 @@ export {
   ensureGates as __ensureGates,
   whoCanUseIt as __whoCanUseIt,
   BLANK_EXISTING as __BLANK_EXISTING,
+  editableRows as __editableRows,
+  toIngredient as __toIngredient,
 };
 
 /** The recipe open in Change, and the baseline it is diffed against. Test-only. */
@@ -3007,6 +3148,7 @@ function chooseKind(kind: LabKind): void {
 function chooseMode(mode: LabMode): void {
   state.mode = mode;
   state.editing = undefined;
+  state.ingFrom = ''; state.ingFromDraft = ''; state.ingFromOpen = false;
   resetListDraft();
   state.ramDeposit = '';
   if (mode === 'edit') {
@@ -3107,14 +3249,18 @@ function templateCard(t: LabTemplate): string {
 /** The template overlay. Same component for every step that needs one. */
 function picker(): string {
   const q = state.search.trim().toLowerCase();
-  const list = state.templates.filter(
+  // An NFT cost can come from another collection; everything else is the recipe's own.
+  const own = state.collection.trim();
+  const pool = state.picking?.target === 'ingredient' && state.ingFrom && state.ingFrom !== own
+    ? collData(state.ingFrom).templates : state.templates;
+  const list = pool.filter(
     (t) => !q || t.name.toLowerCase().includes(q) || String(t.template_id).includes(q) || t.schema_name.toLowerCase().includes(q),
   );
   const shown = list.slice(0, 200);
   return `
     <div class="lab-picker">
       <input id="lab-search" type="text" placeholder="Search by name, schema or template id" value="${esc(state.search)}" autocomplete="off" />
-      ${state.templates.length === 0
+      ${pool.length === 0
         ? '<p class="lab-hint">No templates loaded for this collection yet.</p>'
         : `<div class="lab-tpl-grid">${shown.map(templateCard).join('')}</div>
            ${list.length > shown.length ? `<p class="lab-note">Showing 200 of ${list.length} matches. Narrow the search to see the rest.</p>` : ''}`}
@@ -3123,7 +3269,7 @@ function picker(): string {
 }
 
 function disposalToggle(i: LabIngredient, idx: number): string {
-  if (i.kind === 'token') return '';
+  if (i.kind === 'token' || i.kind === 'cooldown') return '';
   const keeps = Boolean(i.sendTo.trim());
   return `
     <span class="lab-seg small">
@@ -3245,15 +3391,24 @@ function ingredientRow(i: LabIngredient, idx: number): string {
       </div>`;
   }
 
+  const coll = rowColl(i);
+  const own = state.collection.trim();
+  // Another collection's NFT says so on its row.
+  const from = coll !== own
+    ? `<span class="lab-tag lab-tag-from" title="This NFT comes from another collection than the recipe's">from ${esc(coll)}</span>`
+    : '';
+  if (coll !== own) ensureForeign(coll);
+
   if (i.kind === 'template') {
-    const t = tpl(i.template_id);
+    const t = tplIn(coll, i.template_id);
     return `
       <div class="lab-row">
-        ${thumb(i.template_id)}
+        ${thumbOf(t)}
         <span class="lab-row-main">
           <strong>${esc(t?.name ?? `template ${i.template_id}`)}</strong>
           <span class="lab-tpl-meta">${esc(t?.schema_name ?? '')} &middot; #${i.template_id}</span>
         </span>
+        ${from}
         ${stepper(i.amount, 'ing-minus', 'ing-plus', idx)}
         ${disposalToggle(i, idx)}
         ${del}
@@ -3265,18 +3420,24 @@ function ingredientRow(i: LabIngredient, idx: number): string {
       <div class="lab-row">
         <span class="lab-tag">Any NFT</span>
         <span class="lab-row-main">
-          <strong>Any NFT from ${esc(state.collection || 'the collection')}</strong>
+          <strong>Any NFT from ${esc(coll || 'the collection')}</strong>
           <span class="lab-tpl-meta">no template or schema restriction</span>
         </span>
+        ${from}
         ${stepper(i.amount, 'ing-minus', 'ing-plus', idx)}
         ${disposalToggle(i, idx)}
         ${del}
       </div>`;
   }
 
+  if (i.kind === 'cooldown') return cooldownRow(i, idx, del);
+
+  const schemas = collData(coll).schemas;
+  // Until another collection is read, its schema is shown as it is rather than as a blank list.
+  const options = schemas.some((x) => x.schema_name === i.schema_name) ? schemas : [{ schema_name: i.schema_name }, ...schemas];
   const schemaSelect = `
     <select class="lab-inline" data-lab="ing-schema" data-idx="${idx}">
-      ${state.schemas.map((s) => `<option${s.schema_name === i.schema_name ? ' selected' : ''}>${esc(s.schema_name)}</option>`).join('')}
+      ${options.map((x) => `<option${x.schema_name === i.schema_name ? ' selected' : ''}>${esc(x.schema_name)}</option>`).join('')}
     </select>`;
 
   if (i.kind === 'schema') {
@@ -3284,27 +3445,91 @@ function ingredientRow(i: LabIngredient, idx: number): string {
       <div class="lab-row">
         <span class="lab-tag">Any of</span>
         ${schemaSelect}
+        ${from}
         ${stepper(i.amount, 'ing-minus', 'ing-plus', idx)}
         ${disposalToggle(i, idx)}
         ${del}
       </div>`;
   }
 
-  const fields = schema(i.schema_name)?.format ?? [];
   return `
-    <div class="lab-row lab-row-wide">
-      <span class="lab-tag">Matching</span>
-      ${schemaSelect}
-      <span class="lab-mini-label">where</span>
-      <select class="lab-inline" data-lab="ing-attr" data-idx="${idx}">
-        ${fields.map((f) => `<option${f.name === i.attribute_name ? ' selected' : ''}>${esc(f.name)}</option>`).join('')}
-      </select>
-      <span class="lab-mini-label">is</span>
-      <input class="lab-inline" id="lab-ing-values-${idx}" type="text" data-lab="ing-values" data-idx="${idx}"
-             value="${esc(i.values)}" placeholder="Rare | Epic" autocomplete="off" />
-      ${stepper(i.amount, 'ing-minus', 'ing-plus', idx)}
-      ${disposalToggle(i, idx)}
-      ${del}
+    <div class="lab-row lab-row-wide lab-row-multi">
+      <div class="lab-row-line">
+        <span class="lab-tag">Matching</span>
+        ${schemaSelect}
+        ${from}
+        ${stepper(i.amount, 'ing-minus', 'ing-plus', idx)}
+        ${disposalToggle(i, idx)}
+        ${del}
+      </div>
+      ${filterLines(i.attributes, schemaIn(coll, i.schema_name)?.format ?? [], idx, 1)}
+    </div>`;
+}
+
+/** The artwork of a template, wherever it was read from. */
+function thumbOf(t: LabTemplate | undefined): string {
+  const art = t?.image ? renderMediaThumb({ ref: t.image, alt: t.name, className: 'media-thumb-sm' }) : '';
+  return art || '<span class="lab-noart" aria-hidden="true"></span>';
+}
+
+/**
+ * The attributes an NFT must match, one line each, all of them required.
+ * `least` is how many must stay: an attribute ingredient needs one, a time
+ * gate's requirements may be none.
+ */
+function filterLines(list: LabAttrFilter[], fields: LabAttribute[], idx: number, least: number): string {
+  return `
+    <div class="lab-filters">
+      ${list.map((a, k) => {
+        const names = fields.some((f) => f.name === a.attribute_name) ? fields : [{ name: a.attribute_name, type: '' }, ...fields];
+        return `
+        <div class="lab-filter">
+          <span class="lab-mini-label">${k === 0 ? 'where' : 'and'}</span>
+          <select class="lab-inline" data-lab="ing-attr" data-idx="${idx}" data-sub="${k}">
+            ${names.map((f) => `<option${f.name === a.attribute_name ? ' selected' : ''}>${esc(f.name)}</option>`).join('')}
+          </select>
+          <span class="lab-mini-label">is</span>
+          <input class="lab-inline" id="lab-ing-values-${idx}-${k}" type="text" data-lab="ing-values" data-idx="${idx}" data-sub="${k}"
+                 value="${esc(a.values)}" placeholder="Rare | Epic" autocomplete="off" />
+          ${list.length > least ? `<button class="lab-x" data-lab="ing-attr-del" data-idx="${idx}" data-sub="${k}" aria-label="remove this attribute"></button>` : ''}
+        </div>`;
+      }).join('')}
+      <button class="lab-link" data-lab="ing-attr-add" data-idx="${idx}">${list.length ? 'And another attribute' : 'Only NFTs with an attribute'}</button>
+    </div>`;
+}
+
+/**
+ * A time gate: the NFT the player shows and keeps, the attribute that
+ * holds the time it was last used, and how long it must rest.
+ */
+function cooldownRow(i: Extract<LabIngredient, { kind: 'cooldown' }>, idx: number, del: string): string {
+  const own = state.collection.trim();
+  const t = tplIn(own, i.template_id);
+  const fields = schemaIn(own, i.schema_name)?.format ?? [];
+  const times = fields.filter((f) => f.type === 'uint64');
+  const choices = times.some((f) => f.name === i.attribute_name) || !i.attribute_name ? times : [{ name: i.attribute_name, type: '' }, ...times];
+  const w = Math.floor(Number(i.wait) || 0);
+  return `
+    <div class="lab-row lab-row-wide lab-row-multi">
+      <div class="lab-row-line">
+        ${thumbOf(t)}
+        <span class="lab-tag">Time gate</span>
+        <span class="lab-row-main">
+          <strong>${esc(t?.name ?? `template ${i.template_id}`)}</strong>
+          <span class="lab-tpl-meta">${esc(i.schema_name)} &middot; #${i.template_id} &middot; kept, never burned</span>
+        </span>
+        ${del}
+      </div>
+      <div class="lab-filter">
+        <span class="lab-mini-label">rests</span>
+        <input class="lab-inline lab-cool-wait" id="lab-cool-wait-${idx}" type="number" min="1" data-lab="cool-wait" data-idx="${idx}"
+               value="${esc(i.wait)}" placeholder="3600" />
+        <span class="lab-mini-label">seconds${w > 0 ? ` (${esc(describeWait(w))})` : ''} between blends, timed by</span>
+        ${choices.length ? `<select class="lab-inline" data-lab="cool-attr" data-idx="${idx}">
+            ${choices.map((f) => `<option${f.name === i.attribute_name ? ' selected' : ''}>${esc(f.name)}</option>`).join('')}
+          </select>` : `<span class="lab-warn">${esc(i.schema_name)} has no uint64 attribute to keep the time in</span>`}
+      </div>
+      ${filterLines(i.requirements, fields, idx, 0)}
     </div>`;
 }
 
@@ -3348,29 +3573,56 @@ function feeCallout(list: LabIngredient[]): string {
 }
 
 function stepGive(): string {
-  if (state.picking?.target === 'ingredient') return picker();
+  if (state.picking?.target === 'ingredient' || state.picking?.target === 'cooldown') return picker();
   return `
     <h3 class="lab-q">What does a player give up?</h3>
-    <p class="lab-hint">Pick from your own collection. Nothing here has to be typed from memory.</p>
+    <p class="lab-hint">Pick from your own collection, or another one. Nothing here has to be typed from memory.</p>
     ${ingredientEditor(state.ingredients)}`;
 }
 
 /** The rows and buttons of what a player gives, the same for creation and for Change. */
 function ingredientEditor(list: LabIngredient[]): string {
   const burned = list.filter((i) => 'sendTo' in i && !i.sendTo.trim()).length;
-  const nft = list.filter((i) => i.kind !== 'token').length;
+  const nft = list.filter((i) => i.kind !== 'token' && i.kind !== 'cooldown').length;
+  const own = state.collection.trim();
+  const from = state.ingFrom && state.ingFrom !== own ? state.ingFrom : '';
+  const f = from ? state.foreign[from] : undefined;
+  const schemasThere = from ? (f?.schemas.length ?? 0) : state.schemas.length;
+  const ready = !from || f?.state === 'done';
   return `
     ${list.length === 0
       ? '<p class="lab-empty">Nothing yet. Add at least one cost below.</p>'
       : `<div class="lab-rows">${list.map(ingredientRow).join('')}</div>`}
 
-    <div class="lab-row-actions">
-      <button class="lab-add" data-lab="open-ingredient">Add a specific NFT</button>
-      <button class="lab-add" data-lab="add-ing-schema" ${state.schemas.length ? '' : 'disabled'}>Add any NFT of a schema</button>
-      <button class="lab-add" data-lab="add-ing-attribute" ${state.schemas.length ? '' : 'disabled'}>Add NFTs matching an attribute</button>
-      <button class="lab-add" data-lab="add-ing-collection">Add any NFT of the collection</button>
-      <button class="lab-add" data-lab="add-ing-token">Add a token cost</button>
+    <div class="lab-field lab-ing-from">
+      <label>NFTs from</label>
+      <div class="lab-seg small">
+        <button class="${from ? '' : 'on'}" data-lab="ing-from-own">${esc(own || 'this collection')}</button>
+        <button class="${from ? 'on' : ''}" data-lab="ing-from-other">another collection</button>
+      </div>
+      ${from || state.ingFromOpen ? `
+        <input class="lab-inline" id="lab-ing-from" type="text" value="${esc(state.ingFromDraft)}" placeholder="collection name" autocomplete="off" />
+        <button class="lab-ghost" data-lab="ing-from-load">Use it</button>` : ''}
+      ${from ? (f?.state === 'loading' ? `<span class="lab-hint">Reading ${esc(from)}.</span>`
+        : f?.state === 'error' ? `<span class="lab-warn">${esc(f.error)}</span>`
+          : `<span class="lab-ok">${f?.templates.length ?? 0} template(s) and ${f?.schemas.length ?? 0} schema(s) of ${esc(from)}</span>`) : ''}
     </div>
+
+    <div class="lab-row-actions">
+      <button class="lab-add" data-lab="open-ingredient" ${ready ? '' : 'disabled'}>Add a specific NFT</button>
+      <button class="lab-add" data-lab="add-ing-schema" ${ready && schemasThere ? '' : 'disabled'}>Add any NFT of a schema</button>
+      <button class="lab-add" data-lab="add-ing-attribute" ${ready && schemasThere ? '' : 'disabled'}>Add NFTs matching attributes</button>
+      <button class="lab-add" data-lab="add-ing-collection" ${ready ? '' : 'disabled'}>Add any NFT of ${esc(from || 'the collection')}</button>
+      <button class="lab-add" data-lab="add-ing-token">Add a token cost</button>
+      ${state.kind === 'blend' ? `<button class="lab-add" data-lab="open-cooldown" ${state.templates.length ? '' : 'disabled'}>Add a time gate</button>` : ''}
+    </div>
+    ${from ? `<p class="lab-note">NFTs added now come from ${esc(from)}. A blend can ask for another collection's NFTs:
+      914 live blends do. Burning them needs nothing from that collection; the recipe's own collection is the one
+      that must authorize ${esc(CONTRACT_FOR[state.kind])}.</p>` : ''}
+    ${list.some((i) => i.kind === 'cooldown') ? `<p class="lab-note">A time gate is not a cost: the player shows the NFT
+      and keeps it, blend.nefty writes the time of the blend into its attribute, and the next blend with it waits
+      until the time has passed. ${esc(own)} must let blend.nefty write that attribute, which authorizing
+      blend.nefty already does.</p>` : ''}
 
     ${feeCallout(list)}
 
@@ -4190,14 +4442,14 @@ function gatesSection(): string {
 function editProblems(): string[] {
   const e = state.editing;
   if (!e) return [];
-  const touched = e.ingredients && ingredientsChanged(e.ingredientsRaw, e.ingredients.map(toIngredient));
+  const touched = e.ingredients && ingredientsChanged(e.ingredientsRaw, e.ingredients.map((i) => toIngredient(i)));
   return [...listProblems(listTarget()), ...ruleProblems(), ...(e.kind === 'drop' ? ramProblems() : []),
     ...(touched ? ingredientProblems(e.ingredients!) : [])];
 }
 
 function editForm(): string {
   const e = state.editing!;
-  if (state.picking?.target === 'ingredient') return picker();
+  if (state.picking?.target === 'ingredient' || state.picking?.target === 'cooldown') return picker();
   const title = `<h3 class="lab-q">${esc(e.name || `${e.kind} #${e.id}`)} <span class="lab-tag">#${esc(e.id)}</span></h3>`;
   // The list rows know too little to edit from; the form waits for the recipe's own row.
   if (!e.loaded) {
@@ -7444,13 +7696,18 @@ function firstUsableAttribute(forWriting: boolean): string {
 
 /** A blank ingredient of each kind, so "add" never lands on an invalid row. */
 function newIngredient(kind: LabIngredient['kind']): LabIngredient {
-  const s = state.schemas[0]?.schema_name ?? '';
+  // Where the "NFTs from" switch points: the recipe's collection, or another one.
+  const own = state.collection.trim();
+  const coll = state.ingFrom && state.ingFrom !== own ? state.ingFrom : own;
+  const from = coll !== own ? { collection: coll } : {};
+  const first = collData(coll).schemas[0];
+  const s = first?.schema_name ?? '';
   switch (kind) {
-    case 'schema':     return { kind: 'schema', schema_name: s, amount: 1, sendTo: '' };
-    case 'attribute':  return { kind: 'attribute', schema_name: s, attribute_name: schema(s)?.format[0]?.name ?? '', values: '', amount: 1, sendTo: '' };
-    case 'collection': return { kind: 'collection', amount: 1, sendTo: '' };
+    case 'schema':     return { kind: 'schema', schema_name: s, amount: 1, sendTo: '', ...from };
+    case 'attribute':  return { kind: 'attribute', schema_name: s, attributes: [{ attribute_name: first?.format[0]?.name ?? '', values: '' }], amount: 1, sendTo: '', ...from };
+    case 'collection': return { kind: 'collection', amount: 1, sendTo: '', ...from };
     case 'token':      return { kind: 'token', quantity: '', to: state.actor };
-    default:           return { kind: 'template', template_id: 0, amount: 1, sendTo: '' };
+    default:           return { kind: 'template', template_id: 0, amount: 1, sendTo: '', ...from };
   }
 }
 
@@ -7526,11 +7783,12 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
     // Free-text rows: store on every keystroke, repaint on blur. Their ids
     // are stable so focus would survive either way, but not repainting
     // keeps the caret exactly where the user left it.
-    const textField: Record<string, (v: string, i: number) => void> = {
+    const textField: Record<string, (v: string, i: number, sub: number) => void> = {
       'ing-to':        (v, i) => { const g = ings()[i]; if ('sendTo' in g) g.sendTo = v; },
       'ing-qty':       (v, i) => { const g = ings()[i]; if (g.kind === 'token') g.quantity = v; },
       'ing-payto':     (v, i) => { const g = ings()[i]; if (g.kind === 'token') g.to = v; },
-      'ing-values':    (v, i) => { const g = ings()[i]; if (g.kind === 'attribute') g.values = v; },
+      'ing-values':    (v, i, sub) => { const a = filtersOf(ings()[i])?.[sub]; if (a) a.values = v; },
+      'cool-wait':     (v, i) => { const g = ings()[i]; if (g?.kind === 'cooldown') g.wait = v; },
       'out-qty':       (v, i) => { const o = state.outcomes[i]; if (o.kind === 'token') o.quantity = v; },
       'out-contract':  (v, i) => { const o = state.outcomes[i]; if (o.kind === 'token') o.contract = v; },
       'out-pool':      (v, i) => { const o = state.outcomes[i]; if (o.kind === 'pool') o.pool_name = v; },
@@ -7542,7 +7800,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
       'rule-n':        (v, i) => { const r = state.rule.group.rules[i]; if (r && r.kind !== 'token') r.amount = Math.max(0, Math.floor(Number(v) || 0)); },
     };
     if (textField[kind]) {
-      el.addEventListener('input', () => textField[kind]((el as HTMLInputElement).value, idx(el)));
+      el.addEventListener('input', () => textField[kind]((el as HTMLInputElement).value, idx(el), Number(el.dataset.sub ?? 0)));
       el.addEventListener('change', () => render());
       return;
     }
@@ -7587,17 +7845,21 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
       return;
     }
 
-    if (kind === 'ing-schema' || kind === 'ing-attr' || kind === 'req-attr' || kind === 'mut-attr') {
+    if (kind === 'ing-schema' || kind === 'ing-attr' || kind === 'cool-attr' || kind === 'req-attr' || kind === 'mut-attr') {
       el.addEventListener('change', () => {
         const v = (el as HTMLSelectElement).value;
         const i = idx(el);
         if (kind === 'ing-schema') {
           const g = ings()[i];
           if (g.kind === 'schema' || g.kind === 'attribute') g.schema_name = v;
-          if (g.kind === 'attribute') g.attribute_name = schema(v)?.format[0]?.name ?? '';
+          // Another schema has other attributes: the lines start over on its first one.
+          if (g.kind === 'attribute') g.attributes = [{ attribute_name: schemaIn(rowColl(g), v)?.format[0]?.name ?? '', values: '' }];
         } else if (kind === 'ing-attr') {
+          const a = filtersOf(ings()[i])?.[Number(el.dataset.sub ?? 0)];
+          if (a) a.attribute_name = v;
+        } else if (kind === 'cool-attr') {
           const g = ings()[i];
-          if (g.kind === 'attribute') g.attribute_name = v;
+          if (g.kind === 'cooldown') g.attribute_name = v;
         } else if (kind === 'req-attr') {
           const r = state.requirements[i];
           if (r.kind === 'attribute') r.attribute_name = v;
@@ -7656,6 +7918,24 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'reload-data':        void loadCollectionData(); return;
 
         case 'open-ingredient':  state.picking = { target: 'ingredient' }; state.search = ''; break;
+        case 'open-cooldown':    state.picking = { target: 'cooldown' }; state.search = ''; break;
+        case 'ing-from-own':     state.ingFrom = ''; state.ingFromOpen = false; break;
+        case 'ing-from-other':   state.ingFromOpen = true; break;
+        case 'ing-from-load': {
+          const c = state.ingFromDraft.trim().toLowerCase();
+          if (/^[a-z1-5.]{1,12}$/.test(c)) { state.ingFrom = c === state.collection.trim() ? '' : c; ensureForeign(c); }
+          break;
+        }
+        case 'ing-attr-add': {
+          const g = ings()[i];
+          const list = filtersOf(g);
+          if (!list) break;
+          const fields = schemaIn(g.kind === 'cooldown' ? state.collection.trim() : rowColl(g), g.kind === 'cooldown' || g.kind === 'attribute' ? g.schema_name : '')?.format ?? [];
+          const used = new Set(list.map((a) => a.attribute_name));
+          list.push({ attribute_name: fields.find((f) => !used.has(f.name))?.name ?? '', values: '' });
+          break;
+        }
+        case 'ing-attr-del': filtersOf(ings()[i])?.splice(Number(el.dataset.sub ?? 0), 1); break;
         case 'open-outcome':     state.picking = { target: 'outcome' }; state.search = ''; break;
         case 'open-mint':        state.picking = { target: 'mint' }; state.search = ''; break;
         case 'open-requirement': state.picking = { target: 'requirement' }; state.search = ''; break;
@@ -7664,7 +7944,16 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         case 'pick-template': {
           const id = Number(el.dataset.id);
           const target = state.picking?.target;
-          if (target === 'ingredient') ings().push({ kind: 'template', template_id: id, amount: 1, sendTo: '' });
+          if (target === 'ingredient') {
+            const own = state.collection.trim();
+            const from = state.ingFrom && state.ingFrom !== own ? { collection: state.ingFrom } : {};
+            ings().push({ kind: 'template', template_id: id, amount: 1, sendTo: '', ...from });
+          }
+          if (target === 'cooldown') {
+            const t = tpl(id);
+            const times = (schema(t?.schema_name ?? '')?.format ?? []).filter((f) => f.type === 'uint64');
+            ings().push({ kind: 'cooldown', template_id: id, schema_name: t?.schema_name ?? '', attribute_name: times[0]?.name ?? '', wait: '3600', requirements: [] });
+          }
           if (target === 'outcome')    state.outcomes.push({ kind: 'nft', template_id: id, weight: 1 });
           if (target === 'mint')       state.mints.push({ template_id: id, quantity: 1 });
           if (target === 'requirement') state.requirements.push({ kind: 'template', template_id: id });
@@ -8212,6 +8501,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   const pickCollection = (v: string) => {
     state.collection = v.trim();
     state.schemas = []; state.templates = []; state.securities = [];
+    state.ingFrom = ''; state.ingFromDraft = ''; state.ingFromOpen = false;
     state.schemaName = ''; state.dataState = 'idle';
     // A gate belongs to one collection: another collection's id would be refused.
     state.securityId = '';
@@ -8250,6 +8540,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
   bind('lab-list-limit', (v) => { state.list.limit = v; });
   bind('lab-rule-name', (v) => { state.rule.name = v; });
   bind('lab-ram-deposit', (v) => { state.ramDeposit = v; });
+  bind('lab-ing-from', (v) => { state.ingFromDraft = v; });
   // Looked up once the box is left: per keystroke, every half-typed name
   // would be its own round trip.
   root.querySelector('#lab-list-add')?.addEventListener('change', () => { void checkListAccounts(); });

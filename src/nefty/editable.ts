@@ -179,7 +179,19 @@ function decodeOne(v: unknown): NewIngredient | string {
       if (ename !== 'TRANSFER_EFFECT' || !edata?.to) return 'a token cost that is not sent to an account';
       return { kind: 'ft', quantity: String(d.quantity), to: String(edata.to) };
     }
-    case 'COOLDOWN_INGREDIENT': return 'a time gate (COOLDOWN_INGREDIENT)';
+    case 'COOLDOWN_INGREDIENT':
+      return {
+        kind: 'cooldown',
+        schema_name: String(d.schema_name ?? ''),
+        template_id: Number(d.template_id ?? 0),
+        attribute_name: String(d.attribute_name ?? ''),
+        wait_time: Number(d.wait_time ?? 0),
+        requirements: (Array.isArray(d.requirements) ? d.requirements : []).map((a) => ({
+          attribute_name: String((a as Record<string, unknown>).attribute_name),
+          allowed_values: ((a as Record<string, unknown>).allowed_values as unknown[] ?? []).map(String),
+        })),
+        display_data: String(d.display_data ?? ''),
+      };
     case 'BALANCE_INGREDIENT': return 'an NFT that must hold a token balance (BALANCE_INGREDIENT)';
     default: return `a ${name}`;
   }

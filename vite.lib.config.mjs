@@ -43,6 +43,7 @@ export default defineConfig({
         signedRecently: 'src/v2/signedRecently.ts',
         dropRam: 'src/nefty/dropRam.ts',
         leftovers: 'src/nefty/leftovers.ts',
+        waxdaoDrops: 'src/waxdao/drops.ts',
         neftyPackExecute: 'src/nefty/neftyPackExecute.ts',
       },
       formats: ['es'],

@@ -128,6 +128,27 @@ async function opensFor(actor: string, tokens: { contract: string; symbol: strin
   return out;
 }
 
+const holds = new Map<string, Promise<{ held: boolean; supply: string }>>();
+/**
+ * Whether waxdaofarmer still holds any of a pool's staked token. A pool can
+ * outlive its token: lp.waxdao staked Alcor LP tokens, Alcor migrated its
+ * pools, and WAXWOJA's supply is now 0, so unstaking is refused ("no balance
+ * object found") and nothing can come back. Unread counts as held: the
+ * button stays, and the chain is asked before signing anyway.
+ */
+function poolTokenHeld(contract: string, symbol: string): Promise<{ held: boolean; supply: string }> {
+  const k = `${contract}:${symbol}`;
+  if (!holds.has(k)) {
+    holds.set(k, (async () => {
+      const rows = await retrying(() => withFailover((c) => c.v1.chain.get_currency_balance(contract, 'waxdaofarmer', symbol)));
+      if (rows.length) return { held: true, supply: '' };
+      const [stat] = await retrying(() => getTableRows<{ supply: string }>({ code: contract, scope: symbol, table: 'stat', limit: 1 }));
+      return { held: false, supply: String(stat?.supply ?? '') };
+    })().catch(() => ({ held: true, supply: '' })));
+  }
+  return holds.get(k)!;
+}
+
 /** The token in a quantity like "19.28551670 FOOD", with its precision. */
 function tokenOf(quantity: string, contract: string) {
   const [q, symbol] = String(quantity ?? '').split(' ');
@@ -236,14 +257,18 @@ export async function readWaxdaoHoldings(actor: string): Promise<WaxdaoHolding[]
       ...(reward ? [tokenOf(r.claimable, r.rwdcontract)] : []),
       ...(staked ? [tokenOf(r.amountstaked, r.contract)] : []),
     ]);
+    const sym = tokenOf(r.amountstaked, r.contract).symbol;
+    const token = staked ? await poolTokenHeld(r.contract, sym) : { held: true, supply: '' };
     const actions: WaxdaoHolding['actions'] = [];
     if (reward) actions.push({ label: `Claim ${r.claimable}`, build: [...opens, act('waxdaofarmer', 'claimpoolrwd', actor, { pool: r.poolname, user: actor })] });
-    if (staked && !locked) actions.push({ label: `Unstake ${r.amountstaked}`, build: [...opens, act('waxdaofarmer', 'unstaketoken', actor, { amount: r.amountstaked, user: actor, poolname: r.poolname })] });
+    if (staked && !locked && token.held) actions.push({ label: `Unstake ${r.amountstaked}`, build: [...opens, act('waxdaofarmer', 'unstaketoken', actor, { amount: r.amountstaked, user: actor, poolname: r.poolname })] });
     out.push({
       key: `pool:${r.poolname}`, group: 'token-pool', contract: 'waxdaofarmer',
       title: staked ? `${r.amountstaked} staked in ${r.poolname}` : `Rewards in ${r.poolname}`,
       detail: reward ? `${r.claimable} to claim` : undefined,
-      note: staked && locked ? `Locked until ${day(Number(r.unlocktime))}.` : undefined,
+      note: !token.held
+        ? `waxdaofarmer no longer holds any ${sym}${amount(token.supply) === 0 && token.supply ? `, and its supply is now ${token.supply}` : ''}: there is nothing left to send back, and the chain refuses the unstake ("no balance object found").`
+        : staked && locked ? `Locked until ${day(Number(r.unlocktime))}.` : undefined,
       actions,
     });
   }
@@ -268,10 +293,13 @@ export async function readWaxdaoHoldings(actor: string): Promise<WaxdaoHolding[]
     const vesting = Number(r.vesting_end_time) > now;
     const claim = (r.claimable_balances ?? []).filter((c) => amount(c.quantity) > 0);
     const opens = await opensFor(actor, (r.claimable_balances ?? []).map((c) => tokenOf(c.quantity, c.contract)));
-    const actions: WaxdaoHolding['actions'] = [
-      // The figure on the row can lag: getreward settles what is owed when it runs.
-      { label: 'Claim rewards', build: [...opens, act('tf.waxdao', 'getreward', actor, { user: actor, farm_name: r.farm_name })] },
-    ];
+    // The figure on the row can lag: getreward settles what is owed when it
+    // runs. With nothing on the row, the chain is asked whether anything is
+    // owed at all; "you have no rewards to claim" takes the button away.
+    const getreward = [...opens, act('tf.waxdao', 'getreward', actor, { user: actor, farm_name: r.farm_name })];
+    const asked = claim.length ? undefined : await simulateActions(getreward).catch(() => undefined);
+    const owed = !(asked?.kind === 'refused' && /no rewards to claim/i.test(asked.reason));
+    const actions: WaxdaoHolding['actions'] = owed ? [{ label: 'Claim rewards', build: getreward }] : [];
     if (!vesting) actions.push({ label: `Unstake ${r.balance}`, build: [...opens, act('tf.waxdao', 'unstake', actor, { user: actor, farm_name: r.farm_name, amount: r.balance })] });
     out.push({
       key: `tf:${r.farm_name}`, group: 'token-farm', contract: 'tf.waxdao',

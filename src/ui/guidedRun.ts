@@ -49,6 +49,9 @@ import {
 } from '../nefty/upgrades';
 import { listDrops } from '../nefty/drops';
 import { listWaxdaoBlends, loadWaxdaoBlendById } from '../waxdao/blends';
+import {
+  buildWaxdaoDropClaim, buildWaxdaoUnbox, listWaxdaoDrops, loadWaxdaoDropById, type DiscoveredWaxdaoDrop,
+} from '../waxdao/drops';
 import { listBlenderizerBlends, loadBlenderizerBlendById } from '../blenderizer/blends';
 
 export type RunStep = 1 | 2 | 3 | 4;
@@ -83,8 +86,8 @@ export type RecipeAction = typeof RECIPE_ACTIONS[number]['key'];
 
 /** Which contract a row actually came from. Step 4 needs this, people do not. */
 export type RecipeSource =
-  | 'blend' | 'waxdao' | 'blenderizer' | 'upgrade' | 'drop'
-  | 'pack' | 'neftypack';
+  | 'blend' | 'waxdao' | 'blenderizer' | 'upgrade' | 'drop' | 'waxdaodrop'
+  | 'pack' | 'neftypack' | 'waxdaopack';
 
 export const SOURCE_INFO: Record<RecipeSource, { platform: string; contract: string }> = {
   blend: { platform: 'NeftyBlocks', contract: 'blend.nefty' },
@@ -92,6 +95,8 @@ export const SOURCE_INFO: Record<RecipeSource, { platform: string; contract: str
   blenderizer: { platform: 'Blenderizer', contract: 'blenderizerx' },
   upgrade: { platform: 'NeftyBlocks', contract: 'up.nefty' },
   drop: { platform: 'NeftyBlocks', contract: 'neftyblocksd' },
+  waxdaodrop: { platform: 'WaxDAO', contract: 'waxdaomarket' },
+  waxdaopack: { platform: 'WaxDAO packs', contract: 'waxdaomarket' },
   pack: { platform: 'AtomicHub packs', contract: 'atomicpacksx' },
   neftypack: { platform: 'NeftyBlocks packs', contract: 'neftyblocksp' },
 };
@@ -100,10 +105,10 @@ export const SOURCE_INFO: Record<RecipeSource, { platform: string; contract: str
 const SOURCES_FOR: Record<RecipeAction, RecipeSource[]> = {
   blend: ['blend', 'waxdao', 'blenderizer'],
   upgrade: ['upgrade'],
-  drop: ['drop'],
-  // Two pack contracts, and nobody should have to know which one their
+  drop: ['drop', 'waxdaodrop'],
+  // Three pack contracts, and nobody should have to know which one their
   // pack came from. Same reasoning as the three blend contracts.
-  unpack: ['pack', 'neftypack'],
+  unpack: ['pack', 'neftypack', 'waxdaopack'],
 };
 
 /** The action a source belongs to, for a deep link that names only the source. */
@@ -233,6 +238,15 @@ async function listOneSource(
       name: u.name || `Upgrade #${u.upgrade_id}`,
       note: 'rewrites an NFT you keep',
       live: u.status === 'active',
+    }));
+  }
+  if (source === 'waxdaodrop' || source === 'waxdaopack') {
+    // One table, two things: sales and giveaways, and pack openings (waxdao/drops).
+    const drops = (await listWaxdaoDrops(c)).filter((d) => (d.kind === 'pack') === (source === 'waxdaopack'));
+    return drops.map((d) => ({
+      source, raw: d, id: d.drop_id, name: d.name,
+      note: source === 'waxdaopack' ? `opens a template #${d.template_id} pack` : d.price || 'free',
+      live: d.status === 'active',
     }));
   }
   if (source === 'pack' || source === 'neftypack') {
@@ -459,6 +473,45 @@ function matches(a: AtomicAsset, ing: IngredientVariant): boolean {
   }
 }
 
+/** "an hour", "3 days", "90 seconds". */
+function restText(seconds: number): string {
+  for (const [n, name] of [[86400, 'day'], [3600, 'hour'], [60, 'minute']] as const) {
+    if (seconds >= n && seconds % n === 0) return seconds === n ? `a ${name}` : `${seconds / n} ${name}s`;
+  }
+  return `${seconds} seconds`;
+}
+
+/**
+ * A time gate: an NFT of the template, meeting the requirements, that the
+ * player keeps (own_assets) and that has rested `wait_time` seconds since
+ * the time its attribute holds, which the contract then rewrites.
+ * Settled through compute_transaction on uncutnefties' blend #37724 (run
+ * 1,081,706 times): with a rested "$RJUAN Miner" the contract only stops on
+ * the blend's max; without the NFT, "Required and actual owned assets don't
+ * match"; with one that lacks the requirements, "Blend requirements not met".
+ */
+function cooldownRequirement(b: BlendRow, p: Record<string, unknown>, assets: AtomicAsset[], known: boolean): Requirement {
+  const tid = String(p.template_id ?? '');
+  const attr = String(p.attribute_name ?? '');
+  const wait = Number(p.wait_time ?? 0);
+  const reqs = ((p.requirements ?? []) as { attribute_name: string; allowed_values: unknown[] }[])
+    .map((r) => ({ attribute_name: r.attribute_name, allowed_values: (r.allowed_values ?? []).map(String) }));
+  const now = Date.now() / 1000;
+  const fit = assets.filter((a) => String(a.template?.template_id ?? '') === tid && passesAttributeList(a, reqs));
+  const readyAt = (a: AtomicAsset) => (Number(attributeOf(a, attr)) || 0) + wait;
+  const rested = fit.filter((a) => readyAt(a) <= now);
+  const resting = fit.filter((a) => readyAt(a) > now).map(readyAt).sort((x, y) => x - y);
+  const where = reqs.length ? ` where ${reqs.map((r) => `${r.attribute_name} is ${r.allowed_values.join(' or ')}`).join(' and ')}` : '';
+  const soon = known && !rested.length && resting.length
+    ? `. Yours rests until ${new Date(resting[0] * 1000).toLocaleString()}` : '';
+  return {
+    text: `1 x template #${tid}${where}, kept: it must have rested ${restText(wait)} since its last use (${attr})${soon}`,
+    need: 1, candidates: rested.map((a) => a.asset_id), have: known ? rested.length : undefined,
+    kind: 'nft', role: 'keep',
+    market: b.collection_name ? { collection: String(b.collection_name), template_id: Number(tid) } : undefined,
+  };
+}
+
 /**
  * Every ingredient as a sentence, with what the wallet can cover.
  *
@@ -494,19 +547,12 @@ export function requirementsOf(
         market: b.collection_name ? { collection: String(b.collection_name), template_id: p.template_id } : undefined,
       };
     }
-    // Neither can be run from here. No CHEST ingredient exists on chain,
-    // and the two COOLDOWN blends are sold out (37724) or ask for an NFT
-    // nobody holds any more (37818), so there is nothing to learn the
-    // contract's answer from. They are named, so the screen can say so.
+    // No CHEST ingredient exists on chain: named, so the screen can say so.
     if (kind === 'CHEST_INGREDIENT') {
       return { text: `A chest ingredient (${p.attribute_name} of template #${p.template_id})`,
                need: 1, candidates: [], kind: 'other' as const, role: 'unknown' as const };
     }
-    if (kind === 'COOLDOWN_INGREDIENT') {
-      const c = p as { template_id?: number; attribute_name?: string; wait_time?: number };
-      return { text: `A cooldown on template #${c.template_id}'s ${c.attribute_name} (${c.wait_time}s between uses)`,
-               need: 1, candidates: [], kind: 'other' as const, role: 'unknown' as const };
-    }
+    if (kind === 'COOLDOWN_INGREDIENT') return cooldownRequirement(b, p as Record<string, unknown>, assets, known);
 
     const candidates = assets.filter((a) => matches(a, ing)).map((a) => a.asset_id);
     const amount = Number((p as { amount?: number }).amount ?? 1) || 1;
@@ -911,6 +957,34 @@ export function describeRecipe(
     };
   }
 
+  if (source === 'waxdaodrop') {
+    const d = raw as DiscoveredWaxdaoDrop;
+    const requirements: Requirement[] = d.price
+      ? [{ text: `Pay ${d.price}`, need: 1, candidates: [], kind: 'token', role: 'pay', tokenQuantity: d.price, tokenContract: d.price_contract }]
+      : [];
+    const cap = d.total_available > 0 ? `${d.total_left} of ${d.total_available} left` : 'No overall cap';
+    return {
+      requirements, rewards: [{ text: `template #${d.template_id}` }], sure: true,
+      note: `${d.price ? '' : 'Free. '}WaxDAO mints it straight to you. ${cap}.`,
+    };
+  }
+
+  if (source === 'waxdaopack') {
+    const d = raw as DiscoveredWaxdaoDrop;
+    const mine = assets.filter((a) => String(a.template?.template_id ?? '') === String(d.template_id)).map((a) => a.asset_id);
+    return {
+      requirements: [{
+        text: `1 x template #${d.template_id}, the pack`, need: 1, have: known ? mine.length : undefined,
+        candidates: mine, kind: 'nft', role: 'burn', market: { collection: d.collection, template_id: d.template_id },
+      }],
+      // One NFT for its one pool in every opening still in history (#558); which one is the draw.
+      rewards: [{ text: d.pools.length === 1 ? 'An NFT drawn at random from its premint pool'
+        : `NFTs drawn at random from its ${d.pools.length} premint pools` }],
+      sure: true,
+      note: 'Opening is one transaction: waxdaomarket burns the pack and sends what it draws, at once.',
+    };
+  }
+
   if (source === 'drop') {
     const d = raw as {
       listing_price?: string; is_free?: boolean;
@@ -926,7 +1000,7 @@ export function describeRecipe(
     const rewards: Reward[] = (d.assets_to_mint ?? []).map((m) => ({ text: `template #${m.template_id}` }));
     const cap = Number(d.max_claimable ?? 0) > 0
       ? `${Number(d.max_claimable) - Number(d.current_claimed ?? 0)} of ${d.max_claimable} left`
-      : 'no overall cap';
+      : 'No overall cap';
     return {
       requirements, rewards, sure: true,
       note: paid
@@ -990,6 +1064,10 @@ export async function loadRecipeById(
     if (source === 'blenderizer') {
       const b = await loadBlenderizerBlendById(id);
       return b ? wrap(b.name || `Blenderizer #${id}`, b, true) : undefined;
+    }
+    if (source === 'waxdaodrop' || source === 'waxdaopack') {
+      const d = await loadWaxdaoDropById(id);
+      return d && (d.kind === 'pack') === (source === 'waxdaopack') ? wrap(d.name, d, d.status === 'active') : undefined;
     }
     if (source === 'upgrade') {
       const u = await loadUpgradeById(id);
@@ -1117,6 +1195,15 @@ export async function buildRunActions(args: {
       ft_payments: tokens,
       security_check: gated ? (args.security ?? { kind: 'whitelist', account_name: actor }) : undefined,
     });
+  }
+
+  if (source === 'waxdaodrop') {
+    return buildWaxdaoDropClaim({ claimer: actor, drop: raw as DiscoveredWaxdaoDrop });
+  }
+  if (source === 'waxdaopack') {
+    const packAsset = requirements.flatMap((r, i) => (r.kind === 'nft' ? chosen(i) : []))[0];
+    if (!packAsset) throw new Error('Pick the pack you want to open.');
+    return buildWaxdaoUnbox({ claimer: actor, drop_id: id, pack_asset_id: packAsset });
   }
 
   if (source === 'pack' || source === 'neftypack') {

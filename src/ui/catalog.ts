@@ -47,6 +47,7 @@ import { listUpgrades, upgradeTargetFits, type DiscoveredUpgrade } from '../neft
 import { listPackDesigns, pickOwnedPacks, type PackDesign } from '../nefty/packs';
 import { listNeftyPackDesigns } from '../nefty/neftyPacks';
 import { listWaxdaoBlends, type DiscoveredWaxdaoBlend } from '../waxdao/blends';
+import type { DiscoveredWaxdaoDrop } from '../waxdao/drops';
 import type { RecipeChoice } from './guidedRun';
 import {
   listBlenderizerBlends,
@@ -544,6 +545,24 @@ function fromUpgrade(u: DiscoveredUpgrade, owned: AtomicAsset[], hasWallet: bool
   };
 }
 
+/** A WaxDAO drop: a sale or giveaway that mints, or a pack opening (waxdao/drops). */
+function fromWaxdaoDrop(d: DiscoveredWaxdaoDrop): CatalogEntry {
+  return {
+    kind: d.kind === 'pack' ? 'pack' : 'drop',
+    contract: 'waxdaomarket',
+    id: d.drop_id,
+    name: d.name,
+    href: `../v2/#/use/${d.kind === 'pack' ? 'waxdaopack' : 'waxdaodrop'}~${d.collection}~${d.drop_id}`,
+    status: statusFrom(d.status),
+    category: UNCATEGORISED,
+    templateId: d.template_id || undefined,
+    fallbackImage: d.logo || undefined,
+    cost: d.kind === 'pack' ? 'the pack' : d.price || 'free',
+    gated: d.whitelist_type !== 'none',
+    random: d.kind === 'pack',
+  };
+}
+
 function fromPack(d: PackDesign, held: Map<string, number>, hasWallet: boolean): CatalogEntry {
   const n = held.get(`${d.source}:${d.pack_id}`) ?? 0;
   const locked = d.unlock_time > 0 && d.unlock_time * 1000 > Date.now();
@@ -654,6 +673,8 @@ export function shelfEntry(c: RecipeChoice): CatalogEntry | undefined {
     case 'drop': return fromDrop(c.raw as DiscoveredDrop);
     case 'pack':
     case 'neftypack': return fromPack(c.raw as PackDesign, new Map(), false);
+    case 'waxdaodrop':
+    case 'waxdaopack': return fromWaxdaoDrop(c.raw as DiscoveredWaxdaoDrop);
     default: return undefined;
   }
 }

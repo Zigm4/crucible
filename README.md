@@ -192,7 +192,16 @@ guidance, and the pages below.
 - **Use a recipe** (`#/use`): blend, upgrade, claim a drop or open a pack
   in four questions (what, which collection, which one, check). Blends
   are searched across `blend.nefty`, `waxdaomarket` and `blenderizerx`
-  together, packs across `atomicpacksx` and `neftyblocksp`. Every recipe
+  together, drops across `neftyblocksd` and `waxdaomarket`, packs across
+  `atomicpacksx`, `neftyblocksp` and `waxdaomarket`. WaxDAO's drops
+  (`src/waxdao/drops.ts`) are two things in one table: sales and
+  giveaways (free: `claimdrop`; paid: `assertdrop` and a transfer with
+  the memo `|purchase_drop|<drop>|<id>|`), and pack openings, where the
+  pack NFT is sent with `|unbox|<drop>|<id>|` and the contract burns it
+  and sends an NFT from its premint pool in the same transaction. On
+  2026-10-24, 310 were open with stock across 48 collections, 223 of them
+  packs. A blend with a time gate runs too: the player's rested NFT goes
+  in `own_assets` and stays theirs. Every recipe
   carries a verdict read from the chain (status, supply, per-wallet
   limits, whitelists and holder gates, WaxDAO farm requirements, token
   balances), and what the wallet is short of links to AtomicHub.
@@ -744,9 +753,11 @@ first, so none of that is asked:
 - Simulate before signing (the transaction rehearsed on chain), then a confirmation you have to tick
 - one roll per blend and one spec per upgrade. The contract allows several of each (a second roll is a second, independent draw paid out on the same blend); that shape has to be built elsewhere
 - who can use it, written with the recipe in the same transaction (the new id is the contract counter's value, so a race can only cost a refusal): a `secure.nefty` list of accounts or a holder gate for blends and upgrades, a drop's own list and holder rule for drops. Pasted accounts are looked up on chain, a long list is split into transactions signed in turn, and a drop's list can give each account a claim limit, which can only lower the drop's own (`src/nefty/accessLists.ts`, `src/nefty/holderGates.ts`)
+- ingredients of every shape real recipes use: NFTs of another collection than the recipe's (1,226 ingredients of 914 live blends; a switch above the add buttons loads that collection's templates and schemas), NFTs matched on several attributes at once (362), and, for blends, a time gate (`COOLDOWN_INGREDIENT`): the player shows an NFT of a template, keeps it, and blends again only once a number of seconds has passed since the time a uint64 attribute holds, which blend.nefty rewrites. uncutnefties' blend #37724 ran 1,081,706 times on one, a mining game paying RJUAN about once an hour. The contract refuses any other attribute type, and so does the form (`npm run verify:ingredients`)
+- a blend paying tokens needs a total number of uses: blend.nefty refuses token results on an unlimited blend ("Token results cannot be used with unlimited blends"), and the form says so
 - up.nefty's fee rule: below level.3 of NEFTY staking an upgrade must carry the fixed fee, 0.01 WAX to `fees.nefty`, and one more ingredient, or the contract refuses it; the creator offers the fee line in one click (`src/nefty/upgradeGate.ts`)
 - the RAM a drop mints from: `neftyblocksd` pays for every NFT a claim mints out of RAM the collection deposited (`rambalances`), about 151 bytes each, and refuses every claim once it runs out. Create and Change show the balance, how many claims it covers, and take an optional deposit signed with the drop (a WAX transfer to `neftyblocksd`, memo `deposit_collection_ram:<collection>`; a first one must buy at least 128 bytes). Only claims of the collection's own drops spend it, within each drop's supply, limits and gate, and only its authors can withdraw it. Use a recipe blocks a drop whose collection has none (`src/nefty/dropRam.ts`)
-- Change reads the recipe's own row (`src/nefty/editable.ts`): hidden flags, dates to the second, every display key and the per-wallet cooldown are kept unless touched, and ingredients are edited only when the rows write the list back exactly. It also lists the collection's lists and holder gates, the recipes behind each, and deletes one only when nothing uses it and the chain accepts it
+- Change reads the recipe's own row (`src/nefty/editable.ts`): hidden flags, dates to the second, every display key and the per-wallet cooldown are kept unless touched, and ingredients are edited only when the rows write the list back exactly. That holds for 32,710 of the 32,720 live blends and all 1,167 upgrades: the 10 others use a BALANCE ingredient (9) or one row that would not come back byte for byte (1). It also lists the collection's lists and holder gates, the recipes behind each, and deletes one only when nothing uses it and the chain accepts it
 
 **The attribute question.** An upgrade's `attribute_type` must match what
 the schema declares, and the README's own warning about the classic form
@@ -958,6 +969,8 @@ signed. Each has its suite, run with `npm run <name>`:
 | `verify:waxdao-holdings` | every WaxDAO recovery button, on accounts holding each kind |
 | `verify:signed-recently` | the staking page never asks for the same signature twice |
 | `verify:drop-ram` | a claim without RAM, a first deposit under 128 bytes and a deposit with a claim, each held to the chain's answer, and what Use a recipe says |
+| `verify:ingredients` | every live blend and upgrade through the editor's rows, written back exactly; NFTs of another collection, several attributes and time gates built by the form and held to the chain's answer, its refusals included |
+| `verify:waxdao-drops` | real WaxDAO drop and pack transactions rebuilt field for field; live packs, drops and a drop without RAM held to the chain's answer as real holders; a time gate run as a player |
 | `verify:nefty-leftovers` | every Withdraw and Finish the Staking page offers real holders is accepted, a partly minted pack asks only for its open cards, and each refusal or unanswered draw points to the note that explains it, `retryrand` included |
 | `verify:access-lists` | lists of accounts made, filled and changed, on secure.nefty and neftyblocksd |
 | `verify:holder-gates` | holder rules for blends, upgrades and drops, and deleting a gate |
@@ -1138,6 +1151,8 @@ src/
   waxdao/
     blends.ts          : lists waxdaomarket blends per collection
     blendExecute.ts    : assertblend + slot-indexed transfers
+    drops.ts           : waxdaomarket drops: claim, buy, open a pack
+    holdings.ts        : what WaxDAO holds for a wallet (Staking)
     index.ts           : the facade for this folder
   atomic/
     assets.ts          : lists a user's NFTs from AtomicAssets API
@@ -1246,8 +1261,9 @@ whitelist- and ownership-gated upgrades go through `upgradesec`.
 
 - **Blend ingredients.** Signable: TEMPLATE, SCHEMA, ATTRIBUTE,
   COLLECTION, FT, and BALANCE (an NFT that must hold a token balance,
-  passed in `own_assets`). Not handled: `COOLDOWN_INGREDIENT`, a time gate
-  on an NFT; the recipe says so instead of letting a transaction fail.
+  passed in `own_assets`), and COOLDOWN (a time gate: an NFT of the
+  template, meeting its requirements, rested since the time its uint64
+  attribute holds, kept in `own_assets`).
   The `CHEST_INGREDIENT` the ABI declares has never been used on chain.
 - **Upgrade costs.** Signable: FT, TEMPLATE, SCHEMA, COLLECTION, and
   ATTRIBUTE / TYPED_ATTRIBUTE costs matched the way up.nefty checks them
@@ -1273,6 +1289,10 @@ whitelist- and ownership-gated upgrades go through `upgradesec`.
   and it is empty (`get_abi up.nefty`). Random upgrades are a NeftyBlocks
   extension point that was named and never built; making them work needs
   a contract change by NeftyBlocks, or a different contract.
+- **Creating WaxDAO farms and pools.** Crucible takes back what they
+  hold for players (Staking) and does not create them.
+- **Creating templates and schemas.** Drops mint from templates that
+  already exist; create them on AtomicHub.
 - **What no author can change after creation.** A blend's outcomes
   (`setrolls` takes no `authorized_account`), an upgrade's attribute
   rewrites (no action exists), a drop's templates. Changing those means
@@ -1291,23 +1311,15 @@ Both items from tester feedback on the guided creator are done: the token
 list is read from the contract with type-ahead, and `#/lab` now edits as
 well as creates. What is left:
 
-- **Ingredients the editor cannot write back.** Change edits a blend's or
-  an upgrade's ingredients (`setblendmix`, `setupgrdmix`) only when its
-  rows reproduce the list exactly, because both actions replace the whole
-  list. Three shapes have no row yet, so a recipe that uses one is shown
-  and left untouched: an NFT from another collection than the recipe's,
-  NFTs matched on several attributes at once, and time gates
-  (`COOLDOWN_INGREDIENT`). Supporting them means extending the ingredient
-  editor, and the same rows would let creation offer them too.
+- **Funding a blend that pays tokens.** blend.nefty only creates a blend
+  with token results when the collection has already deposited enough
+  for every use ("The collection does not have enough tokens to meet the
+  blend requirements"). The creator offers the payout and the simulation
+  refuses it; it should read the collection's balance and offer the
+  deposit, as it does for a drop's RAM.
+- **BALANCE ingredients in the editor.** 9 live blends use one; Change
+  shows them read-only.
 
-- **WaxDAO drops and packs.** For players, WaxDAO *blends* are wired, and
-  v2's Staking page takes back what its farms, pools, DAOs, locks and
-  market hold. Its drops, and creating farms or pools, follow the same
-  ABI-driven method and are not built.
-- **Creating templates / schemas.** Drops mint from templates that
-  already exist. Making new templates/schemas (irreversible, riskier)
-  isn't in the app yet. Create them on AtomicHub, then build the drop
-  here.
 - **Other NeftyBlocks contracts** (redemptions, NFT swaps, marketplace
   listings) aren't covered yet, beyond the read-only health cards on
   #/status. PRs welcome.

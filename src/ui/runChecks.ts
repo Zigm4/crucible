@@ -35,7 +35,8 @@ import {
 } from '../nefty/blendLimits';
 import { blendStatusOf, type DiscoveredBlend } from '../nefty/discover';
 import { proofShortfall, type DiscoveredDrop, type ProofFilter } from '../nefty/drops';
-import { bytesPerClaim, readDropRam } from '../nefty/dropRam';
+import { BYTES_PER_MINT, bytesPerClaim, bytesPerWax, readDropRam } from '../nefty/dropRam';
+import { readPackPools, readWaxdaoDropUse, readWaxdaoRam, type DiscoveredWaxdaoDrop } from '../waxdao/drops';
 import type { MarketRef } from '../atomic/atomichub';
 import type { PackDesign } from '../nefty/packs';
 import { proofFor, readSecurityGate, type SecurityGate } from '../nefty/security';
@@ -99,6 +100,14 @@ export interface CheckContext {
   blenderizerRam?: number;
   /** Bytes the collection has on neftyblocksd for its drops to mint with (dropRam.ts). */
   dropRam?: number;
+  /** WAX the collection keeps on waxdaomarket for its drops' RAM; can be negative. */
+  waxdaoRam?: number;
+  /** About how many bytes 1 WAX buys, for the line above. */
+  ramPerWax?: number;
+  /** WaxDAO pack drop id -> what its premint pools still hold; null when unreadable. */
+  packPools?: Map<string, { name: string; left: number }[] | null>;
+  /** WaxDAO drop id -> this account's purchase row, null when it never took one. */
+  waxdaoDropUses?: Map<string, { quantity: number; cooldown_reset: number } | null>;
   /** Balance checks, keyed by tokenCheckKey. */
   tokens: Map<string, TokenCost>;
   /** Reads still on their way, for a "still checking" line. */
@@ -123,6 +132,7 @@ const MINTS: Partial<Record<RecipeSource, string>> = {
   blend: 'blend.nefty',
   upgrade: 'up.nefty',
   drop: 'neftyblocksd',
+  waxdaodrop: 'waxdaomarket',
 };
 
 export const tokenCheckKey = (quantity: string, contract = '') => `${quantity}@${contract}`;
@@ -477,7 +487,7 @@ function waxdaoChecks(b: DiscoveredWaxdaoBlend, ctx: CheckContext): RecipeCheck[
  * WaxDAO's farm gate, as the contract applies it: membership, and for a
  * custodial farm the amount staked. A non-staker's blend is refused.
  */
-function farmCheck(b: DiscoveredWaxdaoBlend, ctx: CheckContext): RecipeCheck {
+function farmCheck(b: { whitelisted_farmname: string; minimum_to_stake: number }, ctx: CheckContext): RecipeCheck {
   const farm = b.whitelisted_farmname || '?';
   const min = b.minimum_to_stake > 0 ? `, at least ${b.minimum_to_stake} staked` : '';
   const stakes = ctx.farmStakes;
@@ -509,6 +519,69 @@ function waxdaoLimitCheck(b: DiscoveredWaxdaoBlend, ctx: CheckContext): RecipeCh
   if (cd <= 0) return { tone: 'block', text: `You used all ${limit}. This one does not reset` };
   const wait = use ? use.cooldown_reset - Date.now() / 1000 : 0;
   return { tone: 'block', text: `You used your ${limit}. Your next one is in ${duration(wait)}, then one every ${duration(cd)}` };
+}
+
+/** A WaxDAO drop's own gates: who may take it, how many, and the RAM a mint needs. */
+function waxdaoDropGates(d: DiscoveredWaxdaoDrop, ctx: CheckContext): RecipeCheck[] {
+  const out: RecipeCheck[] = [];
+  const end = d.end_time > 0 && d.end_time < 4e9 ? toMs(d.end_time) : 0;
+  const st = statusCheck(d.status, toMs(d.start_time), end);
+  if (st) out.push(st);
+  if (d.status !== 'sold_out') out.push(supplyCheck(d.total_left, d.total_available, d.kind === 'pack' ? 'openings' : 'NFTs'));
+  if (d.whitelist_type === 'whitelist' || d.whitelist_type === 'usernames') {
+    out.push(!ctx.actor ? { tone: 'pending', text: 'For listed accounts only. Connect a wallet to check' }
+      : d.allowed_users.includes(ctx.actor) ? { tone: 'ok', text: 'Your account is on its list' }
+        : { tone: 'block', text: 'For listed accounts only, and yours is not one' });
+  } else if (d.whitelist_type === 'farm') {
+    out.push(farmCheck({ whitelisted_farmname: d.farmname, minimum_to_stake: d.minimum_to_stake }, ctx));
+  }
+  if (d.limit_per_user > 0) {
+    const use = ctx.waxdaoDropUses?.get(d.drop_id);
+    // A purchase row counts until its window resets; with no row, nothing was taken.
+    const left = use === undefined ? undefined
+      : use === null || (d.cooldown > 0 && use.cooldown_reset <= Date.now() / 1000) ? d.limit_per_user
+        : Math.max(0, d.limit_per_user - use.quantity);
+    out.push(limitCheck(d.limit_per_user, d.cooldown, ctx.actor ? left : undefined, ctx.actor, use?.cooldown_reset));
+  }
+  return out;
+}
+
+function waxdaoDropChecks(d: DiscoveredWaxdaoDrop, ctx: CheckContext): RecipeCheck[] {
+  const out = waxdaoDropGates(d, ctx);
+  // The price, and whether the wallet holds it, as for any token cost.
+  const reqs = describeRecipe('waxdaodrop', d, ctx.assets, ctx.assetsKnown)?.requirements ?? [];
+  if (!d.price) out.push({ tone: 'ok', text: 'Free' });
+  else out.push(...holdingChecks(reqs, ctx));
+  // waxdaomarket buys the RAM of every mint out of what the collection deposited
+  // with it, and refuses otherwise ("This collection needs to deposit more RAM").
+  if (ctx.waxdaoRam !== undefined && ctx.ramPerWax) {
+    const bytes = ctx.waxdaoRam * ctx.ramPerWax;
+    if (bytes < BYTES_PER_MINT) {
+      out.push({ tone: 'block', text: `${d.collection} has ${ctx.waxdaoRam <= 0 ? 'no' : 'too little'} RAM left on waxdaomarket to mint with: nobody can claim until its author deposits some` });
+    }
+  }
+  const auth = authCheck(ctx, 'waxdaodrop', d.collection);
+  if (auth) out.push(auth);
+  return out;
+}
+
+function waxdaoPackChecks(d: DiscoveredWaxdaoDrop, ctx: CheckContext): RecipeCheck[] {
+  const out = waxdaoDropGates(d, ctx);
+  const pools = ctx.packPools?.get(d.drop_id);
+  if (pools === undefined) out.push({ tone: 'pending', text: 'Reading what its pool holds' });
+  else if (pools === null) out.push({ tone: 'pending', text: 'What its pool holds could not be read' });
+  else {
+    const left = pools.reduce((n, p) => n + p.left, 0);
+    out.push(left > 0 ? { tone: 'info', text: `${left} NFT${left === 1 ? '' : 's'} left to draw from ${pools.map((p) => p.name).join(', ')}` }
+      : { tone: 'block', text: 'Its pool is empty: there is nothing left to draw, so the opening would be refused' });
+  }
+  const reqs = describeRecipe('waxdaopack', d, ctx.assets, ctx.assetsKnown)?.requirements ?? [];
+  const pack = reqs[0];
+  if (!ctx.actor) out.push({ tone: 'pending', text: 'Connect a wallet to see your packs' });
+  else if (!ctx.assetsKnown || pack?.have === undefined) out.push({ tone: 'pending', text: 'Reading your NFTs' });
+  else if (pack.have > 0) out.push({ tone: 'ok', text: `You own ${pack.have}` });
+  else out.push({ tone: 'warn', text: 'You do not own this pack' });
+  return out;
 }
 
 function blenderizerChecks(b: DiscoveredBlenderizerBlend, ctx: CheckContext): RecipeCheck[] {
@@ -547,6 +620,8 @@ export function checksFor(choice: RecipeChoice, ctx: CheckContext): RecipeCheck[
   const raw = choice.raw;
   switch (choice.source) {
     case 'drop': return dropChecks(raw as DiscoveredDrop, ctx);
+    case 'waxdaodrop': return waxdaoDropChecks(raw as DiscoveredWaxdaoDrop, ctx);
+    case 'waxdaopack': return waxdaoPackChecks(raw as DiscoveredWaxdaoDrop, ctx);
     case 'blend': return blendChecks(raw as DiscoveredBlend, ctx);
     case 'upgrade': return upgradeChecks(raw as DiscoveredUpgrade, ctx);
     case 'waxdao': return waxdaoChecks(raw as DiscoveredWaxdaoBlend, ctx);
@@ -694,6 +769,27 @@ export async function loadCheckContext(
   }
   if (choices.some((c) => c.source === 'drop') && ctx.dropRam === undefined) {
     track(readDropRam(collection).then((r) => { ctx.dropRam = r.bytes; }));
+  }
+  if (choices.some((c) => c.source === 'waxdaodrop') && ctx.waxdaoRam === undefined) {
+    track(Promise.all([readWaxdaoRam(collection), bytesPerWax()]).then(([wax, perWax]) => {
+      ctx.waxdaoRam = wax;
+      ctx.ramPerWax = perWax;
+    }));
+  }
+  const packs = choices.filter((c) => c.source === 'waxdaopack');
+  if (packs.length) {
+    ctx.packPools ??= new Map();
+    for (const c of packs.filter((x) => !ctx.packPools!.has(x.id))) {
+      track(readPackPools((c.raw as DiscoveredWaxdaoDrop).pools).then((p) => { ctx.packPools!.set(c.id, p ?? null); }));
+    }
+  }
+  if (actor) {
+    ctx.waxdaoDropUses ??= new Map();
+    const limited = choices.filter((c) => (c.source === 'waxdaodrop' || c.source === 'waxdaopack')
+      && (c.raw as DiscoveredWaxdaoDrop).limit_per_user > 0 && !ctx.waxdaoDropUses!.has(c.id));
+    for (const c of limited.slice(0, 12)) {
+      track(readWaxdaoDropUse(c.id, actor).then((u) => { ctx.waxdaoDropUses!.set(c.id, u ?? null); }));
+    }
   }
 
   if (actor) {

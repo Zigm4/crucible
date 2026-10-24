@@ -269,7 +269,7 @@ function shown(c: RecipeChoice, v: RecipeVerdict, e: CatalogEntry | undefined): 
 function renderCard(s: Shelf, c: RecipeChoice, v: RecipeVerdict): string {
   const e = s.entries.get(keyOf(c));
   // Where it runs, when that is not the NeftyBlocks contract one would assume.
-  const where = c.source === 'waxdao' || c.source === 'blenderizer' ? ` · ${SOURCE_INFO[c.source].platform}` : '';
+  const where = /^(WaxDAO|Blenderizer)/.test(SOURCE_INFO[c.source].platform) ? ` · ${SOURCE_INFO[c.source].platform}` : '';
   const kind = KIND_WORD[actionOf(c.source)] + where;
   const verdict = headline(v);
   // The frame is always there, with the kind's initial behind the picture:

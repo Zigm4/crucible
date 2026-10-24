@@ -24,7 +24,9 @@
     "verify:holder-gates": "npm run build:verify && node scripts/verify-holder-gates.mjs",
     "verify:signed-recently": "npm run build:verify && node scripts/verify-signed-recently.mjs",
     "verify:drop-ram": "npm run build:verify && node scripts/verify-drop-ram.mjs",
-    "verify:nefty-leftovers": "npm run build:verify && node scripts/verify-nefty-leftovers.mjs"
+    "verify:nefty-leftovers": "npm run build:verify && node scripts/verify-nefty-leftovers.mjs",
+    "verify:ingredients": "npm run build:verify && node scripts/verify-ingredients.mjs",
+    "verify:waxdao-drops": "npm run build:verify && node scripts/verify-waxdao-drops.mjs"
   },
   "dependencies": {
     "@wharfkit/session": "^4.0.2",
