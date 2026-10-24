@@ -32,7 +32,7 @@ import {
   type CollectionStake, type CollectionRefund,
 } from '../nefty/staking';
 import { levelGrants, UPGRADE_FEATURE } from '../nefty/upgradeGate';
-import { getTableRows } from '../chain/rpc';
+import { getTableRows, retrying } from '../chain/rpc';
 
 /** Pools with a row in `stakerewards`, read rather than assumed. */
 export interface RewardPool {
@@ -309,13 +309,15 @@ export async function loadStaking(state: StakingState, actor: string): Promise<v
   state.collections = [];
   state.collectionRefunds = [];
   state.error = '';
+  // What holds this wallet's stake is asked again when it fails, and thrown
+  // when it still does: the page then says it could not read, not "nothing".
   const [positions, refunds, pools, delay, collections, collectionRefunds] = await Promise.all([
-    readStakePositions(actor),
-    readStakeRefunds(actor),
+    retrying(() => readStakePositions(actor)),
+    retrying(() => readStakeRefunds(actor)),
     readRewardPools(),
     readRefundDelay(),
-    readCollectionStakes(actor),
-    readCollectionRefunds(actor),
+    retrying(() => readCollectionStakes(actor)),
+    retrying(() => readCollectionRefunds(actor)),
   ]);
   if (state.actor !== actor) return;   // a wallet switch landed meanwhile
   state.positions = positions;

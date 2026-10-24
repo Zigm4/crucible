@@ -87,52 +87,51 @@ function symbolCode(raw: unknown): string {
  * call and means a pool added later is found instead of missed.
  */
 export async function readStakeScopes(): Promise<string[]> {
-  try {
-    const rows = await getTableByScope({ code: STAKE, table: 'stakers', limit: 50 });
-    return rows.map((r: { scope: string }) => r.scope);
-  } catch {
-    return [];
-  }
+  const rows = await getTableByScope({ code: STAKE, table: 'stakers', limit: 50 });
+  return rows.map((r: { scope: string }) => r.scope);
 }
 
-/** Every pool this account has a position in, across all of them. */
+/**
+ * Every pool this account has a position in, across all of them.
+ *
+ * This and the readers of refunds and collection stakes throw when a read
+ * fails rather than answer empty: an empty answer reads as "nothing staked"
+ * on the page. ui/stakingView asks again (chain/rpc retrying).
+ */
 export async function readStakePositions(actor: string): Promise<StakePosition[]> {
-  if (!actor) return [];
+  // A name no account can have holds nothing; the node would refuse it as a bound.
+  if (!/^[a-z1-5.]{1,12}$/.test(actor)) return [];
   const scopes = await readStakeScopes();
   const found = await Promise.all(scopes.map(async (scope) => {
-    try {
-      const rows = await getTableRows<{
-        account: string; staked: string; refunding: string; rewards: string;
-      }>({
-        code: STAKE,
-        scope,
-        table: 'stakers',
-        // Without key_type the node reads a numeric-looking account as an
-        // integer, the same trap the name auctions hit.
-        lower_bound: actor,
-        upper_bound: actor,
-        key_type: 'name',
-        limit: 1,
-      });
-      const r = rows[0];
-      if (!r || String(r.account) !== actor) return undefined;
-      const staked = parseAsset(r.staked);
-      const refunding = parseAsset(r.refunding);
-      const rewards = parseAsset(r.rewards);
-      return {
-        scope,
-        stakedSymbol: staked.symbol,
-        stakedSymbolCode: symbolCode(r.staked),
-        staked: staked.amount,
-        refunding: refunding.amount,
-        rewards: rewards.amount,
-        rewardsSymbol: rewards.symbol,
-        stakedRaw: String(r.staked),
-        rewardsRaw: String(r.rewards),
-      } satisfies StakePosition;
-    } catch {
-      return undefined;
-    }
+    const rows = await getTableRows<{
+      account: string; staked: string; refunding: string; rewards: string;
+    }>({
+      code: STAKE,
+      scope,
+      table: 'stakers',
+      // Without key_type the node reads a numeric-looking account as an
+      // integer, the same trap the name auctions hit.
+      lower_bound: actor,
+      upper_bound: actor,
+      key_type: 'name',
+      limit: 1,
+    });
+    const r = rows[0];
+    if (!r || String(r.account) !== actor) return undefined;
+    const staked = parseAsset(r.staked);
+    const refunding = parseAsset(r.refunding);
+    const rewards = parseAsset(r.rewards);
+    return {
+      scope,
+      stakedSymbol: staked.symbol,
+      stakedSymbolCode: symbolCode(r.staked),
+      staked: staked.amount,
+      refunding: refunding.amount,
+      rewards: rewards.amount,
+      rewardsSymbol: rewards.symbol,
+      stakedRaw: String(r.staked),
+      rewardsRaw: String(r.rewards),
+    } satisfies StakePosition;
   }));
   return found.filter((p): p is StakePosition => !!p);
 }
@@ -146,32 +145,28 @@ export async function readStakePositions(actor: string): Promise<StakePosition[]
  */
 export async function readStakeRefunds(actor: string): Promise<StakeRefund[]> {
   if (!actor) return [];
-  try {
-    const rows = await getTableRows<{
-      id: number | string;
-      user: string;
-      refunding: { quantity: string; contract: string };
-      unlock_time: number | string;
-    }>({ code: STAKE, scope: STAKE, table: 'usrrefund', limit: 1000 });
-    const now = Date.now() / 1000;
-    return rows
-      .filter((r) => String(r.user) === actor)
-      .map((r) => {
-        const a = parseAsset(r.refunding?.quantity);
-        const unlockTime = Number(r.unlock_time) || 0;
-        return {
-          id: Number(r.id),
-          quantity: String(r.refunding?.quantity ?? ''),
-          amount: a.amount,
-          symbol: a.symbol,
-          contract: String(r.refunding?.contract ?? ''),
-          unlockTime,
-          ready: unlockTime <= now,
-        };
-      });
-  } catch {
-    return [];
-  }
+  const rows = await getTableRows<{
+    id: number | string;
+    user: string;
+    refunding: { quantity: string; contract: string };
+    unlock_time: number | string;
+  }>({ code: STAKE, scope: STAKE, table: 'usrrefund', limit: 1000 });
+  const now = Date.now() / 1000;
+  return rows
+    .filter((r) => String(r.user) === actor)
+    .map((r) => {
+      const a = parseAsset(r.refunding?.quantity);
+      const unlockTime = Number(r.unlock_time) || 0;
+      return {
+        id: Number(r.id),
+        quantity: String(r.refunding?.quantity ?? ''),
+        amount: a.amount,
+        symbol: a.symbol,
+        contract: String(r.refunding?.contract ?? ''),
+        unlockTime,
+        ready: unlockTime <= now,
+      };
+    });
 }
 
 /**
@@ -254,35 +249,31 @@ async function readCollectionRows(): Promise<{
 /** The collections this wallet staked for, whatever is left on them. */
 export async function readCollectionStakes(actor: string): Promise<CollectionStake[]> {
   if (!actor) return [];
-  try {
-    const rows = await readCollectionRows();
-    return rows
-      .filter((r) => String(r.author ?? '') === actor)
-      .map((r) => {
-        // stakings is a vector, though every live row holds exactly one
-        // entry and every one of them is NEFTY on token.nefty. Taking the
-        // first is honest for what exists; summing across different
-        // symbols would invent a number.
-        const st = (r.stakings ?? [])[0];
-        const rf = (r.refundings ?? [])[0];
-        const a = parseAsset(st?.quantity);
-        return {
-          collection: String(r.collection_name),
-          author: String(r.author ?? ''),
-          level: String(r.stakinglevel ?? ''),
-          staked: a.amount,
-          stakedRaw: String(st?.quantity ?? ''),
-          stakedSymbol: a.symbol,
-          stakedSymbolCode: symbolCode(String(st?.quantity ?? '')),
-          tokenContract: String(st?.contract ?? ''),
-          refunding: parseAsset(rf?.quantity).amount,
-          refundingRaw: String(rf?.quantity ?? ''),
-        } satisfies CollectionStake;
-      })
-      .filter((c) => c.staked > 0 || c.refunding > 0);
-  } catch {
-    return [];
-  }
+  const rows = await readCollectionRows();
+  return rows
+    .filter((r) => String(r.author ?? '') === actor)
+    .map((r) => {
+      // stakings is a vector, though every live row holds exactly one
+      // entry and every one of them is NEFTY on token.nefty. Taking the
+      // first is honest for what exists; summing across different
+      // symbols would invent a number.
+      const st = (r.stakings ?? [])[0];
+      const rf = (r.refundings ?? [])[0];
+      const a = parseAsset(st?.quantity);
+      return {
+        collection: String(r.collection_name),
+        author: String(r.author ?? ''),
+        level: String(r.stakinglevel ?? ''),
+        staked: a.amount,
+        stakedRaw: String(st?.quantity ?? ''),
+        stakedSymbol: a.symbol,
+        stakedSymbolCode: symbolCode(String(st?.quantity ?? '')),
+        tokenContract: String(st?.contract ?? ''),
+        refunding: parseAsset(rf?.quantity).amount,
+        refundingRaw: String(rf?.quantity ?? ''),
+      } satisfies CollectionStake;
+    })
+    .filter((c) => c.staked > 0 || c.refunding > 0);
 }
 
 /**
@@ -299,37 +290,33 @@ export async function readCollectionStakes(actor: string): Promise<CollectionSta
  */
 export async function readCollectionRefunds(actor: string): Promise<CollectionRefund[]> {
   if (!actor) return [];
-  try {
-    const [rows, colls] = await Promise.all([
-      getTableRows<{
-        id: number | string; collection_name: string;
-        refunding: { quantity: string; contract: string };
-        unlock_time: number | string;
-      }>({ code: STAKE, scope: STAKE, table: 'colrefund', limit: 1000 }),
-      readCollectionRows(),
-    ]);
-    const authorOf = new Map(colls.map((c) => [String(c.collection_name), String(c.author ?? '')]));
-    const now = Date.now() / 1000;
-    return rows
-      .filter((r) => authorOf.get(String(r.collection_name)) === actor)
-      .map((r) => {
-        const a = parseAsset(r.refunding?.quantity);
-        const unlockTime = Number(r.unlock_time) || 0;
-        return {
-          id: Number(r.id),
-          collection: String(r.collection_name),
-          author: actor,
-          quantity: String(r.refunding?.quantity ?? ''),
-          amount: a.amount,
-          symbol: a.symbol,
-          contract: String(r.refunding?.contract ?? ''),
-          unlockTime,
-          ready: unlockTime <= now,
-        } satisfies CollectionRefund;
-      });
-  } catch {
-    return [];
-  }
+  const [rows, colls] = await Promise.all([
+    getTableRows<{
+      id: number | string; collection_name: string;
+      refunding: { quantity: string; contract: string };
+      unlock_time: number | string;
+    }>({ code: STAKE, scope: STAKE, table: 'colrefund', limit: 1000 }),
+    readCollectionRows(),
+  ]);
+  const authorOf = new Map(colls.map((c) => [String(c.collection_name), String(c.author ?? '')]));
+  const now = Date.now() / 1000;
+  return rows
+    .filter((r) => authorOf.get(String(r.collection_name)) === actor)
+    .map((r) => {
+      const a = parseAsset(r.refunding?.quantity);
+      const unlockTime = Number(r.unlock_time) || 0;
+      return {
+        id: Number(r.id),
+        collection: String(r.collection_name),
+        author: actor,
+        quantity: String(r.refunding?.quantity ?? ''),
+        amount: a.amount,
+        symbol: a.symbol,
+        contract: String(r.refunding?.contract ?? ''),
+        unlockTime,
+        ready: unlockTime <= now,
+      } satisfies CollectionRefund;
+    });
 }
 
 /** How long the contract makes an unstake wait, read rather than assumed. */

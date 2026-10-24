@@ -35,7 +35,7 @@
  * still waiting for its only ingredient, with no asset in it.
  */
 import type { BuiltAction } from '../chain/action';
-import { atomicFetch, getTableRows, withFailover } from '../chain/rpc';
+import { atomicFetch, getTableRows, retrying, withFailover } from '../chain/rpc';
 import { simulateActions } from '../chain/simulate';
 
 export type HoldingGroup = 'nft-farm' | 'nft-farm-v2' | 'token-pool' | 'token-farm' | 'dao' | 'lock' | 'backer' | 'market';
@@ -65,9 +65,13 @@ const day = (t: number) => new Date(t * 1000).toLocaleDateString();
 /** How many farms one unstake transaction takes: 8 went through in one, as a real holder. */
 export const FARMS_PER_TRANSACTION = 8;
 
+/**
+ * The rows of one account, through an index. Asked again when every node
+ * failed, and thrown when it still fails: an empty answer here is read as
+ * "nothing staked", or a farm as deleted.
+ */
 async function byIndex<T>(code: string, table: string, index: 'primary' | 'secondary' | 'tertiary', who: string, scope = code): Promise<T[]> {
-  return getTableRows<T>({ code, scope, table, index_position: index, key_type: 'name', lower_bound: who, upper_bound: who, limit: 500 })
-    .catch(() => [] as T[]);
+  return retrying(() => getTableRows<T>({ code, scope, table, index_position: index, key_type: 'name', lower_bound: who, upper_bound: who, limit: 500 }));
 }
 
 const coded = new Map<string, Promise<boolean>>();
@@ -92,7 +96,7 @@ const openable = new Map<string, Promise<boolean>>();
 /** Whether a token contract has the standard `open(owner, symbol, ram_payer)`. */
 function hasOpen(contract: string): Promise<boolean> {
   if (!openable.has(contract)) {
-    openable.set(contract, withFailover((c) => c.v1.chain.get_abi(contract))
+    openable.set(contract, retrying(() => withFailover((c) => c.v1.chain.get_abi(contract)))
       .then((r) => {
         const a = r.abi?.actions.find((x) => String(x.name) === 'open');
         const s = a && r.abi?.structs.find((x) => x.name === String(a.type));
@@ -115,7 +119,9 @@ async function opensFor(actor: string, tokens: { contract: string; symbol: strin
     const k = `${t.contract}:${t.symbol}`;
     if (!t.contract || !t.symbol || seen.has(k)) continue;
     seen.add(k);
-    const rows = await withFailover((c) => c.v1.chain.get_currency_balance(t.contract, actor, t.symbol)).catch(() => undefined);
+    // Asked again before giving up: a balance left unread means no `open`,
+    // and the payout is then refused ("you need to use the 'open' action").
+    const rows = await retrying(() => withFailover((c) => c.v1.chain.get_currency_balance(t.contract, actor, t.symbol))).catch(() => undefined);
     if (!rows || rows.length || !(await hasOpen(t.contract))) continue;
     out.push(act(t.contract, 'open', actor, { owner: actor, symbol: `${t.precision},${t.symbol}`, ram_payer: actor }));
   }
@@ -141,8 +147,8 @@ async function heldBy(contract: string, ids: string[]): Promise<Set<string>> {
   for (let i = 0; i < pages.length; i += OWNER_PAGES_AT_ONCE) {
     await Promise.all(pages.slice(i, i + OWNER_PAGES_AT_ONCE).map(async (page) => {
       try {
-        const rows = await atomicFetch<{ asset_id: string; owner: string | null }[]>(
-          `/atomicassets/v1/assets?ids=${page.join(',')}&limit=100`);
+        const rows = await retrying(() => atomicFetch<{ asset_id: string; owner: string | null }[]>(
+          `/atomicassets/v1/assets?ids=${page.join(',')}&limit=100`));
         for (const a of rows ?? []) if (a.owner === contract) out.add(String(a.asset_id));
       } catch { /* unknown stays out: nothing is offered that could not be shown */ }
     }));
@@ -167,24 +173,27 @@ export async function readWaxdaoHoldings(actor: string): Promise<WaxdaoHolding[]
     byIndex<StakeRow>('waxdaofarmer', 'stakebackup', 'secondary', actor),
     byIndex<PoolRow>('waxdaofarmer', 'tokens', 'secondary', actor),
     byIndex<FarmV2Row>('farms.waxdao', 'stakers', 'tertiary', actor),
-    getTableRows<TokenFarmRow>({ code: 'tf.waxdao', scope: actor, table: 'stakers', limit: 200 }).catch(() => [] as TokenFarmRow[]),
-    getTableRows<DaoStakeRow>({ code: 'dao.waxdao', scope: actor, table: 'stakedtokens', limit: 200 }).catch(() => [] as DaoStakeRow[]),
+    retrying(() => getTableRows<TokenFarmRow>({ code: 'tf.waxdao', scope: actor, table: 'stakers', limit: 200 })),
+    retrying(() => getTableRows<DaoStakeRow>({ code: 'dao.waxdao', scope: actor, table: 'stakedtokens', limit: 200 })),
     byIndex<LockRow>('waxdaolocker', 'locks', 'tertiary', actor),
     byIndex<BackerRow>('waxdaobacker', 'balances', 'primary', actor),
     byIndex<{ user: string; balance: string }>('waxdaomarket', 'userram', 'secondary', actor),
     byIndex<{ owner: string; collection: string; balance: string }>('waxdaomarket', 'rambalances', 'tertiary', actor),
     byIndex<{ ID: number | string; user: string; collection: string; display_name: string; assets: (string | number)[]; status: string }>('waxdaomarket', 'premintpools', 'secondary', actor),
-    getTableRows<{ balance: string; contract: string }>({ code: 'waxdaomarket', scope: actor, table: 'tokenbalance', limit: 200 }).catch(() => [] as { balance: string; contract: string }[]),
+    retrying(() => getTableRows<{ balance: string; contract: string }>({ code: 'waxdaomarket', scope: actor, table: 'tokenbalance', limit: 200 })),
   ]);
 
   // NFT farms v1: the NFTs the contract still holds, and the rewards.
   const mine = farms.filter((r) => String(r.username) === actor);
   const held = await heldBy('waxdaofarmer', mine.flatMap((r) => r.assets.map(String)));
-  // Each farm names its reward token; a deleted farm has no row, and the
-  // contract then refuses anything for it ("This farm does not exist").
+  // Each farm names its reward token, read by the farm's own key; a deleted
+  // farm has no row, and the contract then refuses anything for it ("This
+  // farm does not exist"). A read that fails is thrown, never taken for a
+  // deleted farm.
   const farmRows = new Map(await Promise.all(mine.map(async (r) => [r.farmname,
-    (await byIndex<{ farmname: string; rewardtoken: string; contract: string; poolsize: string }>('waxdaofarmer', 'farms', 'secondary', r.farmname))
-      .find((f) => f.farmname === r.farmname)] as const)));
+    (await retrying(() => getTableRows<{ farmname: string; rewardtoken: string; contract: string; poolsize: string }>({
+      code: 'waxdaofarmer', scope: 'waxdaofarmer', table: 'farms', lower_bound: r.farmname, upper_bound: r.farmname, limit: 1,
+    }))).find((f) => f.farmname === r.farmname)] as const)));
   // In parallel: a big wallet sits in thirty farms, and each one is a few reads.
   const farmHoldings = await Promise.all(mine.map(async (r): Promise<WaxdaoHolding | undefined> => {
     const nfts = r.assets.map(String).filter((a) => held.has(a));
@@ -246,7 +255,8 @@ export async function readWaxdaoHoldings(actor: string): Promise<WaxdaoHolding[]
     out.push({
       key: `farmv2:${r.farmname}`, group: 'nft-farm-v2', contract: 'farms.waxdao',
       title: `Rewards in ${r.farmname}`,
-      detail: `${claim.map((c) => c.quantity).join(' + ')} to claim. The ${r.asset_ids.length} NFT${r.asset_ids.length === 1 ? '' : 's'} staked here never left your wallet.`,
+      detail: `${claim.map((c) => c.quantity).join(' + ')} to claim.${r.asset_ids.length
+        ? ` The ${r.asset_ids.length} NFT${r.asset_ids.length === 1 ? '' : 's'} staked here never left your wallet.` : ''}`,
       actions: [{ label: 'Claim', build: [...await opensFor(actor, claim.map((c) => tokenOf(c.quantity, c.contract))),
         act('farms.waxdao', 'claim', actor, { user: actor, farmname: r.farmname })] }],
     });

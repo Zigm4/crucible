@@ -40,7 +40,7 @@
  */
 import { isContractAuthorized } from '../atomic/collections';
 import type { BuiltAction } from '../chain/action';
-import { getTableRows } from '../chain/rpc';
+import { getTableRows, retrying } from '../chain/rpc';
 import { simulateActions } from '../chain/simulate';
 import { loadBlend } from '../nefty/blend';
 import { buildNeftyUnboxClaim } from '../nefty/neftyPackExecute';
@@ -139,46 +139,43 @@ async function blendPending(row: BlendClaimRow): Promise<PendingFinish> {
 /**
  * Everything this account signed the first half of and never finished.
  * Three indexed reads, plus one per pending atomicpacksx pack for its draw.
+ * Each is asked again when it fails, and thrown when it still does: a pack
+ * left out, or one whose draw could not be read, would say "nothing to
+ * finish" or "not drawn yet" when it is neither.
  */
 export async function readPendingFinishes(actor: string): Promise<PendingFinish[]> {
   const out: PendingFinish[] = [];
-  const [blends, packs, nefty] = await Promise.allSettled([
-    getTableRows<BlendClaimRow>({ code: 'blend.nefty', scope: actor, table: 'claimassets', limit: PENDING_LIMIT }),
-    getTableRows<{ pack_asset_id: string | number; pack_id: string | number; unboxer: string }>({
+  const [blends, packs, nefty] = await Promise.all([
+    retrying(() => getTableRows<BlendClaimRow>({ code: 'blend.nefty', scope: actor, table: 'claimassets', limit: PENDING_LIMIT })),
+    retrying(() => getTableRows<{ pack_asset_id: string | number; pack_id: string | number; unboxer: string }>({
       code: 'atomicpacksx', scope: 'atomicpacksx', table: 'unboxpacks',
       index_position: 'secondary', key_type: 'name', lower_bound: actor, upper_bound: actor, limit: PENDING_LIMIT,
-    }),
-    getTableRows<BlendClaimRow>({
+    })),
+    retrying(() => getTableRows<BlendClaimRow>({
       code: 'neftyblocksp', scope: 'neftyblocksp', table: 'claimassets',
       index_position: 'secondary', key_type: 'name', lower_bound: actor, upper_bound: actor, limit: PENDING_LIMIT,
-    }),
+    })),
   ]);
-  if (blends.status === 'fulfilled') {
-    for (const r of blends.value) out.push(await blendPending(r));
+  for (const r of blends) out.push(await blendPending(r));
+  for (const p of packs.filter((x) => x.unboxer === actor)) {
+    const rows = await retrying(() => getTableRows<{ origin_roll_id: number | string; template_id: number }>({
+      code: 'atomicpacksx', scope: String(p.pack_asset_id), table: 'unboxassets', limit: 200,
+    }));
+    rows.sort((a, b) => Number(a.origin_roll_id) - Number(b.origin_roll_id));
+    out.push({
+      kind: 'pack', id: String(p.pack_asset_id), recipe: String(p.pack_id), collection: '',
+      drawn: rows.map((r) => Number(r.template_id)), ready: rows.length > 0,
+      rollIds: rows.map((r) => r.origin_roll_id),
+    });
   }
-  if (packs.status === 'fulfilled') {
-    for (const p of packs.value.filter((x) => x.unboxer === actor)) {
-      const rows = await getTableRows<{ origin_roll_id: number | string; template_id: number }>({
-        code: 'atomicpacksx', scope: String(p.pack_asset_id), table: 'unboxassets', limit: 200,
-      }).catch(() => []);
-      rows.sort((a, b) => Number(a.origin_roll_id) - Number(b.origin_roll_id));
-      out.push({
-        kind: 'pack', id: String(p.pack_asset_id), recipe: String(p.pack_id), collection: '',
-        drawn: rows.map((r) => Number(r.template_id)), ready: rows.length > 0,
-        rollIds: rows.map((r) => r.origin_roll_id),
-      });
-    }
-  }
-  if (nefty.status === 'fulfilled') {
-    for (const r of nefty.value.filter((x) => x.recipient === actor)) {
-      const open = (r.claims ?? []).map((c, i) => ({ c, i })).filter(({ c }) => !Number(c?.is_claimed ?? 0));
-      const drawn = templatesOf(open.map(({ c }) => c));
-      out.push({
-        kind: 'neftypack', id: String(r.claim_id), recipe: String(r.recipe_id),
-        collection: String(r.collection_name), drawn, ready: drawn.length > 0, rollCount: drawn.length,
-        rollIndexes: open.map(({ i }) => i),
-      });
-    }
+  for (const r of nefty.filter((x) => x.recipient === actor)) {
+    const open = (r.claims ?? []).map((c, i) => ({ c, i })).filter(({ c }) => !Number(c?.is_claimed ?? 0));
+    const drawn = templatesOf(open.map(({ c }) => c));
+    out.push({
+      kind: 'neftypack', id: String(r.claim_id), recipe: String(r.recipe_id),
+      collection: String(r.collection_name), drawn, ready: drawn.length > 0, rollCount: drawn.length,
+      rollIndexes: open.map(({ i }) => i),
+    });
   }
   await markBlocked(out);
   await markRefused(out, actor);

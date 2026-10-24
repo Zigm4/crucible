@@ -34,7 +34,7 @@
  *     permission, so the cards say what they would sign.
  */
 import type { BuiltAction } from '../chain/action';
-import { atomicFetch, getTableRows } from '../chain/rpc';
+import { atomicFetch, getTableRows, retrying } from '../chain/rpc';
 import {
   PENDING_LIMIT, readPendingFinishes, buildFinishActions, type BlockedBy, type FinishKind, type PendingFinish,
 } from '../ui/runFinish';
@@ -111,9 +111,9 @@ const act = (account: string, name: string, actor: string, data: Record<string, 
   ({ account, name, authorization: auth(actor), data });
 const positive = (q: string) => parseFloat(q) > 0;
 
-/** The row keyed by this account, or none. */
+/** The row keyed by this account, or none. A read that fails is asked again, then thrown. */
 async function own<T>(code: string, table: string, actor: string): Promise<T | undefined> {
-  const rows = await getTableRows<T & { owner: string }>({ code, scope: code, table, lower_bound: actor, upper_bound: actor, limit: 1 });
+  const rows = await retrying(() => getTableRows<T & { owner: string }>({ code, scope: code, table, lower_bound: actor, upper_bound: actor, limit: 1 }));
   return rows.find((r) => String(r.owner) === actor);
 }
 
@@ -175,7 +175,7 @@ async function finishes(actor: string): Promise<NeftyLeftover[]> {
 /** Draws still waiting for the oracle, for this account. Small tables, read whole. */
 async function draws(actor: string): Promise<NeftyLeftover[]> {
   const read = <T>(code: string, table: string) =>
-    getTableRows<T>({ code, scope: code, table, limit: 500 }).catch(() => [] as T[]);
+    retrying(() => getTableRows<T>({ code, scope: code, table, limit: 500 }));
   const [b1, b2, p1] = await Promise.all([
     read<{ claim_id: string | number; collection_name: string; recipe_id: string | number; recipient: string }>('blend.nefty', 'orngjobs'),
     read<{ job_id: string | number; collection_name: string; recipe_id: string | number; claims: { claim_id: string | number; recipient: string }[] }>('blend.nefty', 'orngjobs2'),
@@ -205,8 +205,8 @@ async function held(actor: string): Promise<NeftyLeftover[]> {
   try {
     const pages = [];
     for (let i = 0; i < ids.length; i += 100) pages.push(ids.slice(i, i + 100));
-    const found = await Promise.all(pages.map((page) => atomicFetch<{ asset_id: string; owner: string | null }[]>(
-      `/atomicassets/v1/assets?ids=${page.join(',')}&limit=100`)));
+    const found = await Promise.all(pages.map((page) => retrying(() => atomicFetch<{ asset_id: string; owner: string | null }[]>(
+      `/atomicassets/v1/assets?ids=${page.join(',')}&limit=100`))));
     still = found.flat().filter((a) => a.owner === 'blend.nefty').length;
   } catch { /* unreadable: say what the row lists */ }
   if (!still) return [];
@@ -217,10 +217,11 @@ async function held(actor: string): Promise<NeftyLeftover[]> {
   }];
 }
 
-/** Everything above, for one account. A read that fails leaves its part out rather than the whole. */
+/**
+ * Everything above, for one account. A part that cannot be read fails the
+ * whole: shown without it, the page would say "nothing here" for what it
+ * never read.
+ */
 export async function readNeftyLeftovers(actor: string): Promise<NeftyLeftover[]> {
-  const parts = await Promise.allSettled([deposits(actor), finishes(actor), draws(actor), held(actor)]);
-  const failed = parts.filter((p) => p.status === 'rejected');
-  if (failed.length === parts.length) throw (failed[0] as PromiseRejectedResult).reason;
-  return parts.flatMap((p) => (p.status === 'fulfilled' ? p.value : []));
+  return (await Promise.all([deposits(actor), finishes(actor), draws(actor), held(actor)])).flat();
 }

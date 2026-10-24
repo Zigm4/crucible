@@ -101,6 +101,26 @@ export async function withFailover<T>(
   );
 }
 
+/**
+ * Asks again, a little later, when every endpoint failed: under load a read
+ * fails for a moment and answers the next time. What still fails is thrown,
+ * never turned into an empty answer, because "nothing here" must mean the
+ * chain said so. On 2026-10-24 a scan of 783 wallets that swallowed such
+ * failures called 116 farms deleted; every one of them was there.
+ */
+export async function retrying<T>(fn: () => Promise<T>, tries = 3): Promise<T> {
+  let last: unknown;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      if (i < tries - 1) await new Promise((r) => setTimeout(r, 600 * (i + 1)));
+    }
+  }
+  throw last;
+}
+
 export interface GetTableRowsArgs {
   code: string;
   scope: string;
