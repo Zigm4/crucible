@@ -39,6 +39,8 @@ export default defineConfig({
         accessLists: 'src/nefty/accessLists.ts',
         editable: 'src/nefty/editable.ts',
         holderGates: 'src/nefty/holderGates.ts',
+        stake: 'src/v2/stake.ts',
+        signedRecently: 'src/v2/signedRecently.ts',
       },
       formats: ['es'],
     },

@@ -25,7 +25,8 @@
  *   #/nefty/blend/43444       a classic recipe link, opened in #/use
  *   #/stake                   getting tokens out of stake.nefty (stake.ts); the
  *                             classic #/nefty/stake lands here
- *   #/status                  a page v2 does not have yet, with a link to it
+ *   #/guide/<section>         the user guide (guide.ts), on that section
+ *   #/status/<account>        the contract monitor (status.ts), on that contract
  *
  * The Crucible Contracts preview is not part of v2: embedLab() removes it,
  * and a link to it lands on the home.
@@ -40,12 +41,16 @@ import { attachMediaFallbacks } from '../ui/media';
 import { captureRenderSnapshot, restoreRenderSnapshot } from '../ui/renderSnapshot';
 import { attachExploreHandlers, renderExplore } from './explore';
 import { attachStakeHandlers, renderStake } from './stake';
+import { renderGuide, scrollGuide } from './guide';
+import { attachStatusHandlers, renderStatus, scrollStatus } from './status';
 
 type Route =
   | { page: 'home' }
   | { page: 'tool'; tool: OpenableTool; subject: string }
   | { page: 'explore'; collection: string }
   | { page: 'stake'; account: string }
+  | { page: 'guide'; section: string }
+  | { page: 'status'; account: string }
   | { page: 'classic'; hash: string };
 
 /** The menu, in the order a visitor meets the questions. */
@@ -74,12 +79,12 @@ const CLASSIC_RECIPES: Record<string, RecipeSource> = {
 };
 
 /** First segments that belong to a classic page v2 has not taken over. */
-const CLASSIC_PAGES = ['nefty', 'waxdao', 'blenderizer', 'status'];
+const CLASSIC_PAGES = ['nefty', 'waxdao', 'blenderizer'];
 
-/** Where the rest of Crucible still lives, until v2 has its own version. */
-const ELSEWHERE: { label: string; blurb: string; href: string }[] = [
-  { label: 'Contract status', blurb: 'Whether each contract is up and unchanged', href: '../#/status' },
-  { label: 'User guide', blurb: 'How Crucible works, and what it never does', href: '../guide.html' },
+/** The rest of Crucible: the guide here, and what still lives on the classic page. */
+const ELSEWHERE: { label: string; blurb: string; href: string; classic?: boolean }[] = [
+  { label: 'User guide', blurb: 'How Crucible works, step by step, and what it never does', href: '#/guide' },
+  { label: 'Contract monitor', blurb: 'Whether each contract still runs the code Crucible checked, and who could change it', href: '#/status' },
 ];
 
 const CREATE: { kind: 'blend' | 'upgrade' | 'drop'; label: string; blurb: string }[] = [
@@ -108,6 +113,8 @@ function parseRoute(hash: string): Route {
   // The classic catalogue's address is this page's explorer.
   if (head === 'explore' || head === 'catalog') return { page: 'explore', collection: (parts[1] ?? '').toLowerCase() };
   if (head === 'stake') return { page: 'stake', account: (parts[1] ?? '').toLowerCase() };
+  if (head === 'guide') return { page: 'guide', section: (parts[1] ?? '').toLowerCase() };
+  if (head === 'status') return { page: 'status', account: (parts[1] ?? '').toLowerCase() };
   if (head === 'nefty' && (parts[1] ?? '').toLowerCase() === 'stake') return { page: 'stake', account: '' };
   if (head === 'lab') {
     const tool = (parts[1] ?? '').toLowerCase() as OpenableTool;
@@ -176,6 +183,7 @@ function renderNav(): string {
     tool(MENU[0]),
     `<a href="#/explore" ${at === 'explore' ? 'aria-current="page"' : ''}>Explore</a>`,
     ...MENU.slice(1).map(tool),
+    `<a href="#/guide" ${at === 'guide' ? 'aria-current="page"' : ''}>Guide</a>`,
   ].join('');
 }
 
@@ -254,7 +262,7 @@ function renderHome(): string {
     </button>`;
   const more = ELSEWHERE.map((e) => `
     <a class="run-kind" href="${esc(e.href)}">
-      <strong>${esc(e.label)} <span class="v2-tag">classic</span></strong>
+      <strong>${esc(e.label)}${e.classic ? ' <span class="v2-tag">classic</span>' : ''}</strong>
       <small>${esc(e.blurb)}</small>
     </a>`).join('');
 
@@ -272,7 +280,7 @@ function renderHome(): string {
     '<a class="v2-explore-link" href="#/explore">Or start from a collection: everything it offers, on one page →</a>')}
       ${group('wallet', 'Your wallet', 'What you own, and the WAX names you are bidding on.', wallet)}
       ${group('create', 'Create', 'For collection authors: make a recipe, or change one you already made.', create)}
-      ${group('more', 'Also in Crucible', 'Still on the classic page for now. Same chain, same transactions.', more, 'v2-group-quiet')}
+      ${group('more', 'Also in Crucible', 'How it all works, and whether the contracts behind it changed.', more, 'v2-group-quiet')}
     </div>`;
 }
 
@@ -325,6 +333,8 @@ function paint() {
       : route.page === 'tool' ? `../#/lab/${route.tool}${location.hash.slice(pathOf(route.tool).length)}`
         : route.page === 'explore' ? `../#/catalog${route.collection ? `/${route.collection}` : ''}`
           : route.page === 'stake' ? '../#/nefty/stake'
+            : route.page === 'guide' ? '../'
+              : route.page === 'status' ? '../#/status'
           : `../${location.hash}`;
   }
 
@@ -344,6 +354,13 @@ function paint() {
     root.innerHTML = renderStake(render, walletLine(), route.account);
     attachStakeHandlers(root, render, go);
     attachHomeHandlers(root);
+  } else if (route.page === 'guide') {
+    syncInventoryLock(false);
+    root.innerHTML = renderGuide();
+  } else if (route.page === 'status') {
+    syncInventoryLock(false);
+    root.innerHTML = renderStatus(render);
+    attachStatusHandlers(root, render);
   } else {
     syncInventoryLock(false);
     root.innerHTML = route.page === 'classic' ? renderClassicOnly(route.hash) : renderHome();
@@ -353,7 +370,17 @@ function paint() {
   attachMediaFallbacks(root);
   if (moved) window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
   else restoreRenderSnapshot(snap);
+  // A guide or monitor address names a section: go there once, not on every repaint.
+  const place = route.page === 'guide' ? `guide:${route.section}` : route.page === 'status' ? `status:${route.account}` : undefined;
+  if (place && place !== placedAt) {
+    if (route.page === 'guide') scrollGuide(route.section);
+    if (route.page === 'status') scrollStatus(route.account);
+  }
+  placedAt = place;
 }
+
+/** The section last scrolled to, so a repaint (the monitor repaints as each contract lands) does not pull the reader back. */
+let placedAt: string | undefined;
 
 function attachHomeHandlers(root: HTMLElement) {
   root.querySelectorAll<HTMLElement>('[data-v2-run]').forEach((el) => {

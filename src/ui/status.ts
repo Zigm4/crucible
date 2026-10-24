@@ -48,9 +48,11 @@ export interface ContractSpec {
    *            only its activity is monitored, never its code.
    */
   kind: 'contract' | 'infra' | 'service';
-  /** Baseline captured on-chain at implementation time (2026-06-28). */
+  /** Baseline captured on-chain at implementation time (2026-06-28, unless `baselineAt` says otherwise). */
   baselineCodeHash: string;
   baselineLastCodeUpdate: string;
+  /** When the baseline was captured, for the contracts added later. */
+  baselineAt?: string;
   /** Known-inactive legacy account: do not flag it as "silent". */
   expectInactive?: boolean;
 }
@@ -117,6 +119,13 @@ export const CONTRACTS: ContractSpec[] = [
     baselineLastCodeUpdate: '2022-05-25T09:29:47.000',
   },
   {
+    account: 'stake.nefty', label: 'Staking', group: 'NeftyBlocks', kind: 'contract',
+    role: 'NEFTY and NEFWAX staking, and the collection staking tiers. Its reward pots still pay what they owe.',
+    baselineCodeHash: '175b01ebd815ebbb1aa550f31385fca0e141465466ec9467bc8ce59a9953948d',
+    baselineLastCodeUpdate: '2024-04-09T13:41:56.000',
+    baselineAt: '2026-10-24',
+  },
+  {
     account: 'neftybrespay', label: 'Legacy CPU payer', group: 'NeftyBlocks', kind: 'contract',
     role: 'Used to pay CPU for users (free transactions). Inactive since 2021; you now stake your own CPU.',
     baselineCodeHash: '37577fd842d78c25b785e7ab343198d9712dee46f3f2939c0d18d6610cbfc9c4',
@@ -142,6 +151,27 @@ export const CONTRACTS: ContractSpec[] = [
     role: 'Token and NFT staking farms (earn rewards by staking).',
     baselineCodeHash: 'b62fc6f027752a65e05826da95ce6239679b85a8397ad5b82d6f81f20181b092',
     baselineLastCodeUpdate: '2024-12-23T15:35:25.000',
+  },
+  {
+    account: 'farms.waxdao', label: 'NFT farms v2', group: 'WaxDAO', kind: 'contract',
+    role: 'The second generation of NFT farms: the NFTs stay in your wallet, the rewards wait here.',
+    baselineCodeHash: 'd85d734881d747874ecbb2c4ecafc227e3637172bf181cf54607c9bdfacf8958',
+    baselineLastCodeUpdate: '2024-07-06T23:20:48.000',
+    baselineAt: '2026-10-24',
+  },
+  {
+    account: 'tf.waxdao', label: 'Token farms', group: 'WaxDAO', kind: 'contract',
+    role: 'Token farms: stake a token, earn another.',
+    baselineCodeHash: '88320e1ca949a5dc5a544769fb6e4ed52a7ffcb16814f95435164f2778c41fef',
+    baselineLastCodeUpdate: '2024-07-27T22:12:48.000',
+    baselineAt: '2026-10-24',
+  },
+  {
+    account: 'waxdaolocker', label: 'Token locks', group: 'WaxDAO', kind: 'contract',
+    role: 'Tokens locked for someone until a date, then withdrawn by them.',
+    baselineCodeHash: '090c3072086ed9e29860a148ae7083e691beb078d6fe270b815b8abfe431b811',
+    baselineLastCodeUpdate: '2024-05-16T10:40:30.000',
+    baselineAt: '2026-10-24',
   },
   {
     account: 'waxdaobacker', label: 'Pack backing', group: 'WaxDAO', kind: 'contract',
@@ -202,6 +232,13 @@ export const CONTRACTS: ContractSpec[] = [
     baselineLastCodeUpdate: '2023-12-19T11:30:50.500',
   },
   {
+    account: 'eosio', label: 'System contract', group: 'Infrastructure', kind: 'infra',
+    role: "WAX's system contract: accounts, resources, and the premium name auctions. WAX upgrades it from time to time.",
+    baselineCodeHash: '98192b2588b052daf3ebe525860328704c575b4460a41af66f0f513ea8a2a6f8',
+    baselineLastCodeUpdate: '2026-09-28T16:14:06.000',
+    baselineAt: '2026-10-24',
+  },
+  {
     account: 'orng.wax', label: 'RNG oracle', group: 'Infrastructure', kind: 'infra',
     role: "WAX's native randomness oracle. Supplies the random results for random blends and pack openings. Updated by WAX more often than the other contracts.",
     baselineCodeHash: 'c913ee95943be5d02a321069238eb57816d7319acd763d174b7ca494b7c021ea',
@@ -210,6 +247,8 @@ export const CONTRACTS: ContractSpec[] = [
 ];
 
 // ─── health model ───────────────────────────────────────────────────────
+
+export const SILENT_AFTER_DAYS = SILENT_DAYS;
 
 export type Health =
   | 'ok'          // code present, matches baseline, recent activity
@@ -263,11 +302,11 @@ export function getStatusState(): StatusState {
   return state;
 }
 
-function isZeroHash(h: string | undefined): boolean {
+export function isZeroHash(h: string | undefined): boolean {
   return !h || /^0+$/.test(h);
 }
 
-function parseChainDateMs(iso: string | undefined): number | undefined {
+export function parseChainDateMs(iso: string | undefined): number | undefined {
   if (!iso) return undefined;
   // Chain/Hyperion timestamps are UTC but lack the trailing Z. Force UTC.
   const ms = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
@@ -337,7 +376,7 @@ function isSilent(h: ContractHealth): boolean {
 }
 
 /** Derives health + severity from the raw readings. */
-function score(h: ContractHealth): void {
+export function score(h: ContractHealth): void {
   const spec = h.spec;
 
   // Service account (no code by design): only activity matters.
