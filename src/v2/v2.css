@@ -197,8 +197,6 @@ a.run-kind { text-decoration: none; }
   vertical-align: 1px;
 }
 
-.v2-classic-only h1 { margin: 0 0 8px; font-size: 20px; }
-.v2-classic-only p { color: var(--fg-dim); line-height: 1.6; }
 .v2-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 16px; }
 .v2-actions a.lab-primary { text-decoration: none; }
 

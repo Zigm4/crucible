@@ -320,15 +320,17 @@ const SECTIONS: Section[] = [
       as <code>#/nefty/blend/43444</code>, open the same recipe here.</p>`,
   },
   {
-    id: 'classic', group: 'help', title: 'The classic version',
-    blurb: 'The original page, still there',
+    id: 'classic', group: 'help', title: 'The old version',
+    blurb: 'The original page, kept for a while',
     body: `
-      <p>The first version of Crucible is still online, at the root of the site, one dense panel per
-      contract. It reads the same chain and signs the same transactions. The <em>Classic version</em>
-      link at the top of every page opens the same screen there.</p>
-      <p>Two things live only there for now: the <strong>contract status</strong> page, which checks that
-      each contract is up and unchanged, and the expert panels that take a raw recipe id.</p>
-      ${go('../', 'Open the classic version')}`,
+      <p>The first version of Crucible, one dense panel per contract, is kept for a while at
+      <code>/backup/</code> and will be removed. It reads the same chain and signs the same transactions;
+      everything it did is here now. The <em>Old version</em> link at the top of every page opens the
+      same screen there.</p>
+      <p>Its links keep working: an address of the old page, such as <code>#/nefty/blend/43726</code> or
+      <code>#/waxdao/blend/1831</code>, opens the same recipe here, and its tabs open the matching
+      question.</p>
+      ${go('./backup/', 'Open the old version')}`,
   },
   {
     id: 'privacy', group: 'help', title: 'Privacy',

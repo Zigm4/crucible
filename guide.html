@@ -6,7 +6,7 @@
     <title>Crucible · User Guide</title>
     <meta name="description" content="The Crucible user guide moved into Crucible v2." />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
-    <!-- The guide is a page of v2 now (src/v2/guide.ts). This address stays so
+    <!-- The guide is a page of the main site now (src/v2/guide.ts). This address stays so
          that every link to it keeps working, its old #anchors included: each
          lands on the section that took over that subject. -->
     <script>
@@ -17,7 +17,7 @@
           authors: 'create', links: 'links', safety: 'privacy'
         };
         var section = moved[location.hash.replace('#', '')] || '';
-        location.replace('./v2/#/guide' + (section ? '/' + section : ''));
+        location.replace('./#/guide' + (section ? '/' + section : ''));
       })();
     </script>
     <style>
@@ -26,6 +26,6 @@
     </style>
   </head>
   <body>
-    <p>The user guide moved. <a href="./v2/#/guide">Open it</a>.</p>
+    <p>The user guide moved. <a href="./#/guide">Open it</a>.</p>
   </body>
 </html>

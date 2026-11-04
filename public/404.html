@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crucible</title>
+    <meta name="description" content="This address does not exist; Crucible is one click away." />
+    <link rel="icon" type="image/svg+xml" href="/crucible/favicon.svg" />
+    <!-- GitHub Pages serves this page for every address it does not have.
+         Old links are not lost: /V2, /v2/anything, /Crucible/... and the
+         like go to the site, the old page's addresses to /backup/, each
+         with its #address, so #/stake/somebody.wam still opens that screen. -->
+    <script>
+      (function () {
+        var parts = location.pathname.split('/').filter(Boolean);
+        var project = parts.length && parts[0].toLowerCase() === 'crucible';
+        var base = project ? '/crucible/' : '/';
+        var rest = parts.slice(project ? 1 : 0).join('/').toLowerCase();
+        var target = /^backup(\/|$)/.test(rest) ? base + 'backup/'
+          : /^guide(\.html?)?$/.test(rest) ? base + 'guide.html'
+            : base;
+        if (target + location.hash !== location.pathname + location.hash) location.replace(target + location.hash);
+      })();
+    </script>
+    <style>
+      body { font-family: system-ui, sans-serif; background: #15171c; color: #d6d9e0; display: grid; place-items: center; min-height: 100vh; margin: 0; }
+      a { color: #a99cf5; }
+    </style>
+  </head>
+  <body>
+    <p>This address does not exist. <a href="/crucible/">Open Crucible</a>.</p>
+  </body>
+</html>

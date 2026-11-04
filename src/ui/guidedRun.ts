@@ -76,10 +76,10 @@ export const RECIPE_ACTIONS = [
     where: 'NeftyBlocks only' },
   { key: 'drop', label: 'Claim a drop',
     blurb: 'Buy or claim a fresh mint',
-    where: 'NeftyBlocks only' },
+    where: 'NeftyBlocks and WaxDAO, searched together' },
   { key: 'unpack', label: 'Open a pack',
     blurb: 'You already own it, see what is inside',
-    where: 'atomicpacksx and neftyblocksp, searched together' },
+    where: 'AtomicHub, NeftyBlocks and WaxDAO packs, searched together' },
 ] as const;
 
 export type RecipeAction = typeof RECIPE_ACTIONS[number]['key'];

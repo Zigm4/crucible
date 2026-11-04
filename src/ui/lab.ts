@@ -3002,7 +3002,16 @@ export function applyLabRoute(tool: string, subject: string): void {
   // screen that matters rather than on the first question. A bare id
   // still works and is read as a NeftyBlocks blend, which is what every
   // link written before this shape meant.
-  if (state.tool === 'run' && subject) {
+  // #/use/unpack names only what to do: the first question is answered and
+  // the collection is next. The classic page's links without an id land here.
+  const action = state.tool === 'run' ? RECIPE_ACTIONS.find((a) => a.key === decodeSubject(subject).trim()) : undefined;
+  if (action) {
+    if (state.run.action !== action.key || state.run.blendId) {
+      state.run = emptyRunState();
+      state.run.action = action.key;
+      state.run.step = 2;
+    }
+  } else if (state.tool === 'run' && subject) {
     const parts = decodeSubject(subject).split('~');
     const id = (parts.length >= 3 ? parts[2] : parts[0]).trim();
     if (id && id !== state.run.blendId) {

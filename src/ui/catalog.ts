@@ -552,7 +552,8 @@ function fromWaxdaoDrop(d: DiscoveredWaxdaoDrop): CatalogEntry {
     contract: 'waxdaomarket',
     id: d.drop_id,
     name: d.name,
-    href: `../v2/#/use/${d.kind === 'pack' ? 'waxdaopack' : 'waxdaodrop'}~${d.collection}~${d.drop_id}`,
+    // The classic catalogue lives at /backup/: the site is one level up.
+    href: `../#/use/${d.kind === 'pack' ? 'waxdaopack' : 'waxdaodrop'}~${d.collection}~${d.drop_id}`,
     status: statusFrom(d.status),
     category: UNCATEGORISED,
     templateId: d.template_id || undefined,

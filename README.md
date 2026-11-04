@@ -40,32 +40,42 @@ comes to me.
 
 Two front ends share the same chain code:
 
-- **[Crucible v2](https://zigm4.github.io/crucible/v2/)**, the guided
-  site: start from what you want to do, one question per screen. It is
-  where new work lands, and where [the user guide](https://zigm4.github.io/crucible/v2/#/guide)
+- **[Crucible](https://zigm4.github.io/crucible/)**, the guided site at
+  the root: start from what you want to do, one question per screen. It
+  was "v2", served at `/v2/` until 2026-11-04. It is where new work lands,
+  and where [the user guide](https://zigm4.github.io/crucible/#/guide)
   lives.
-- **The classic page**, at the root: one dense panel per contract, for
-  people who know which contract they want.
+- **The old classic page**, kept for a while at
+  [`/backup/`](https://zigm4.github.io/crucible/backup/) and removed later:
+  one dense panel per contract. Everything it did, the site does.
+
+Old links keep working. The classic page lived at the root, so its
+addresses are read by the site and open the same thing there
+(`#/nefty/blend/43726` the same blend, `#/waxdao/blend/1831` the same
+WaxDAO blend, `#/nefty/unpack` the "open a pack" question, every tab
+spelling the classic router accepted). `/v2/...` forwards to the root with
+its `#address`, `guide.html` to the guide, and any address the site does
+not have (`/V2`, a typo) to the root through `404.html`.
 
 ```
-$ crucible v2 --layout                                         wallet
+$ crucible --layout                                            wallet
    ┌──────────────────────────────────────────────────────────────●──┐
    │ Home · Use a recipe · Explore · My NFTs · Create · WAX names · Guide │
    └──────────────────────────────────────────────────────────────────┘
-   v2/#/use                  blend, upgrade, claim a drop, open a pack
-   v2/#/explore/<coll>       everything one collection offers
-   v2/#/nfts/<account>       a wallet's NFTs, and what each is good for
-   v2/#/create               make or change a blend, upgrade or drop
-   v2/#/stake/<account>      get back what stake.nefty and WaxDAO still hold
-   v2/#/names/<name>         WAX premium name auctions
-   v2/#/status/<contract>    is each contract still the code that was checked?
-   v2/#/guide/<section>      the user guide
+   #/use                     blend, upgrade, claim a drop, open a pack
+   #/explore/<coll>          everything one collection offers
+   #/nfts/<account>          a wallet's NFTs, and what each is good for
+   #/create                  make or change a blend, upgrade or drop
+   #/stake/<account>         get back what stake.nefty and WaxDAO still hold
+   #/names/<name>            WAX premium name auctions
+   #/status/<contract>       is each contract still the code that was checked?
+   #/guide/<section>         the user guide
 
-$ crucible classic --layout
+$ crucible backup --layout                          (removed later)
    [ NEFTYBLOCKS ] [ WAXDAO ] [ BLENDERIZER ]   platform pills
    Blend | Claim | Unpack | Upgrade             tabs, per platform
-   #/nefty/blend/43444  #/waxdao/blend/1921  #/blenderizer/blend/336429
-   #/catalog/underpunks55   #/status   #/lab
+   backup/#/nefty/blend/43444  backup/#/waxdao/blend/1921
+   backup/#/catalog/underpunks55   backup/#/status   backup/#/lab
 ```
 
 ---
@@ -78,7 +88,7 @@ $ crucible classic --layout
 
 **Fork it** &middot; [Run your own copy](#run-your-own-copy) &middot; [Architecture](#architecture) &middot; [Taking the mechanics out](INTEGRATING.md)
 
-Also here: [the user guide](https://zigm4.github.io/crucible/v2/#/guide) for players
+Also here: [the user guide](https://zigm4.github.io/crucible/#/guide) for players
 (`src/v2/guide.ts`; the old `guide.html` forwards to it), and
 [CHANGELOG.md](CHANGELOG.md) for what changed when.
 
@@ -116,7 +126,7 @@ to build the right transaction*. It can't steal funds, drain wallets,
 or front-run you. Your wallet shows every action before signing and
 would refuse anything weird. Whether each of those contracts still runs
 the code it was checked against is what
-[the contract monitor](https://zigm4.github.io/crucible/v2/#/status)
+[the contract monitor](https://zigm4.github.io/crucible/#/status)
 reads live, with who could change it and, when it changed, what changed.
 
 One caveat for collection authors. A create or edit action that is
@@ -135,7 +145,7 @@ classic drop panels still use a plain browser `confirm()`.
 - no backend, no server, no API key, no database
 - no analytics, no telemetry, no Sentry, no Google Tag, nothing
 - no cookies. localStorage holds display choices and the wallet session, nothing else: the theme (`crucible-theme`, `crucible-v2-theme`), how the v2 explorer lays out its cards (`crucible-v2-explore-view`), a few remembered tool settings such as the inventory's sort (`crucible.prefs.v1`), and WharfKit's wallet session (`wharf-*`), so you do not reconnect on every visit. None of it is ever sent anywhere. Log out to drop the session key
-- third-party requests are limited to public WAX RPC nodes (chain reads, with failover), WAX Hyperion history nodes (`wax.eosusa.io`, `api.waxsweden.org`, `wax.eosphere.io`: recent bids, unfinished packs, the contract monitor), the public AtomicAssets indexers (`wax.api.atomicassets.io`, failing over to `aa-wax-public1.neftyblocks.com`) for NFT names and owners, public image servers for NFT artwork (see below), and on the classic page Google Fonts (purely cosmetic, remove in 30s by editing index.html; v2 loads none). Clicking "connect wallet" adds that wallet's own hosts: `cb.anchor.link` for Anchor, `*.mycloudwallet.com` for WAX Cloud Wallet
+- third-party requests are limited to public WAX RPC nodes (chain reads, with failover), WAX Hyperion history nodes (`wax.eosusa.io`, `api.waxsweden.org`, `wax.eosphere.io`: recent bids, unfinished packs, the contract monitor), the public AtomicAssets indexers (`wax.api.atomicassets.io`, failing over to `aa-wax-public1.neftyblocks.com`) for NFT names and owners, public image servers for NFT artwork (see below), and on the classic page Google Fonts (purely cosmetic, remove in 30s by editing backup/index.html; the site loads none). Clicking "connect wallet" adds that wallet's own hosts: `cb.anchor.link` for Anchor, `*.mycloudwallet.com` for WAX Cloud Wallet
 - your private key never leaves your wallet. WharfKit hands the unsigned transaction to Anchor / WAX Cloud Wallet, which signs locally and returns a signature. The page never sees a secret.
 
 **On the IPFS gateway.** Artwork is stored on-chain only as an IPFS
@@ -182,8 +192,9 @@ that decodes wins.
 
 ## --- Crucible v2 ---
 
-[`/v2/`](https://zigm4.github.io/crucible/v2/) is the same chain code
-behind a site that starts from what a person wants to do. Every tool
+[The site](https://zigm4.github.io/crucible/) (v2, at `/v2/` while it was
+a preview, at the root since 2026-11-04) is the same chain code behind a
+site that starts from what a person wants to do. Every tool
 reads and signs through the modules the classic page uses
 (`src/nefty`, `src/waxdao`, `src/blenderizer`, `src/atomic`), so both
 show the same recipes and sign the same actions; what v2 adds is the
@@ -831,7 +842,9 @@ $ crucible #/catalog/underpunks55
 In v2 every screen keeps its own address: `#/explore/<collection>`,
 `#/nfts/<account>`, `#/stake/<account>`, `#/names/<name>`,
 `#/status/<contract>`, `#/guide/<section>`, and a recipe open at its
-check step. The classic links below open the same recipe in v2 too.
+check step. The classic links below open the same recipe on the site,
+which now sits at the very address they point to, and the old page
+keeps them at `/backup/`.
 
 On the classic page, every blend, drop, and upgrade has its own
 deep-link URL. Once you've picked one, the page address updates
@@ -1068,9 +1081,10 @@ ipfs add -r dist
 ```
 
 Same bundle, no single point of failure. The build is multi-page:
-`dist/index.html` (the classic app), `dist/v2/index.html` (v2) and
-`dist/guide.html` (which forwards to the guide in v2), plus everything
-under `public/`.
+`dist/index.html` (the site), `dist/backup/index.html` (the old classic
+page, removed later), `dist/v2/index.html` and `dist/guide.html` (which
+only forward old links to the site), plus everything under `public/`,
+`404.html` included.
 
 ---
 
@@ -1079,10 +1093,14 @@ under `public/`.
 ## --- Architecture ---
 
 ```
-index.html            : classic app shell (loads src/main.ts + src/ui/style.css)
-v2/index.html         : v2 shell (loads src/v2/main.ts + src/v2/v2.css)
-guide.html            : forwards to v2/#/guide, its old #anchors to the
+index.html            : the site's shell (loads src/v2/main.ts + src/v2/v2.css)
+backup/index.html     : the old classic page (loads src/main.ts + src/ui/style.css),
+                        kept for a while and removed later
+v2/index.html         : forwards /v2/#... to the root, #address kept
+guide.html            : forwards to #/guide, its old #anchors to the
                         matching sections (kept so old links still work)
+public/404.html       : any address the site does not have (/V2, a typo)
+                        goes to the root, or to /backup/, #address kept
 src/
   main.ts              : entry point - hands off to ui/app::mount(),
                          renders a fail-safe error card if mount throws

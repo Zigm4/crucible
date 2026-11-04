@@ -1,5 +1,5 @@
 /**
- * Crucible v2 (preview): the guided interface as the whole site.
+ * Crucible: the guided interface as the whole site (it was "v2", at /v2/).
  * ─────────────────────────────────────────────────────────────
  * The classic page grew one dense form per contract. The lab grew next to
  * it and asks the same things one question at a time. This page is that
@@ -9,8 +9,8 @@
  * It owns very little on purpose. Every tool is the lab's (ui/lab), and
  * every read and every transaction comes from the same modules the classic
  * page uses, so both show the same recipes and the same artwork and sign
- * the same actions. What lives here is routing, the home, and the way back
- * to the classic page.
+ * the same actions. What lives here is routing, the home, and the way to
+ * the classic page, kept for a while at /backup/.
  *
  * Routes, all in the hash so the page stays a static file:
  *   #/                        home
@@ -22,7 +22,11 @@
  *   #/names/<name>            WAX name auctions
  *   #/lab/<tool>/<subject>    the classic page's address for the same tool,
  *                             accepted and rewritten to the forms above
- *   #/nefty/blend/43444       a classic recipe link, opened in #/use
+ *   #/nefty/blend/43444       a classic link, opened in #/use: every address
+ *                             the classic page understood lands on the
+ *                             same thing here (classicRoute), since that
+ *                             page lived at this very address until
+ *                             2026-11-04 and its links are everywhere
  *   #/stake                   getting tokens out of stake.nefty (stake.ts); the
  *                             classic #/nefty/stake lands here
  *   #/guide/<section>         the user guide (guide.ts), on that section
@@ -50,8 +54,7 @@ type Route =
   | { page: 'explore'; collection: string }
   | { page: 'stake'; account: string }
   | { page: 'guide'; section: string }
-  | { page: 'status'; account: string }
-  | { page: 'classic'; hash: string };
+  | { page: 'status'; account: string };
 
 /** The menu, in the order a visitor meets the questions. */
 const MENU: { tool: OpenableTool; label: string }[] = [
@@ -66,20 +69,37 @@ const pathOf = (tool: OpenableTool) => `#/${V2_PATHS[tool]}`;
 const TOOL_AT = new Map(TOOLS.map((t) => [V2_PATHS[t], t]));
 
 /**
- * Classic links to one recipe, and the run source that opens the same
- * recipe here. The run tool takes `<source>~<collection>~<id>` and finds
- * the collection itself when it is left empty.
+ * The classic page's tabs, every spelling its router accepted, and the
+ * action each one is here.
  */
-const CLASSIC_RECIPES: Record<string, RecipeSource> = {
-  'nefty/blend': 'blend',
-  'nefty/upgrade': 'upgrade',
-  'nefty/claim': 'drop',
-  'waxdao/blend': 'waxdao',
-  'blenderizer/blend': 'blenderizer',
+const CLASSIC_TABS: Record<string, RecipeAction | 'stake'> = {
+  blend: 'blend', blends: 'blend',
+  claim: 'drop', drop: 'drop', drops: 'drop',
+  unpack: 'unpack', pack: 'unpack', packs: 'unpack',
+  upgrade: 'upgrade', upgrades: 'upgrade',
+  stake: 'stake', staking: 'stake',
 };
 
-/** First segments that belong to a classic page v2 has not taken over. */
-const CLASSIC_PAGES = ['nefty', 'waxdao', 'blenderizer'];
+/**
+ * A classic address, read the way the classic router read it, as the
+ * same thing here: #/<platform>/<tab>/<id>. The platform is nefty, waxdao
+ * or blenderizer; WaxDAO and the Blenderizer only had blends, whatever the
+ * tab said; an unknown tab was the blends tab. A recipe id opens that
+ * recipe (the run tool takes `<source>~<collection>~<id>` and finds the
+ * collection itself); without one, the action's first question.
+ */
+function classicRoute(parts: string[]): Route | undefined {
+  const platform = parts[0].toLowerCase();
+  if (platform !== 'nefty' && platform !== 'waxdao' && platform !== 'blenderizer') return undefined;
+  const tab = platform === 'nefty' ? CLASSIC_TABS[(parts[1] ?? '').toLowerCase()] ?? 'blend' : 'blend';
+  if (tab === 'stake') return { page: 'stake', account: '' };
+  const id = (parts[2] ?? '').toLowerCase();
+  const source: RecipeSource | undefined = platform === 'waxdao' ? 'waxdao'
+    : platform === 'blenderizer' ? 'blenderizer'
+      // A classic pack id named a design, not one of the two pack contracts.
+      : tab === 'unpack' ? undefined : tab;
+  return { page: 'tool', tool: 'run', subject: id && source ? `${source}~~${id}` : tab };
+}
 
 /** The rest of Crucible: the guide here, and what still lives on the classic page. */
 const ELSEWHERE: { label: string; blurb: string; href: string; classic?: boolean }[] = [
@@ -115,18 +135,12 @@ function parseRoute(hash: string): Route {
   if (head === 'stake') return { page: 'stake', account: (parts[1] ?? '').toLowerCase() };
   if (head === 'guide') return { page: 'guide', section: (parts[1] ?? '').toLowerCase() };
   if (head === 'status') return { page: 'status', account: (parts[1] ?? '').toLowerCase() };
-  if (head === 'nefty' && (parts[1] ?? '').toLowerCase() === 'stake') return { page: 'stake', account: '' };
   if (head === 'lab') {
     const tool = (parts[1] ?? '').toLowerCase() as OpenableTool;
     if (!TOOLS.includes(tool)) return { page: 'home' };
     return { page: 'tool', tool, subject: (parts[2] ?? '').toLowerCase() };
   }
-  const source = CLASSIC_RECIPES[`${head}/${(parts[1] ?? '').toLowerCase()}`];
-  if (source && parts[2]) {
-    return { page: 'tool', tool: 'run', subject: `${source}~~${parts[2].toLowerCase()}` };
-  }
-  if (CLASSIC_PAGES.includes(head)) return { page: 'classic', hash };
-  return { page: 'home' };
+  return classicRoute(parts) ?? { page: 'home' };
 }
 
 /**
@@ -284,21 +298,6 @@ function renderHome(): string {
     </div>`;
 }
 
-function renderClassicOnly(hash: string): string {
-  return `
-    <section class="lab">
-      <div class="lab-panel v2-classic-only">
-        <h1>Not in v2 yet</h1>
-        <p>This page still lives in the classic version of Crucible. It reads the same chain and
-        signs the same transactions, it just looks like the old site.</p>
-        <div class="v2-actions">
-          <a class="lab-primary" href="../${esc(hash)}">Open it in the classic version</a>
-          <a href="#/">Back to the home</a>
-        </div>
-      </div>
-    </section>`;
-}
-
 // ─── rendering ──────────────────────────────────────────────────────────
 
 function rootEl(): HTMLElement {
@@ -325,17 +324,15 @@ function paint() {
 
   const nav = document.getElementById('v2-nav');
   if (nav) nav.innerHTML = renderNav();
-  // The same screen on the classic page: a tool's address in its #/lab
-  // grammar, anything else as it is.
+  // The same screen on the old classic page, kept at /backup/: a tool's
+  // address in its #/lab grammar, the others in its own.
   const classic = document.getElementById('v2-classic') as HTMLAnchorElement | null;
   if (classic) {
-    classic.href = route.page === 'home' ? '../'
-      : route.page === 'tool' ? `../#/lab/${route.tool}${location.hash.slice(pathOf(route.tool).length)}`
-        : route.page === 'explore' ? `../#/catalog${route.collection ? `/${route.collection}` : ''}`
-          : route.page === 'stake' ? '../#/nefty/stake'
-            : route.page === 'guide' ? '../'
-              : route.page === 'status' ? '../#/status'
-          : `../${location.hash}`;
+    classic.href = route.page === 'tool' ? `./backup/#/lab/${route.tool}${location.hash.slice(pathOf(route.tool).length)}`
+      : route.page === 'explore' ? `./backup/#/catalog${route.collection ? `/${route.collection}` : ''}`
+        : route.page === 'stake' ? './backup/#/nefty/stake'
+          : route.page === 'status' ? './backup/#/status'
+            : './backup/';
   }
 
   if (route.page === 'tool') {
@@ -363,7 +360,7 @@ function paint() {
     attachStatusHandlers(root, render);
   } else {
     syncInventoryLock(false);
-    root.innerHTML = route.page === 'classic' ? renderClassicOnly(route.hash) : renderHome();
+    root.innerHTML = renderHome();
     attachHomeHandlers(root);
   }
   // Artwork only starts loading once the markup is in the DOM.

@@ -1,5 +1,5 @@
 /**
- * Crucible v2 (preview): entry point.
+ * Crucible: entry point of the site (the guided interface that was "v2").
  *
  * Same contract as the classic entry: hand off to the shell, and if it
  * throws on the way up, say so on the page instead of leaving it blank.
