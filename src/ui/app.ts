@@ -32,6 +32,7 @@ import {
   logout,
   restoreSession,
 } from '../chain/session';
+import { isWalletReturn } from '../chain/walletReturn';
 import { loadBlendContractShape } from '../nefty/abi';
 import {
   isDeterministic,
@@ -9155,7 +9156,19 @@ export async function mount() {
     // We compare the parsed route to the current state and apply any
     // differences, then re-trigger the deep-link loader if an ID is
     // present.
-    window.addEventListener('hashchange', () => {
+    window.addEventListener('hashchange', (e) => {
+      // A wallet coming back (Anchor on an iPhone: #Ab12Cd34) names no
+      // screen. The page stays on the one being signed, and the address
+      // goes back to it once the wallet has seen its own hash.
+      if (isWalletReturn(location.hash)) {
+        let back = '';
+        try { back = new URL(e.oldURL).hash; } catch { /* none */ }
+        setTimeout(() => {
+          if (!isWalletReturn(location.hash)) return;
+          try { history.replaceState(null, '', back && !isWalletReturn(back) ? back : location.pathname); } catch { /* keep it */ }
+        }, 0);
+        return;
+      }
       const r = parseHashRoute();
       let mutated = false;
       if (r.page !== state.page) {

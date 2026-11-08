@@ -36,12 +36,14 @@
  * and a link to it lands on the home.
  */
 import { getCurrentSession, login, restoreSession } from '../chain/session';
+import { isWalletReturn, returnedSignature } from '../chain/walletReturn';
 import { RECIPE_ACTIONS, type RecipeAction, type RecipeSource } from '../ui/guidedRun';
 import {
   applyLabRoute, attachLabHandlers, embedLab, openCreatorFor, openLabTool,
   openRecipeEditor, openRunFor, renderLabPage, syncInventoryLock, V2_PATHS, type OpenableTool,
 } from '../ui/lab';
 import { attachMediaFallbacks } from '../ui/media';
+import { showSigned } from '../ui/signedPopup';
 import { captureRenderSnapshot, restoreRenderSnapshot } from '../ui/renderSnapshot';
 import { attachExploreHandlers, renderExplore } from './explore';
 import { attachStakeHandlers, renderStake } from './stake';
@@ -116,6 +118,11 @@ const CREATE: { kind: 'blend' | 'upgrade' | 'drop'; label: string; blurb: string
 let route: Route = { page: 'home' };
 /** Which screen the last paint drew, so arriving somewhere new starts at the top. */
 let paintedKey = '';
+/**
+ * The address of the screen before this one, so a confirmation can send
+ * people back where they came from (an Explore page, say, before a drop).
+ */
+let cameFrom = '';
 let connecting = false;
 let connectError = '';
 
@@ -312,13 +319,37 @@ function render() {
   requestAnimationFrame(paint);
 }
 
+/** Which screen a route is: moving to another one starts at the top, and is where "back" goes. */
+function screenOf(r: Route): string {
+  return r.page === 'tool' ? `tool:${r.tool}`
+    : r.page === 'explore' ? `explore:${r.collection}`
+      : r.page === 'stake' ? `stake:${r.account}` : r.page;
+}
+
+/**
+ * The screen a tab was on, kept for the tab's life (sessionStorage), so a
+ * page Safari reloaded while the wallet was open comes back to it.
+ */
+const SCREEN_KEY = 'crucible:screen';
+function rememberScreen(): void {
+  try {
+    if (location.hash.startsWith('#/') && sessionStorage.getItem(SCREEN_KEY) !== location.hash) {
+      sessionStorage.setItem(SCREEN_KEY, location.hash);
+    }
+  } catch { /* a private window without storage only loses this */ }
+}
+function rememberedScreen(): string {
+  try { return sessionStorage.getItem(SCREEN_KEY) ?? ''; } catch { return ''; }
+}
+
+const hashOf = (url: string) => { try { return new URL(url).hash; } catch { return ''; } };
+
 function paint() {
   scheduled = false;
-  const key = route.page === 'tool' ? `tool:${route.tool}`
-    : route.page === 'explore' ? `explore:${route.collection}`
-      : route.page === 'stake' ? `stake:${route.account}` : route.page;
+  const key = screenOf(route);
   const moved = key !== paintedKey;
   paintedKey = key;
+  rememberScreen();
   const snap = captureRenderSnapshot();
   const root = rootEl();
 
@@ -412,14 +443,51 @@ function attachHomeHandlers(root: HTMLElement) {
 }
 
 export async function mount(): Promise<void> {
-  embedLab(render);
-  window.addEventListener('hashchange', () => {
+  embedLab(render, () => cameFrom);
+  window.addEventListener('hashchange', (e) => {
+    // A wallet coming back. The screen stays: what was signed is on it, and
+    // the confirmation shows over it. The address goes back to the screen's
+    // own once the wallet has seen its hash, which it checks in a
+    // hashchange listener of its own, added after this one.
+    if (isWalletReturn(location.hash)) {
+      const back = hashOf(e.oldURL);
+      setTimeout(() => {
+        if (!isWalletReturn(location.hash)) return;
+        try { history.replaceState(null, '', back.startsWith('#/') ? back : rememberedScreen() || '#/'); } catch { /* keep it */ }
+      }, 0);
+      return;
+    }
+    const before = screenOf(route);
     route = follow(location.hash);
+    if (screenOf(route) !== before) cameFrom = hashOf(e.oldURL);
     render();
   });
+  // The screen and the address are kept as people leave for the wallet.
+  window.addEventListener('pagehide', rememberScreen);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') rememberScreen(); });
+  // Loaded at a wallet's return address: Safari reloaded the page while the
+  // wallet was open. The screen comes back, and what was signed is said.
+  let start = location.hash;
+  const lost = isWalletReturn(start) ? returnedSignature() : undefined;
+  if (isWalletReturn(start)) {
+    start = rememberedScreen() || '#/';
+    try { history.replaceState(null, '', start); } catch { /* keep it */ }
+  }
   // Paint first: nothing on the first screen waits for the wallet.
-  route = follow(location.hash);
+  route = follow(start);
   render();
+  if (lost) {
+    showSigned({
+      tone: 'unknown',
+      title: 'Not sent: the page was reloaded',
+      lines: [
+        'Your browser reloaded Crucible while your wallet was open. The wallet only signs; Crucible sends the transaction once the wallet hands it back, and the reload lost it.',
+        'So what you signed there most likely never reached the chain. Look it up to be sure, then sign again from this screen if it is not there.',
+      ],
+      txs: [lost.transactionId],
+      close: { label: 'Close' },
+    });
+  }
   try {
     await restoreSession();
   } catch { /* a page without a remembered wallet still works */ }

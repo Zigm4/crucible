@@ -89,6 +89,11 @@ const SECTIONS: Section[] = [
       <p>A recipe you cannot run is shown, greyed and not clickable, with the reason: ended, sold out,
       your limit reached, not on its whitelist, an ingredient missing. Under anything you are short of,
       a link opens it on AtomicHub, the market where it can be bought.</p>
+      <p>Once your wallet has signed, a box in the middle of the screen says what was signed, with the
+      transaction on waxblock. A random blend's result and a pack's cards show in it as they are drawn,
+      with the button for the second signature when one is needed. Closing it takes you back where you
+      came from, a collection in Explore or your NFTs, or to the list you picked the recipe from;
+      <em>Stay on this recipe</em> keeps you on it.</p>
       ${note('Prefer to start from a collection? <a href="#/explore">Explore</a> shows everything one collection offers on a single page.')}
       ${go('#/use', 'Use a recipe')}`,
   },
@@ -245,15 +250,20 @@ const SECTIONS: Section[] = [
       ${steps([
         '<strong>What, and where:</strong> the kind of recipe and your collection.',
         '<strong>What players give:</strong> NFTs picked from your own templates and schemas, with their artwork, or from another collection\'s; NFTs matched on one or several attributes; or a token amount. Each NFT is burned or sent to an account you name. A blend can also have a <em>time gate</em>: the player shows an NFT and keeps it, and blends again only once it has rested.',
-        '<strong>What they get:</strong> for a blend, one or several outcomes with their odds drawn as a bar; for an upgrade, the attributes to rewrite, their types read from your schema; for a drop, the templates to mint and the price, in any token the drop contract accepts, or free.',
+        '<strong>What they get:</strong> for a blend, one or several outcomes with their odds drawn as a bar; for an upgrade, the attributes to rewrite, their types read from your schema; for a drop, the templates to mint and the price, in any token the drop contract accepts, or free. Under each template: whether its NFTs can be traded and burned. That is set on the template, for every NFT of it, so no drop or blend can change it.',
         '<strong>Any limits:</strong> start and end, total uses or supply, a limit per wallet, and who can use it (see below).',
-        '<strong>Review:</strong> the recipe as one sentence, every check, then <em>Simulate</em> (the rehearsal) and <em>Sign and create</em>.',
+        '<strong>Review:</strong> the recipe as one sentence (what it mints, its total, its limit per wallet, who can run it), every check, then <em>Simulate</em> (the rehearsal) and <em>Sign and create</em>.',
       ])}
+      <p>Once signed, a box confirms it with the transaction, and a link to the collection in Explore
+      when the recipe is not hidden. Closing it shows what you created, as you signed it, and what comes next.
+      <strong>Make another like it</strong> keeps every field, the whitelist too, for a series of drops;
+      it will not sign until you have changed something, so a second click never makes a copy.
+      <strong>Start from scratch</strong> empties every field, the collection too.</p>
       <h3>Who can use it</h3>
       <ul class="v2-guide-list">
         <li><strong>Everyone.</strong></li>
-        <li><strong>A list of accounts</strong>, made with the recipe, in the same transaction. Paste accounts in any format: each is looked up on chain, repeats and typos are caught before you sign. A drop's list can give each account a claim limit, which can only lower the drop's own.</li>
-        <li><strong>Holders</strong>: whoever holds NFTs of a template, a schema or a collection, or a token amount, with "all of these" or "any one of these". A drop can have a list and a holder rule together.</li>
+        <li><strong>A whitelist</strong> of accounts, made with the recipe, in the same transaction. Paste accounts in any format: each is looked up on chain, repeats and typos are caught before you sign. A drop's whitelist can give each account a claim limit, which can only lower the drop's own.</li>
+        <li><strong>Holders</strong>: whoever holds NFTs of a template, a schema or a collection, or a token amount, with "all of these" or "any one of these". A drop can have a whitelist and a holder rule together.</li>
       </ul>
       ${note('<strong>Create it hidden first.</strong> It exists on chain but appears in no list: test it with one NFT, then reveal it from Change. Creation is permanent and costs RAM.', 'ok')}
       ${note('<strong>A drop needs RAM to mint.</strong> Every NFT a claim mints, about 151 bytes, is paid from RAM your collection deposited on the drop contract, and with none left every claim is refused. Create and Change show your balance, how many claims it covers, and let you deposit WAX with the drop (a first deposit buys at least 128 bytes, about 0.06 WAX). Only claims of your own drops spend it, within each drop\'s supply, limits and list, and only your collection\'s authors can take it back.', 'warn')}
@@ -278,6 +288,8 @@ const SECTIONS: Section[] = [
         <li><strong>Your collection's lists and holder rules</strong>: what each holds, which recipes share it (a change to it reaches all of them), and a delete button for the ones nothing uses, offered only when the chain accepts it.</li>
         <li><strong>Delete</strong> a recipe outright. That one cannot be undone.</li>
       </ul>
+      <p>Once saved, a box lists what changed, with the transaction. Closing it goes back to your
+      collection's list, read again; <em>Keep editing it</em> stays on the recipe.</p>
       ${note('<strong>What no contract lets an author change:</strong> a blend\'s outcomes, an upgrade\'s attribute rewrites, the templates a drop mints. Changing those means deleting the recipe and creating a new one.', 'warn')}`,
   },
   {
@@ -297,6 +309,8 @@ const SECTIONS: Section[] = [
         <dd>The recipe uses a time gate or a "chest" ingredient. Crucible says so instead of letting a transaction fail.</dd>
         <dt>A random blend shows no result yet</dt>
         <dd>The oracle draws a few seconds after you sign, and the contract mints the result itself. Crucible keeps watching; if a draw waits for you, it offers the claim.</dd>
+        <dt>Back from the wallet on a phone, and the page was reloaded</dt>
+        <dd>Your browser sometimes reloads a page while you are in another app. Crucible comes back to the screen you were on and says so: what you signed then was most likely never sent, since the wallet only signs and the page sends it. Look the transaction up with the link, and sign again if it is not there.</dd>
         <dt>A pack opened halfway</dt>
         <dd>Safe: the pack waits in its contract. Open the pack tool again and Crucible offers the second signature.</dd>
         <dt>No artwork</dt>

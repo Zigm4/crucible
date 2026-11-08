@@ -124,6 +124,7 @@ import {
   buildFinishActions, readPendingFinishes, waitForPackDraw, watchBlendResult, type PendingFinish,
 } from './runFinish';
 import { renderMediaThumb } from './media';
+import { refreshSigned, showSigned, signedNotice, type SignedNotice } from './signedPopup';
 import type { MarketRef } from '../atomic/atomichub';
 import { hubLinks, renderVerdictPanel } from './verdictView';
 import { pickImageRef } from '../atomic/image';
@@ -192,6 +193,9 @@ interface LabTemplate {
   issued: number;
   /** 0 means no cap. */
   max: number;
+  /** Set when the template was made, for every NFT of it; undefined when the indexer did not say. */
+  transferable?: boolean;
+  burnable?: boolean;
 }
 
 // ─── form shapes ────────────────────────────────────────────────────────
@@ -606,9 +610,108 @@ interface LabState extends LabForm {
   dryRun: string;
   lastTx: string;
   lastError: string;
+  /** What was just created. Shown in place of the wizard until the author says what comes next. */
+  created?: CreatedRecipe;
+  /** "Make another like it": the recipe just created, which cannot be signed a second time unchanged. */
+  anotherOf?: { fingerprint: string; label: string };
+}
+
+/**
+ * A recipe just signed, as it read at that moment. The form stays as it was
+ * for "Make another like it", so the screen shows this copy rather than the
+ * form, which is what made a created drop read as having lost its whitelist.
+ */
+interface CreatedRecipe {
+  /** e.g. drop "Hype! - 400" (#239068); the id only when the transaction itself proves it. */
+  label: string;
+  collection: string;
+  hidden: boolean;
+  txs: string[];
+  sentence: string;
+  /** The review table, as markup. */
+  rows: string;
+  /** A later transaction of a long whitelist that did not go through. */
+  error: string;
+  /** What signing the very same recipe again would look like. */
+  fingerprint: string;
+}
+
+/**
+ * Every field the author fills in to create something, empty. The page
+ * starts from it, and "Start from scratch" goes back to it: one list, so
+ * a field added later cannot be forgotten by one of the two.
+ */
+type BlankForm = Pick<LabState,
+  'collection'
+  | 'ingFrom'
+  | 'ingFromDraft'
+  | 'ingFromOpen'
+  | 'ramDeposit'
+  | 'name'
+  | 'description'
+  | 'image'
+  | 'category'
+  | 'ingredients'
+  | 'outcomes'
+  | 'schemaName'
+  | 'requirements'
+  | 'mutations'
+  | 'mints'
+  | 'free'
+  | 'priceAmount'
+  | 'priceToken'
+  | 'priceRecipient'
+  | 'tokenSearch'
+  | 'tokenPickerOpen'
+  | 'authRequired'
+  | 'maxClaimable'
+  | 'unlimited'
+  | 'startTime'
+  | 'endTime'
+  | 'maxUses'
+  | 'accountLimit'
+  | 'cooldown'
+  | 'securityId'
+  | 'hidden'>;
+
+function blankForm(): BlankForm {
+  return {
+    collection: '',
+    ingFrom: '',
+    ingFromDraft: '',
+    ingFromOpen: false,
+    ramDeposit: '',
+    name: '',
+    description: '',
+    image: '',
+    category: '',
+    ingredients: [],
+    outcomes: [],
+    schemaName: '',
+    requirements: [],
+    mutations: [],
+    mints: [],
+    free: true,
+    priceAmount: '1',
+    priceToken: 'WAX',
+    priceRecipient: '',
+    tokenSearch: '',
+    tokenPickerOpen: false,
+    authRequired: false,
+    maxClaimable: '100',
+    unlimited: false,
+    startTime: '',
+    endTime: '',
+    maxUses: '',
+    accountLimit: '',
+    cooldown: '',
+    securityId: '',
+    hidden: true,
+  };
 }
 
 const state: LabState = {
+  ...blankForm(),
   tool: 'recipes',
   inv: emptyInventoryState(),
   run: emptyRunState(),
@@ -621,7 +724,6 @@ const state: LabState = {
   actor: '',
   collections: [],
   collectionsState: 'idle',
-  collection: '',
   loadedFor: '',
   schemas: [],
   templates: [],
@@ -629,47 +731,17 @@ const state: LabState = {
   dataError: '',
   truncated: false,
   securities: [],
-  ingFrom: '',
-  ingFromDraft: '',
-  ingFromOpen: false,
   foreign: {},
   list: emptyListDraft(),
   rule: emptyRuleDraft(''),
   dropRam: { for: '', state: 'idle', bytes: 0, hasRow: false },
-  ramDeposit: '',
   bytesPerWax: 0,
   gates: { for: '', state: 'idle', users: {}, counts: {}, rules: {}, deletable: {}, error: '' },
   newListId: '',
   newDropId: '',
   signing: undefined,
   signedTxs: [],
-  name: '',
-  description: '',
-  image: '',
-  category: '',
-  ingredients: [],
-  outcomes: [],
-  schemaName: '',
-  requirements: [],
-  mutations: [],
-  mints: [],
-  free: true,
-  priceAmount: '1',
-  priceToken: 'WAX',
-  priceRecipient: '',
   tokens: [],
-  tokenSearch: '',
-  tokenPickerOpen: false,
-  authRequired: false,
-  maxClaimable: '100',
-  unlimited: false,
-  startTime: '',
-  endTime: '',
-  maxUses: '',
-  accountLimit: '',
-  cooldown: '',
-  securityId: '',
-  hidden: true,
   search: '',
   nameQuery: '',
   nameStatusFor: '',
@@ -861,7 +933,12 @@ const OUTCOME_COLOURS = ['#7c9cff', '#86c97f', '#f0a860', '#e8798f', '#c58cf5', 
 
 // ─── loading from the chain ─────────────────────────────────────────────
 
-let rerender: () => void = () => {};
+let repaintHost: () => void = () => {};
+/** Repaints the page around the lab, and the confirmation over it when one is open. */
+function rerender(): void {
+  repaintHost();
+  refreshSigned();
+}
 
 /**
  * Typing into a field and then clicking a button used to lose the click.
@@ -974,6 +1051,8 @@ interface RawTemplate {
   max_supply?: string | number;
   schema?: { schema_name?: string };
   immutable_data?: Record<string, unknown>;
+  is_transferable?: boolean;
+  is_burnable?: boolean;
 }
 
 /**
@@ -1004,6 +1083,8 @@ async function readCollectionData(collection: string): Promise<{ templates: LabT
     image: pickImageRef(t.immutable_data as Record<string, unknown> | undefined),
     issued: Number(t.issued_supply ?? 0),
     max: Number(t.max_supply ?? 0),
+    transferable: typeof t.is_transferable === 'boolean' ? t.is_transferable : undefined,
+    burnable: typeof t.is_burnable === 'boolean' ? t.is_burnable : undefined,
   }));
   // An attribute a template pins in immutable_data is frozen for every
   // asset of that template. Counting them here is what lets the upgrade
@@ -1366,7 +1447,7 @@ function editActions(): { label: string; action: BuiltAction }[] {
     // Before anything is added: neftyblocksd refuses a list entry on a drop that is not secured.
     if (changed('authRequired')) {
       out.push({
-        label: e.authRequired ? 'only accounts on its list can claim' : 'everyone can claim',
+        label: e.authRequired ? 'only whitelisted accounts can claim' : 'everyone can claim',
         action: buildSetDropAuth(actor, e.id, e.authRequired),
       });
     }
@@ -1411,7 +1492,7 @@ type ListTarget =
 
 function listName(): string {
   const recipe = (state.mode === 'edit' ? state.editing?.name : state.name)?.trim();
-  return state.list.newName.trim() || `${recipe || 'Recipe'} list`;
+  return state.list.newName.trim() || `${recipe || 'Recipe'} whitelist`;
 }
 
 function collectionTarget(securityId: string): ListTarget | undefined {
@@ -1567,10 +1648,10 @@ function listActions(t: ListTarget): { label: string; action: BuiltAction }[] {
     }
   } else {
     for (const a of removeFromDropList(actor, t.id, p.remove)) {
-      out.push({ label: `take ${n((a.data.accounts_to_remove as string[]).length)} off its list`, action: a });
+      out.push({ label: `take ${n((a.data.accounts_to_remove as string[]).length)} off its whitelist`, action: a });
     }
     for (const a of addToDropList(actor, t.id, p.add, claimLimit())) {
-      out.push({ label: `add ${n((a.data.accounts_to_add as string[]).length)} to its list`, action: a });
+      out.push({ label: `add ${n((a.data.accounts_to_add as string[]).length)} to its whitelist`, action: a });
     }
   }
   return out;
@@ -1591,11 +1672,11 @@ function listProblems(t: ListTarget | undefined): string[] {
   const few = (l: string[]) => l.slice(0, 5).join(', ') + (l.length > 5 ? ` and ${l.length - 5} more` : '');
   if (t.kind === 'collection' && t.fresh && !listName().trim()) out.push('Give the new list a name.');
   if (p.invalid.length) out.push(`${p.invalid.length} cannot be account names: ${few(p.invalid)}.`);
-  if (p.missing.length) out.push(`${p.missing.length} account(s) do not exist on WAX: ${few(p.missing)}. The contract refuses the whole list for one of them.`);
-  if (p.checking) out.push('The accounts on the list are still being looked up.');
+  if (p.missing.length) out.push(`${p.missing.length} account(s) do not exist on WAX: ${few(p.missing)}. The contract refuses the whole whitelist for one of them.`);
+  if (p.checking) out.push('The accounts for the whitelist are still being looked up.');
   if (d.checkState === 'error' && d.checkError) out.push(`The accounts could not be looked up: ${d.checkError}`);
   if (!t.fresh && !p.membersKnown && (p.add.length || state.mode === 'edit')) {
-    out.push(d.membersState === 'error' ? `Who is on the list could not be read: ${d.checkError}` : 'Reading who is on the list now.');
+    out.push(d.membersState === 'error' ? `Who is on the whitelist could not be read: ${d.checkError}` : 'Reading who is on the whitelist now.');
   }
   return out;
 }
@@ -1654,8 +1735,168 @@ function whoCanUseIt(): string {
   const p = listPlan(t);
   const count = t.fresh ? p.add.length : (state.list.members.length - p.remove.length + p.add.length);
   const who = `${count} account${count === 1 ? '' : 's'}`;
-  if (t.kind === 'drop') return `only the ${who} on its own list${holders ? `, or ${holders}` : ''}`;
-  return t.fresh ? `only the ${who} on a new list "${t.name}"` : `only the ${who} on "${t.name}"`;
+  if (t.kind === 'drop') {
+    if (!count) return holders || 'nobody yet: its whitelist is empty';
+    return `only the ${count} whitelisted account${count === 1 ? '' : 's'}${holders ? `, or ${holders}` : ''}`;
+  }
+  return t.fresh ? `only the ${who} on a new whitelist "${t.name}"` : `only the ${who} on the whitelist "${t.name}"`;
+}
+
+// ─── after a creation ───────────────────────────────────────────────────
+//
+// Signing used to empty the whitelist and leave everything else, the review
+// included, on screen: a drop created with its whitelist then read as one
+// with nobody on it, with "Sign and create" still there to make it again.
+// Now the author sees what was created and says what comes next.
+
+/**
+ * What signing the recipe on screen would create, without the ids the chain
+ * hands out and without who signs: the same drop from another wallet of the
+ * collection is still the same drop. Who is paid stays in, since that is content.
+ */
+function recipeFingerprint(): string {
+  let data: Record<string, unknown>;
+  try { data = { ...(builtAction().data as Record<string, unknown>) }; } catch { return ''; }
+  delete data.authorized_account;
+  const t = listTarget();
+  const key = ruleKey();
+  const r = key ? ensureRule() : undefined;
+  return canon({
+    kind: state.kind,
+    data,
+    accounts: t ? [...listPlan(t).add].sort() : [],
+    claimLimit: t?.kind === 'drop' ? claimLimit() : 0,
+    rule: r && (r.on || key === 'sec:new') ? r.group : '',
+  });
+}
+
+/** After "Make another like it": nothing changed since the last one was created. */
+function unchangedCopy(): boolean {
+  if (state.mode !== 'create' || !state.anotherOf?.fingerprint) return false;
+  return recipeFingerprint() === state.anotherOf.fingerprint;
+}
+
+/** What creating does once the wallet is done, whether all of it went through or only the first transaction. */
+function afterSigning(): void {
+  state.lastTx = state.signedTxs[0] ?? '';
+  if (!state.lastTx) return;
+  // The app caches each contract's list. Something was just added to one
+  // of them, so drop the cache rather than send the author back to a
+  // page that does not show what they just made.
+  if (state.kind === 'blend') clearDiscoverCache();
+  else if (state.kind === 'upgrade') clearUpgradesCache();
+  else clearDropsCache();
+  markCreated();
+}
+
+/** Called once a creation landed, before anything on screen moves. */
+function markCreated(): void {
+  // The id read before signing is proven only when the same transaction
+  // wrote to that drop: its whitelist or its holder rule would have been refused otherwise.
+  const proven = state.kind === 'drop' && state.authRequired && state.newDropId
+    && createActions().some((a) => a.name !== 'createdrop' && String((a.data as { drop_id?: unknown }).drop_id ?? '') === state.newDropId);
+  const label = `${state.kind} "${state.name.trim() || 'unnamed'}"${proven ? ` (#${state.newDropId})` : ''}`;
+  const created: CreatedRecipe = {
+    label,
+    collection: state.collection.trim(),
+    hidden: state.hidden,
+    txs: [...state.signedTxs],
+    sentence: plainSentence(),
+    rows: reviewRows(),
+    error: state.lastError,
+    fingerprint: '',
+  };
+  // A whitelist or a holder gate made with a blend or an upgrade exists now:
+  // the next one like it points at it rather than making a copy.
+  if (state.kind !== 'drop' && isNewGate(state.securityId) && state.newListId) {
+    const holders = state.securityId === 'new-holders';
+    state.securities = [...state.securities, { id: state.newListId, name: holders ? gateName() : listName(), type: holders ? 1 : 0 }];
+    state.securityId = state.newListId;
+    resetListDraft();
+    state.rule = emptyRuleDraft('');
+  }
+  // A RAM deposit is paid once, never carried over to the next one.
+  state.ramDeposit = '';
+  state.dropRam = { for: '', state: 'idle', bytes: 0, hasRow: false };
+  created.fingerprint = recipeFingerprint();
+  state.created = created;
+  state.anotherOf = undefined;
+}
+
+/** "Make another like it": everything stays, and the same recipe cannot be signed twice. */
+function makeAnother(): void {
+  const c = state.created;
+  if (!c) return;
+  state.anotherOf = { fingerprint: c.fingerprint, label: c.label };
+  state.created = undefined;
+  state.lastTx = ''; state.lastError = ''; state.dryRun = ''; state.signedTxs = [];
+  state.step = 0;
+}
+
+/** "Start from scratch": every field empty, as on arrival. The kind of recipe stays. */
+function startFromScratch(): void {
+  Object.assign(state, blankForm());
+  state.schemas = []; state.templates = []; state.securities = []; state.foreign = {};
+  state.loadedFor = ''; state.dataState = 'idle'; state.dataError = ''; state.truncated = false;
+  state.contractAuthorized = undefined;
+  resetListDraft();
+  state.rule = emptyRuleDraft('');
+  state.dropRam = { for: '', state: 'idle', bytes: 0, hasRow: false };
+  state.newListId = ''; state.newDropId = '';
+  state.picking = undefined; state.search = '';
+  state.created = undefined; state.anotherOf = undefined;
+  state.lastTx = ''; state.lastError = ''; state.dryRun = ''; state.signedTxs = [];
+  state.step = 0; state.visited = [];
+}
+
+const upperFirst = (t: string) => (t ? t[0].toUpperCase() + t.slice(1) : t);
+/** Back to the top of the page, where a screen that just changed starts. */
+const toTop = () => { if (typeof window !== 'undefined') window.scrollTo({ top: 0 }); };
+
+/**
+ * The confirmation once a recipe is created. Closing it shows the created
+ * screen underneath, which says what was made and offers what next.
+ */
+function createdNotice(c: CreatedRecipe): SignedNotice {
+  return {
+    id: 'created',
+    title: `${upperFirst(c.label)} is created`,
+    lines: [
+      c.sentence,
+      c.hidden ? 'It is hidden: players do not see it until you reveal it from Change.' : 'Players can see it now.',
+    ],
+    warn: c.error,
+    txs: c.txs,
+    close: { label: 'Close', go: toTop },
+    other: c.hidden || !c.collection ? undefined : {
+      label: embedded ? `Open ${c.collection} in Explore` : `Open ${c.collection} in the catalogue`,
+      href: embedded ? `#/explore/${c.collection}` : `#/catalog/${c.collection}`,
+    },
+  };
+}
+
+/** What was just created, and the two ways on from it. */
+function createdScreen(c: CreatedRecipe): string {
+  const where = c.hidden
+    ? 'It is hidden: players do not see it until you reveal it from Change.'
+    : embedded
+      ? `Players see it now. <a href="#/explore/${esc(c.collection)}">Open ${esc(c.collection)} in Explore</a>; changes are made from Change.`
+      : `Players see it now. <a href="#/catalog/${esc(c.collection)}">Open ${esc(c.collection)} in the catalogue</a>; changes are made from Change.`;
+  return `
+    <div class="lab-panel lab-created">
+      <div class="lab-callout ok"><strong>${esc(c.label[0].toUpperCase() + c.label.slice(1))} is created.</strong>
+        ${c.txs.filter(Boolean).map(txLink).join(' · ')}</div>
+      ${c.error ? `<p class="lab-warn">${esc(c.error)}</p>` : ''}
+      <h3 class="lab-q">What you created</h3>
+      <div class="lab-sentence big">${esc(c.sentence)}</div>
+      ${c.rows}
+      <p class="lab-hint">${where}</p>
+      <h3 class="lab-q">What next?</h3>
+      <div class="lab-seg lab-next">
+        <button data-lab="make-another">Make another like it<small>everything stays filled in, the whitelist too, and something has to change before it can be signed</small></button>
+        <button data-lab="from-scratch">Start from scratch<small>every field is emptied, the collection too</small></button>
+      </div>
+    </div>`;
 }
 
 type SignedResult = { response?: unknown; resolved?: { transaction: { id: unknown } } };
@@ -2022,7 +2263,7 @@ async function onDeleteGate(id: string): Promise<void> {
   const collection = state.collection.trim();
   const actions = deleteGateActions(id, gate.type);
   const summary = [
-    `DELETE the ${gate.type === 0 ? 'list' : 'holder gate'} "${gate.name}" (#${id}) on ${collection}`,
+    `DELETE the ${gate.type === 0 ? 'whitelist' : 'holder gate'} "${gate.name}" (#${id}) on ${collection}`,
     '',
     'No blend or upgrade of the collection uses it. It cannot be brought back: a new one gets a new id.',
     '',
@@ -2042,6 +2283,15 @@ async function onDeleteGate(id: string): Promise<void> {
   state.signing = undefined;
   state.busy = false;
   rerender();
+  if (state.lastTx) {
+    showSigned({
+      id: 'gate-deleted',
+      title: `The ${gate.type === 0 ? 'whitelist' : 'holder gate'} "${gate.name}" (#${id}) is deleted`,
+      lines: [`It is gone from ${collection}. A new one gets a new id.`],
+      txs: [state.lastTx],
+      close: { label: 'Close' },
+    });
+  }
 }
 
 /** The one action that is not a field edit, and cannot be undone. */
@@ -2154,10 +2404,13 @@ function plainSentence(): string {
     const price = state.free
       ? 'for free'
       : `for ${state.priceAmount.trim() || 'an amount you have not set'} ${state.priceToken.trim()}`;
+    // The total and the per-wallet limit are two different things: a drop
+    // with no total cap can still be claimed once per wallet, and the
+    // sentence said "as many times as players want" for exactly that.
     const supply = state.unlimited
-      ? 'as many times as players want'
-      : `${intOr(state.maxClaimable) || 'a number of'} times in total`;
-    return `Each claim mints ${mints}, ${price}, claimable ${supply}.`;
+      ? 'No total cap'
+      : `${intOr(state.maxClaimable) || 'A number of'} claims in total`;
+    return `Each claim mints ${mints}, ${price}. ${supply}; ${perWalletText('claim')}. ${whoSentence('claim')}`;
   }
 
   const give = state.ingredients.length
@@ -2175,7 +2428,7 @@ function plainSentence(): string {
           : `has ${r.attribute_name} equal to ${splitValues(r.values).join(' or ') || 'a value you have not set yet'}`).join(' and ')
       : '';
     const who = `their ${state.schemaName || 'chosen'} NFT${gate ? ` (${gate})` : ''}`;
-    return `A player spends ${give} and ${who} is rewritten: ${effect}.`;
+    return `A player spends ${give} and ${who} is rewritten: ${effect}. ${usesText()}`;
   }
 
   const total = totalWeight();
@@ -2184,7 +2437,91 @@ function plainSentence(): string {
     : state.outcomes.length === 1
       ? describeOutcome(state.outcomes[0])
       : state.outcomes.map((o) => `${pct(o.weight, total)} ${describeOutcome(o)}`).join(', ');
-  return `A player gives ${give} and gets ${get}.`;
+  return `A player gives ${give} and gets ${get}. ${usesText()}`;
+}
+
+/** "once", "twice", "3 times". */
+const timesText = (n: number) => (n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`);
+
+/** "every day", "every 6 hours". */
+function everyText(seconds: number): string {
+  const w = describeWait(seconds);
+  return `every ${w.startsWith('1 ') ? w.slice(2) : w}`;
+}
+
+/**
+ * The claim limit the accounts pasted on a drop's own whitelist get, once
+ * the drop's own per-wallet limit is applied too: the lower of the two.
+ * 0 when there is none, or when it changes nothing.
+ */
+function whitelistLimit(): number {
+  const t = listTarget();
+  const w = t?.kind === 'drop' ? claimLimit() : 0;
+  const own = intOr(state.accountLimit);
+  return w > 0 && (own === 0 || w < own) ? w : 0;
+}
+
+/** How often one wallet can run it, in words: "each wallet can claim once every day". */
+function perWalletText(verb: 'claim' | 'use it'): string {
+  const own = intOr(state.accountLimit);
+  const cd = intOr(state.cooldown);
+  const every = cd > 0 ? ` ${everyText(cd)}` : '';
+  const w = whitelistLimit();
+  const wallets = own > 0 ? `each wallet can ${verb} ${timesText(own)}${every}` : 'no limit per wallet';
+  if (!w) return wallets;
+  return `each account added to the whitelist can ${verb} ${timesText(w)}${every}${ensureRule().on ? `, ${wallets.replace(/^each wallet/, 'other wallets')}` : ''}`;
+}
+
+/** Who can run it, as its own sentence. */
+function whoSentence(verb: 'claim' | 'use it'): string {
+  const who = whoCanUseIt();
+  if (who.startsWith('nobody')) return `Nobody can ${verb} yet: ${who.replace(/^nobody yet: /, '')}.`;
+  return `${who[0].toUpperCase()}${who.slice(1)}${who.includes(',') ? ',' : ''} can ${verb}.`;
+}
+
+/** A blend's or an upgrade's total and per-wallet limits, then who can use it. */
+function usesText(): string {
+  const max = intOr(state.maxUses);
+  return `${max ? `${max} uses in total` : 'No total cap'}; ${perWalletText('use it')}. ${whoSentence('use it')}`;
+}
+
+/** The review row for the per-wallet limit. */
+function perWalletRow(): string {
+  const own = intOr(state.accountLimit);
+  const cd = intOr(state.cooldown);
+  const base = own > 0 ? `${timesText(own)}${cd > 0 ? `, then again ${everyText(cd)}` : ', never resets'}` : 'no limit';
+  const w = whitelistLimit();
+  return w ? `${base} · accounts added to the whitelist: ${timesText(w)}` : base;
+}
+
+/**
+ * Whether a template's NFTs can be traded and burned. AtomicAssets fixes
+ * both when the template is made, for every NFT of it, so no drop or blend
+ * can change them: an author looking for "prevent trading" on a drop is
+ * looking in the wrong place, and is told so.
+ */
+function tradeFacts(id: number): string {
+  const t = tpl(id);
+  if (t?.transferable === undefined || t.burnable === undefined) return '';
+  return `${t.transferable ? 'tradable' : 'not tradable'}, ${t.burnable ? 'burnable' : 'not burnable'}`;
+}
+
+/** The same under a template picked to mint. */
+function tradeLine(id: number): string {
+  const f = tradeFacts(id);
+  if (!f) return '';
+  return `<span class="lab-tpl-meta lab-tpl-rules">${esc(f[0].toUpperCase() + f.slice(1))}. Set on the template, not on this ${esc(state.kind)}.</span>`;
+}
+
+/** The review row: each template minted, tradable or not. */
+function templateRulesRow(): string {
+  const ids = state.kind === 'drop' ? state.mints.map((m) => m.template_id)
+    : state.kind === 'blend' ? state.outcomes.flatMap((o) => (o.kind === 'nft' ? [o.template_id] : [])) : [];
+  const parts = [...new Set(ids)].map((id) => {
+    const f = tradeFacts(id);
+    return f ? `${tplName(id)}: ${f}` : '';
+  }).filter(Boolean);
+  return parts.length ? `${parts.join(' · ')} (set on the template, not on the ${state.kind})` : '';
 }
 
 // ─── building the on-chain arguments ────────────────────────────────────
@@ -2385,6 +2722,10 @@ function taggedProblems(): Problem[] {
   // building a recipe before they connect.
   if (!state.actor) at(4, 'Connect a wallet to sign.');
   if (!state.collection.trim()) at(0, 'Pick the collection this belongs to.');
+  // Filed under review: it stops signing, never the way back to a step to change something.
+  if (unchangedCopy()) {
+    at(4, `This is exactly the ${state.anotherOf!.label} you just created. Change something first, or start from scratch.`);
+  }
   // Filed under review, not step 0. Authorisation is not a field the author
   // fills in, it is an external precondition discovered asynchronously, and
   // walling off the wizard on it would stop anyone exploring the tool against
@@ -2561,7 +2902,7 @@ function warnings(): string[] {
     const holders = listed.kind === 'drop' && ensureRule().on;
     if (empty && !holders) {
       out.push(listed.kind === 'drop'
-        ? 'Nobody is on the drop\'s list and it lets in no holders, so nobody can claim it until that changes from Change.'
+        ? 'Nobody is on the drop\'s whitelist and it lets in no holders, so nobody can claim it until that changes from Change.'
         : `Nobody is on "${listed.name}", so nobody can use this until accounts are added from Change.`);
     }
     if (!listed.fresh && listed.kind === 'collection' && p.add.length) {
@@ -2625,6 +2966,40 @@ export {
   BLANK_EXISTING as __BLANK_EXISTING,
   editableRows as __editableRows,
   toIngredient as __toIngredient,
+};
+
+/**
+ * What "Sign and create" does once the wallet answered, without a wallet:
+ * the same afterSigning the button runs. Test-only.
+ */
+export function __signedAndCreated(txs: string[]): void {
+  state.signedTxs = [...txs];
+  afterSigning();
+  rerender();
+  if (state.created) showSigned(createdNotice(state.created));
+}
+
+/** The confirmations, built from what is on screen, without a wallet. Test-only. */
+export function __runNotice(what: { name: string; summary: string[]; later: boolean }): SignedNotice {
+  return runNotice(state.run, what);
+}
+export function __savedNotice(changes: string[], error = ''): SignedNotice {
+  return savedNotice(state.editing!, changes, error);
+}
+export { backToRecipeList as __backToRecipeList, mintedNotice as __mintedNotice };
+
+/** The whole lab state, read only. Test-only. */
+export function __labState(): Readonly<LabState> {
+  return state;
+}
+
+export {
+  makeAnother as __makeAnother,
+  startFromScratch as __startFromScratch,
+  blankForm as __blankForm,
+  unchangedCopy as __unchangedCopy,
+  reviewRows as __reviewRows,
+  stepProblems as __stepProblems,
 };
 
 /** The recipe open in Change, and the baseline it is diffed against. Test-only. */
@@ -3060,13 +3435,16 @@ export function applyLabRoute(tool: string, subject: string): void {
  * offered there at all, not even by link.
  */
 let embedded = false;
+/** The host's address for the screen before this one ('' when it does not say). */
+let cameFrom: () => string = () => '';
 
-export function embedLab(render: () => void): void {
+export function embedLab(render: () => void, previous: () => string = () => ''): void {
   embedded = true;
   // The host opens tools from its own home, before the lab has been drawn
   // once and so before attachLabHandlers has handed it a repaint. Reads
   // started then finished into a no-op and the screen never caught up.
-  rerender = render;
+  repaintHost = render;
+  cameFrom = previous;
   if (state.tool === 'crucible') state.tool = 'recipes';
 }
 
@@ -3145,6 +3523,8 @@ function chooseRunAction(action: RecipeAction, actor: string): void {
 
 /** Picks what the creator is making. */
 function chooseKind(kind: LabKind): void {
+  // Picking what to make next is moving on from what was just created, form kept.
+  if (state.created) makeAnother();
   state.kind = kind;
   state.step = 0;
   resetListDraft();
@@ -3654,6 +4034,7 @@ function outcomeRow(o: LabOutcome, idx: number): string {
        <span class="lab-row-main">
          <strong>${esc(tplName(o.template_id))}</strong>
          <span class="lab-tpl-meta">${esc(tpl(o.template_id)?.schema_name ?? '')} &middot; #${o.template_id}</span>
+         ${tradeLine(o.template_id)}
        </span>`
     : o.kind === 'token'
       ? `<span class="lab-tag">Tokens</span>
@@ -3865,6 +4246,7 @@ function stepMints(): string {
               <span class="lab-row-main">
                 <strong>${esc(t?.name ?? `template ${m.template_id}`)}</strong>
                 <span class="lab-tpl-meta">${esc(t?.schema_name ?? '')} &middot; #${m.template_id}${t && t.max ? ` &middot; ${t.issued} of ${t.max} minted` : ''}</span>
+                ${tradeLine(m.template_id)}
               </span>
               ${stepper(m.quantity, 'mint-minus', 'mint-plus', idx)}
               <button class="lab-x" data-lab="mint-del" data-idx="${idx}" aria-label="remove"></button>
@@ -4015,7 +4397,7 @@ function stepRules(): string {
         <label>Who can claim it</label>
         <div class="lab-seg">
           <button class="${state.authRequired ? '' : 'on'}" data-lab="drop-auth-off">Everyone</button>
-          <button class="${state.authRequired ? 'on' : ''}" data-lab="drop-auth-on">Only some accounts</button>
+          <button class="${state.authRequired ? 'on' : ''}" data-lab="drop-auth-on">Only whitelisted accounts</button>
         </div>
         ${listPanel()}
         ${rulePanel()}
@@ -4045,10 +4427,10 @@ function gateSelect(id: string, value: string): string {
   return `
     <select id="${id}">
       ${option('', 'Everyone')}
-      ${option('new', 'Only accounts on a new list')}
+      ${option('new', 'Only accounts on a new whitelist')}
       ${option('new-holders', 'Only holders, by a new rule')}
-      ${lists.length ? `<optgroup label="This collection's lists">
-        ${lists.map((s) => option(s.id, `Only accounts on "${s.name}" (#${s.id})`)).join('')}</optgroup>` : ''}
+      ${lists.length ? `<optgroup label="This collection's whitelists">
+        ${lists.map((s) => option(s.id, `Only accounts on the whitelist "${s.name}" (#${s.id})`)).join('')}</optgroup>` : ''}
       ${proofs.length ? `<optgroup label="Holder gates">
         ${proofs.map((s) => option(s.id, `Only holders, as "${s.name}" (#${s.id}) sets`)).join('')}</optgroup>` : ''}
       ${known ? '' : option(value, `Gate #${value}, not found on this collection`)}
@@ -4066,30 +4448,30 @@ function listPanel(): string {
   return `
     <div class="lab-list-panel">
       ${t.kind === 'collection' && t.fresh ? `
-        <label class="lab-mini">Name of the new list
+        <label class="lab-mini">Name of the new whitelist
           <input id="lab-list-name" type="text" value="${esc(d.newName)}" placeholder="${esc(listName())}" maxlength="64" autocomplete="off" />
         </label>` : ''}
       ${t.kind === 'collection' && !t.fresh ? sharedNote(t.id) : ''}
       ${t.fresh ? '' : listMembers(p, editing)}
-      <label class="lab-mini">${t.fresh ? 'Accounts on it' : 'Add accounts'}
+      <label class="lab-mini">${t.fresh ? 'Whitelisted accounts' : 'Add accounts to the whitelist'}
         <textarea id="lab-list-add" rows="5" spellcheck="false" autocomplete="off"
                   placeholder="One per line, or separated by commas or spaces">${esc(d.addText)}</textarea>
       </label>
       ${listCheckLine(p)}
       ${t.kind === 'drop' ? `
-        <label class="lab-mini">Claim limit for the accounts added <span class="lab-note">optional</span>
+        <label class="lab-mini">Claims per whitelisted account <span class="lab-note">optional</span>
           <input id="lab-list-limit" type="number" min="0" value="${esc(d.limit)}" placeholder="the drop's own" />
         </label>
-        <p class="lab-note">The lower of this and the drop's own per-wallet limit applies, so it can only lower it.
-          Pasting an account already on the list with a limit gives it that limit.</p>` : ''}
+        <p class="lab-note">For the accounts pasted above. The lower of this and the drop's own per-wallet limit applies,
+          so it can only lower it. Pasting an account already on the whitelist with a limit gives it that limit.</p>` : ''}
       ${editing ? `
-        <label class="lab-mini">Take accounts off
+        <label class="lab-mini">Take accounts off the whitelist
           <textarea id="lab-list-remove" rows="3" spellcheck="false" autocomplete="off"
                     placeholder="Paste the accounts to take off">${esc(d.removeText)}</textarea>
         </label>
         <label class="lab-check">
           <input type="checkbox" ${d.clear ? 'checked' : ''} data-lab="list-clear" />
-          <span><strong>Start the list over</strong>. Everyone on it now comes off, and the list becomes the accounts pasted above.</span>
+          <span><strong>Start the whitelist over</strong>. Everyone on it now comes off, and the whitelist becomes the accounts pasted above.</span>
         </label>` : ''}
       ${listCost(p)}
     </div>`;
@@ -4121,7 +4503,7 @@ function rulePanel(): string {
   const head = isDrop ? `
       <label class="lab-check">
         <input type="checkbox" ${r.on ? 'checked' : ''} data-lab="rule-on" />
-        <span><strong>Also let in holders</strong>. A claim passes for an account on its list, or for one that holds what the rule names.</span>
+        <span><strong>Also let in holders</strong>. A claim passes for an account on its whitelist, or for one that holds what the rule names.</span>
       </label>
       ${!r.on && r.original ? '<p class="lab-note">Its holder rule comes off on save.</p>' : ''}`
     : key === 'sec:new' ? `
@@ -4227,7 +4609,7 @@ function listMembers(p: ListPlan, editing: boolean): string {
       <div class="lab-member-grid">
         ${shown.map((m) => editing
           ? `<button class="lab-member${off.has(m) ? ' off' : ''}" data-lab="list-toggle" data-account="${esc(m)}"
-                     aria-pressed="${off.has(m)}" aria-label="${esc(off.has(m) ? `Keep ${m} on the list` : `Take ${m} off the list`)}">${esc(m)}${d.limits[m] ? ` · ${d.limits[m]}` : ''}</button>`
+                     aria-pressed="${off.has(m)}" aria-label="${esc(off.has(m) ? `Keep ${m} on the whitelist` : `Take ${m} off the whitelist`)}">${esc(m)}${d.limits[m] ? ` · ${d.limits[m]}` : ''}</button>`
           : `<span class="lab-member">${esc(m)}${d.limits[m] ? ` · ${d.limits[m]}` : ''}</span>`).join('')}
       </div>
       ${found.length > shown.length ? `<p class="lab-note">And ${found.length - shown.length} more. Type to find one.</p>` : ''}
@@ -4289,7 +4671,8 @@ function reviewRows(): string {
     rows.push(['Mints', state.mints.map((m) => `${m.quantity} x ${tplName(m.template_id)}`).join(', ') || 'nothing']);
     rows.push(['Per claim', `${totalMints(entries)} NFT(s)`]);
     rows.push(['Price', state.free ? 'free' : `${state.priceAmount} ${state.priceToken}`]);
-    rows.push(['Supply', state.unlimited ? 'unlimited' : String(intOr(state.maxClaimable))]);
+    rows.push(['Supply', state.unlimited ? 'no total cap' : `${intOr(state.maxClaimable)} claims in total`]);
+    rows.push(['Per wallet', perWalletRow()]);
     rows.push(['Paid to', state.priceRecipient.trim() || state.actor || 'the signing wallet']);
     const r = ensureDropRam();
     if (r.state === 'done') {
@@ -4314,6 +4697,12 @@ function reviewRows(): string {
         `${m.attribute_name} (${schemaType(state.schemaName, m.attribute_name)}) ${m.op === UPGRADE_OP.ADD ? '+=' : '='} ${String(m.value).trim() || 'unset'}`).join(', ') || 'nothing']);
     }
   }
+  if (state.kind !== 'drop') {
+    rows.push(['Total uses', intOr(state.maxUses) ? String(intOr(state.maxUses)) : 'no total cap']);
+    rows.push(['Per wallet', perWalletRow()]);
+  }
+  const rules = templateRulesRow();
+  if (rules) rows.push(['Trade and burn', rules]);
   rows.push(['Window', `${state.startTime ? new Date(state.startTime).toLocaleString() : 'now'} to ${state.endTime ? new Date(state.endTime).toLocaleString() : 'never'}`]);
   rows.push(['Visibility', state.hidden ? 'hidden, safe to test' : 'visible immediately']);
   rows.push([state.kind === 'drop' ? 'Who can claim' : 'Who can use it', whoCanUseIt()]);
@@ -4419,7 +4808,7 @@ function gatesSection(): string {
   const rows = state.securities.map((s) => {
     const users = g.users[s.id] ?? [];
     const what = s.type === 0
-      ? `list · ${g.counts[s.id] ?? '…'} account${g.counts[s.id] === 1 ? '' : 's'}`
+      ? `whitelist · ${g.counts[s.id] ?? '…'} account${g.counts[s.id] === 1 ? '' : 's'}`
       : `holders · ${g.rules[s.id] ?? '…'}`;
     const used = g.state !== 'done' ? 'reading which recipes use it'
       : users.length ? `used by ${users.slice(0, 5).join(', ')}${users.length > 5 ? ` and ${users.length - 5} more` : ''}`
@@ -4440,7 +4829,7 @@ function gatesSection(): string {
   }).join('');
   return `
     <h4 class="lab-sub">Who can use this collection's recipes</h4>
-    <p class="lab-hint">Its lists and holder gates. One gate can sit behind many blends and upgrades, and a change to it reaches all of them.</p>
+    <p class="lab-hint">Its whitelists and holder gates. One gate can sit behind many blends and upgrades, and a change to it reaches all of them.</p>
     ${g.state === 'error' ? `<p class="lab-warn">Could not read them all: ${esc(g.error)} <button class="lab-link" data-lab="gates-reload">Try again</button></p>` : ''}
     <div class="lab-rows">${rows}</div>
     ${state.lastError && !state.editing ? `<p class="lab-warn">${esc(state.lastError)}</p>` : ''}
@@ -4548,10 +4937,10 @@ function editForm(): string {
         <label>Who can claim it</label>
         <div class="lab-seg">
           <button class="${e.authRequired ? '' : 'on'}" data-lab="edit-auth-off">Everyone</button>
-          <button class="${e.authRequired ? 'on' : ''}" data-lab="edit-auth-on">Only some accounts</button>
+          <button class="${e.authRequired ? 'on' : ''}" data-lab="edit-auth-on">Only whitelisted accounts</button>
         </div>
         ${!e.authRequired && state.editingOriginal?.authRequired
-          ? '<p class="lab-note">The accounts stay on its list, ready for when it is turned back on.</p>'
+          ? '<p class="lab-note">The accounts stay on its whitelist, ready for when it is turned back on.</p>'
           : ''}
         ${listPanel()}
         ${rulePanel()}
@@ -5534,10 +5923,23 @@ async function onFinishClaim(): Promise<void> {
     const txId = await claimPending(f.pending);
     state.run.finish = { ...f, phase: 'done', txId,
       message: `Minted: ${f.pending.drawn.length} NFT${f.pending.drawn.length === 1 ? '' : 's'} on the way to your wallet.` };
+    // The recipe's own confirmation shows this as it happens; without it, a new one says so.
+    if (signedNotice()?.id !== 'run') showSigned(mintedNotice(state.run.finish.message, txId ?? ''));
   } catch (e) {
     state.run.finish = { ...f, phase: 'ready', message: `Not minted yet: ${e instanceof Error ? e.message : String(e)}` };
   }
   rerender();
+}
+
+/** The confirmation of a second signature: a pack's cards or a blend's result, minted. */
+function mintedNotice(message: string, txId: string): SignedNotice {
+  return {
+    id: 'minted',
+    title: 'Minted',
+    lines: [message, 'They can take a minute to show in your NFTs.'],
+    txs: [txId],
+    close: { label: 'Close' },
+  };
 }
 
 async function onPendingClaim(id: string, kind: string): Promise<void> {
@@ -5547,7 +5949,8 @@ async function onPendingClaim(id: string, kind: string): Promise<void> {
   pendingError = '';
   rerender();
   try {
-    await claimPending(p);
+    const txId = await claimPending(p);
+    showSigned(mintedNotice(`${upperFirst(finishNoun(p))}: ${p.drawn.length} NFT${p.drawn.length === 1 ? '' : 's'} on the way to your wallet.`, txId ?? ''));
   } catch (e) {
     pendingError = `Could not mint ${finishNoun(p)}: ${e instanceof Error ? e.message : String(e)}`;
   } finally {
@@ -6148,6 +6551,86 @@ function renderSimulation(): string {
   return `<p class="lab-hint run-sim">The chain could not be asked (${esc(r.reason)}). You can still sign.</p>`;
 }
 
+/** What a recipe's confirmation calls it, by what it did. */
+const RUN_DONE: Record<RecipeAction, { title: string; drawn?: string }> = {
+  blend: { title: 'Blended', drawn: 'Blend signed' },
+  upgrade: { title: 'Upgraded' },
+  drop: { title: 'Drop claimed' },
+  unpack: { title: 'Pack sent to be opened' },
+};
+
+/** True while the second half of a pack or a random blend still needs this screen. */
+const finishPending = (run: RunState) =>
+  Boolean(run.finish && (run.finish.phase === 'waiting' || run.finish.phase === 'ready' || run.finish.phase === 'claiming'));
+
+/**
+ * Where the confirmation of a recipe goes back to: the page they came from
+ * when it was one of those (Explore, their NFTs), otherwise the list of
+ * that kind of recipe in the collection.
+ */
+function runBack(run: RunState): { label: string; go: () => void } {
+  const from = embedded ? cameFrom() : '';
+  const explore = /^#\/explore\/([a-z1-5.]{1,12})/.exec(from);
+  if (explore) return { label: `Back to ${explore[1]} in Explore`, go: () => { location.hash = from; } };
+  if (/^#\/explore\/?$/.test(from)) return { label: 'Back to Explore', go: () => { location.hash = from; } };
+  if (/^#\/nfts(\/|$)/.test(from)) return { label: 'Back to your NFTs', go: () => { location.hash = from; } };
+  const noun = RUN_NOUN[run.action as RecipeAction] ?? 'recipes';
+  return {
+    label: run.collection ? `Back to the ${noun} of ${run.collection}` : `Back to the ${noun}`,
+    go: () => {
+      if (state.run !== run) return;
+      // The list is read again: what was just claimed or burned changed it.
+      run.step = run.collection ? 3 : 2;
+      if (run.collection) void loadRunChoices();
+      rerender();
+      toTop();
+    },
+  };
+}
+
+/** The draw, or the second signature, as the confirmation shows it while it is open. */
+function runFinishLive(run: RunState): string {
+  const f = state.run === run ? run.finish : undefined;
+  if (!f) return '';
+  const tone = f.phase === 'done' ? 'ok' : f.phase === 'failed' ? 'block' : f.phase === 'ready' ? 'warn' : 'pending';
+  return `
+    <div class="run-verdict-panel run-tone-${tone}">
+      <h4>${esc(f.phase === 'done' ? 'Done' : f.phase === 'failed' ? 'Not finished'
+        : f.phase === 'ready' ? 'One more signature' : f.phase === 'claiming' ? 'Minting' : 'Drawing')}</h4>
+      <p>${esc(f.message)}</p>
+      ${f.phase === 'ready' && f.pending ? `<div class="lab-row-actions">
+        <button class="lab-primary" data-signed="finish-claim">${f.kind === 'blend' ? 'Claim the result' : 'Mint the cards'}</button>
+      </div>` : ''}
+      ${f.txId ? `<p class="lab-hint"><a target="_blank" rel="noreferrer"
+        href="https://waxblock.io/transaction/${esc(f.txId)}">view the second transaction on waxblock</a></p>` : ''}
+    </div>`;
+}
+
+/** The confirmation once a recipe is run. A draw that lands later shows in it as it lands. */
+function runNotice(run: RunState, what: { name: string; summary: string[]; later: boolean }): SignedNotice {
+  const done = RUN_DONE[run.action as RecipeAction] ?? { title: 'Signed' };
+  const back = runBack(run);
+  return {
+    id: 'run',
+    title: what.later && done.drawn ? done.drawn : done.title,
+    lines: [
+      `${what.name}${run.collection ? `, in ${run.collection}` : ''}.`,
+      what.summary.length ? `Signed: ${what.summary.join(', ')}.` : '',
+      what.later ? '' : 'What it mints can take a minute to show in your NFTs.',
+    ],
+    txs: [run.lastTrxId],
+    live: () => runFinishLive(run),
+    bindLive: (el) => el.querySelector('[data-signed="finish-claim"]')?.addEventListener('click', () => void onFinishClaim()),
+    // While a pack waits for its draw or its second signature, closing stays
+    // on the recipe, where that goes on.
+    close: {
+      label: () => (finishPending(run) ? 'Close' : back.label),
+      go: () => { if (!finishPending(run)) back.go(); },
+    },
+    other: { label: 'Stay on this recipe', hidden: () => finishPending(run) },
+  };
+}
+
 async function onRunSign(): Promise<void> {
   const run = state.run;
   const session = getCurrentSession();
@@ -6176,12 +6659,19 @@ async function onRunSign(): Promise<void> {
   const packAsset = source === 'pack' || source === 'neftypack'
     ? runRequirements().flatMap((r, i) => (r.kind === 'nft' ? run.picked[i] ?? [] : []))[0]
     : undefined;
+  // Said in the confirmation, so read before the picks are emptied.
+  const what = {
+    name: run.pickedRecipe?.name || (run.blend ? blendTitle(run.blend) : `#${run.blendId}`),
+    summary: signSummary(runRequirements()),
+    later: Boolean(drawn || packAsset),
+  };
   try {
     const known = drawn ? await readKnownClaimIds(actor) : new Set<string>();
     const actions = await buildCurrentRunActions(actor);
     const result = await session.transact({ actions });
     run.lastTrxId = (result.response as { transaction_id?: string } | undefined)?.transaction_id
       ?? String(result.resolved?.transaction.id ?? '');
+    showSigned(runNotice(run, what));
     // What the wallet holds just changed, so the counts on screen are
     // already stale.
     run.assetsFor = '';
@@ -6467,6 +6957,16 @@ async function onPlaceBid() {
     state.lastTx =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
+    showSigned({
+      id: 'bid',
+      title: `Bid placed on ${name}`,
+      lines: [
+        `You bid ${formatWax(amount)}. If someone outbids you, it comes back as a refund you claim from this screen.`,
+        'The name goes to the highest bid once that bid has stood for 24 hours, and the chain settles one name a day.',
+      ],
+      txs: [state.lastTx],
+      close: { label: 'Close' },
+    });
     await onCheckName();
     void loadMyBids();
     void loadTopBids();
@@ -6548,6 +7048,13 @@ async function onClaimName() {
     state.lastTx =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
+    showSigned({
+      id: 'name-claimed',
+      title: `${newname} is yours`,
+      lines: [`The account ${newname} exists now, with the keys you chose, about 4 KB of RAM and 1 WAX staked to its CPU and NET.`],
+      txs: [state.lastTx],
+      close: { label: 'Close' },
+    });
     // The claim erases the bid row, so the verdict changes to "taken".
     await onCheckName();
     void loadTopBids();
@@ -6586,6 +7093,13 @@ async function onClaimAllRefunds() {
     state.lastTx =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
+    showSigned({
+      id: 'refunds',
+      title: `${state.refunds.length} refund${state.refunds.length === 1 ? '' : 's'} claimed`,
+      lines: [`${formatWax(total)} is back in your account.`],
+      txs: [state.lastTx],
+      close: { label: 'Close' },
+    });
     void loadMyBids();
   } catch (err) {
     state.lastError = err instanceof Error ? err.message : String(err);
@@ -6601,10 +7115,18 @@ async function onClaimRefund(newname: string) {
   state.lastError = '';
   rerender();
   try {
+    const refund = state.refunds.find((r) => r.newname === newname);
     const result = await session.transact({ actions: [buildBidRefund(state.actor, newname)] });
     state.lastTx =
       (result.response as { transaction_id?: string } | undefined)?.transaction_id ??
       String(result.resolved?.transaction.id ?? '');
+    showSigned({
+      id: 'refund',
+      title: `Refund for ${newname} claimed`,
+      lines: [refund ? `${refund.amount} is back in your account.` : 'The WAX is back in your account.'],
+      txs: [state.lastTx],
+      close: { label: 'Close' },
+    });
     void loadMyBids();
   } catch (err) {
     state.lastError = err instanceof Error ? err.message : String(err);
@@ -7459,6 +7981,7 @@ export function renderLabPage(): string {
         `Create ${title}`,
         'One question per screen. Templates are picked from your collection instead of typed, odds are drawn instead of counted, and upgrade attribute types are read from the schema. <strong>This signs real transactions.</strong>',
       )}
+      ${state.created ? createdScreen(state.created) : `
       ${stepRail()}
       ${state.step === STEP_COUNT - 1 ? '' : `<div class="lab-sentence">${esc(plainSentence())}</div>`}
       <div class="lab-panel">${stepBlockers()}${body}</div>
@@ -7475,7 +7998,7 @@ export function renderLabPage(): string {
           state.step === STEP_COUNT - 1 || blockers.length
             ? `disabled title="${esc(blockers.length ? 'Fix what is listed above first' : '')}"`
             : ''}>Continue</button>
-      </div>
+      </div>`}
     </section>`;
 }
 
@@ -7550,6 +8073,8 @@ async function onSimulate() {
 async function onSubmit() {
   const session = getCurrentSession();
   if (!session) { state.lastError = 'Connect a wallet first.'; rerender(); return; }
+  // The button is off already; this is for anything that calls it anyway.
+  if (unchangedCopy()) { state.lastError = `This is exactly the ${state.anotherOf!.label} you just created. Change something first.`; rerender(); return; }
 
   const accounts = listTarget() ? listPlan(listTarget()!).add.length : 0;
   const summary = [
@@ -7573,27 +8098,16 @@ async function onSubmit() {
   try {
     await resolveNewIds();
     await signInTurn(session, packTransactions(createActions()));
-    resetListDraft();
-    state.rule = emptyRuleDraft('');
-    state.ramDeposit = '';
-    state.dropRam = { for: '', state: 'idle', bytes: 0, hasRow: false };
   } catch (err) {
     state.lastError = err instanceof Error ? err.message : String(err);
-    // The recipe and the start of its list are in the first transaction.
-    if (state.signedTxs.length) state.lastError += ' It exists: the rest of the list can be added from Change.';
+    // The recipe and the start of its whitelist are in the first transaction.
+    if (state.signedTxs.length) state.lastError += ' It exists: the rest of the whitelist can be added from Change.';
   }
-  state.lastTx = state.signedTxs[0] ?? '';
-  // The app caches each contract's list. Something was just added to one
-  // of them, so drop the cache rather than send the author back to a
-  // page that does not show what they just made.
-  if (state.lastTx) {
-    if (state.kind === 'blend') clearDiscoverCache();
-    else if (state.kind === 'upgrade') clearUpgradesCache();
-    else clearDropsCache();
-  }
+  afterSigning();
   state.signing = undefined;
   state.busy = false;
   rerender();
+  if (state.created) showSigned(createdNotice(state.created));
 }
 
 /**
@@ -7616,6 +8130,7 @@ async function onSaveEdits() {
   ].join('\n');
   if (!(await confirmCreate(summary))) return;
 
+  const saved = { recipe: state.editing!, changes: changes.map((c) => c.label) };
   state.busy = true; state.lastError = ''; state.lastTx = ''; state.signedTxs = [];
   rerender();
   let complete = false;
@@ -7658,6 +8173,35 @@ async function onSaveEdits() {
   state.signing = undefined;
   state.busy = false;
   rerender();
+  if (state.signedTxs.length) showSigned(savedNotice(saved.recipe, saved.changes, complete ? '' : state.lastError));
+}
+
+/** "Blend "Name" (#43444)", for the confirmations of Change. */
+const recipeLabel = (e: LabExisting) => `${e.kind} "${e.name || 'unnamed'}" (#${e.id})`;
+
+/** Back from a recipe to the collection's list, read again since it just changed. */
+function backToRecipeList(): void {
+  state.editing = undefined; state.editingOriginal = undefined;
+  // The list's own line says "Deleted." for whatever lastTx holds.
+  state.lastTx = ''; state.lastError = ''; state.signedTxs = [];
+  resetListDraft();
+  void loadExisting();
+  rerender();
+  toTop();
+}
+
+/** The confirmation once changes are saved. Closing it goes back to the collection's list. */
+function savedNotice(e: LabExisting, changes: string[], error: string): SignedNotice {
+  return {
+    id: 'saved',
+    title: `${upperFirst(recipeLabel(e))} is saved`,
+    lines: [changes.length === 1 ? 'What changed:' : `What changed, ${changes.length} things in one signature:`],
+    html: `<ul class="signed-list">${changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`,
+    warn: error,
+    txs: [...state.signedTxs],
+    close: { label: `Back to the ${e.kind}s of ${state.collection.trim()}`, go: backToRecipeList },
+    other: { label: 'Keep editing it' },
+  };
 }
 
 /** Deleting is the one action with no undo, so it asks on its own. */
@@ -7693,6 +8237,16 @@ async function onDeleteEntity() {
   }
   state.busy = false;
   rerender();
+  // The list is on screen already: closing stays there.
+  if (state.lastTx && !state.editing) {
+    showSigned({
+      id: 'deleted',
+      title: `${upperFirst(recipeLabel(e))} is deleted`,
+      lines: ['Players can no longer run it. Anything it already consumed stays consumed.'],
+      txs: [state.lastTx],
+      close: { label: `Back to the ${e.kind}s of ${state.collection.trim()}`, go: toTop },
+    });
+  }
 }
 
 // ─── handlers ───────────────────────────────────────────────────────────
@@ -7725,7 +8279,7 @@ function newIngredient(kind: LabIngredient['kind']): LabIngredient {
 let visitWired = false;
 
 export function attachLabHandlers(root: HTMLElement, render: () => void): void {
-  rerender = render;
+  repaintHost = render;
   wirePointerGuard(root);
   attachCrucibleHandlers(root, render);
 
@@ -8464,6 +9018,8 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
 
         case 'simulate': void onSimulate(); return;
         case 'submit':   void onSubmit(); return;
+        case 'make-another': makeAnother(); window.scrollTo({ top: 0 }); break;
+        case 'from-scratch': startFromScratch(); window.scrollTo({ top: 0 }); break;
       }
       render();
     });

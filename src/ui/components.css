@@ -3055,3 +3055,381 @@ button.inv-card.inv-usable { border: 1px solid var(--ok); }
   }
   .inv-list-head, .inv-list-row { min-width: var(--inv-min, 560px); }
 }
+
+/* After a creation: the two ways on, side by side, each with what it does. */
+.lab-next { margin-top: 6px; }
+.lab-next button { flex: 1 1 220px; text-align: left; }
+.lab-next button small { white-space: normal; line-height: 1.4; }
+/* Trade and burn, under a template: set on the template, so it reads as a fact, not a field. */
+.lab-tpl-rules { color: var(--fg-dim); }
+
+/* ─── the confirmation after a signature (signedPopup.ts) ─────────────────
+   A receipt with a seal on it. The seal sits across the top edge, the way a
+   stamp lands on paper; under a row of perforations, the stub keeps the
+   transaction and the ways out. No coloured edge: the seal carries the
+   colour, ok for a signature that went through, warn when Crucible cannot
+   tell. Every colour is the theme's token, so it holds in all four skins. */
+.signed-backdrop {
+  background: radial-gradient(ellipse at 50% 42%, rgb(0 0 0 / 0.5), rgb(0 0 0 / 0.78));
+  backdrop-filter: blur(7px) saturate(0.85);
+  -webkit-backdrop-filter: blur(7px) saturate(0.85);
+  animation: seal-fade 240ms ease-out both;
+}
+.signed-backdrop.leaving { animation: seal-fade 180ms ease-in reverse both; pointer-events: none; }
+.seal-card {
+  --seal: var(--ok);
+  --notch: 12px;
+  position: relative;
+  width: 100%;
+  max-width: 452px;
+  margin: 52px auto 0;
+  text-align: center;
+  color: var(--fg);
+  filter: drop-shadow(0 28px 50px rgb(0 0 0 / 0.42)) drop-shadow(0 2px 8px rgb(0 0 0 / 0.22));
+  animation: seal-rise 460ms cubic-bezier(0.2, 0.85, 0.25, 1) both;
+}
+.seal-card.unknown { --seal: var(--warn); }
+.signed-backdrop.leaving .seal-card { animation: seal-sink 180ms ease-in both; }
+
+/* The two halves, each cut at the corners where they meet. A drop shadow on
+   the card, not a box shadow on them, so the shadow follows the cuts. */
+.seal-body,
+.seal-stub { position: relative; }
+.seal-body {
+  padding: 66px 34px 24px;
+  border-radius: 20px 20px 0 0;
+  background:
+    radial-gradient(120% 75% at 50% 0%, color-mix(in srgb, var(--seal) 15%, transparent), transparent 64%),
+    linear-gradient(var(--panel), var(--panel)),
+    var(--bg);
+  -webkit-mask:
+    radial-gradient(circle at 0 100%, #0000 var(--notch), #000 calc(var(--notch) + 0.5px)) 0 0 / 51% 100% no-repeat,
+    radial-gradient(circle at 100% 100%, #0000 var(--notch), #000 calc(var(--notch) + 0.5px)) 100% 0 / 51% 100% no-repeat;
+  mask:
+    radial-gradient(circle at 0 100%, #0000 var(--notch), #000 calc(var(--notch) + 0.5px)) 0 0 / 51% 100% no-repeat,
+    radial-gradient(circle at 100% 100%, #0000 var(--notch), #000 calc(var(--notch) + 0.5px)) 100% 0 / 51% 100% no-repeat;
+}
+.seal-stub {
+  padding: 18px 26px 24px;
+  border-radius: 0 0 20px 20px;
+  background:
+    linear-gradient(color-mix(in srgb, var(--fg) 4%, var(--panel)), color-mix(in srgb, var(--fg) 4%, var(--panel))),
+    var(--bg);
+  -webkit-mask:
+    radial-gradient(circle at 0 0, #0000 var(--notch), #000 calc(var(--notch) + 0.5px)) 0 0 / 51% 100% no-repeat,
+    radial-gradient(circle at 100% 0, #0000 var(--notch), #000 calc(var(--notch) + 0.5px)) 100% 0 / 51% 100% no-repeat;
+  mask:
+    radial-gradient(circle at 0 0, #0000 var(--notch), #000 calc(var(--notch) + 0.5px)) 0 0 / 51% 100% no-repeat,
+    radial-gradient(circle at 100% 0, #0000 var(--notch), #000 calc(var(--notch) + 0.5px)) 100% 0 / 51% 100% no-repeat;
+}
+/* The perforation. */
+.seal-stub::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: calc(var(--notch) + 10px);
+  right: calc(var(--notch) + 10px);
+  height: 2px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--fg) 26%, transparent) 0.9px, transparent 1.3px) 0 50% / 9px 2px repeat-x;
+}
+
+/* The seal. */
+.seal-mark {
+  position: absolute;
+  z-index: 1;
+  top: -52px;
+  left: 50%;
+  width: 104px;
+  height: 104px;
+  margin-left: -52px;
+  filter: drop-shadow(0 10px 18px color-mix(in srgb, var(--seal) 34%, transparent));
+  animation: seal-stamp 620ms cubic-bezier(0.3, 1.35, 0.5, 1) 90ms both;
+}
+.seal-mark svg { display: block; width: 100%; height: 100%; overflow: visible; }
+/* Poured wax, lit from the top left, with the die's impression in the middle. */
+.seal-shine { stop-color: color-mix(in srgb, var(--seal) 62%, #fff); }
+.seal-body-stop { stop-color: var(--seal); }
+.seal-shade { stop-color: color-mix(in srgb, var(--seal) 62%, #000); }
+.seal-press { fill: color-mix(in srgb, var(--seal) 90%, #000); opacity: 0.55; }
+.seal-rim-lo { fill: none; stroke: #fff; stroke-width: 0.9; opacity: 0.28; }
+.seal-rim-hi { fill: none; stroke: #000; stroke-width: 0.9; opacity: 0.22; }
+.seal-line { fill: none; stroke: var(--bg); stroke-width: 0.7; opacity: 0.4; }
+.seal-words {
+  fill: var(--bg);
+  opacity: 0.8;
+  font-family: ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-size: 6px;
+  font-weight: 700;
+  transform-origin: 44px 44px;
+  animation: seal-turn 1300ms cubic-bezier(0.2, 0.8, 0.2, 1) 90ms both;
+}
+.seal-glyph {
+  fill: none;
+  stroke: var(--bg);
+  stroke-width: 3.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: seal-draw 420ms ease-out 480ms forwards;
+}
+.seal-dot { stroke-width: 3.8; animation-delay: 760ms; }
+
+/* What happened. */
+.seal-kicker {
+  margin: 0 0 8px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--seal);
+}
+.seal-card .seal-title {
+  margin: 0 0 12px;
+  font-size: 21px;
+  line-height: 1.3;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--fg);
+  text-wrap: balance;
+}
+.seal-card .signed-line {
+  margin: 0 auto 6px;
+  max-width: 34em;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--fg-dim);
+  text-wrap: pretty;
+}
+.seal-card .signed-line:first-of-type { color: color-mix(in srgb, var(--fg) 80%, var(--fg-dim)); }
+.seal-card .signed-list {
+  display: inline-block;
+  margin: 8px auto 4px;
+  padding: 11px 16px 11px 32px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--fg);
+}
+.seal-card .signed-list li::marker { color: var(--seal); }
+.seal-warn {
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+  font-size: 12.5px;
+  line-height: 1.55;
+  text-align: left;
+}
+.seal-card .signed-live:empty { display: none; }
+.seal-card .signed-live { margin: 14px 0 0; text-align: left; }
+
+/* A draw that lands after the signature: a quiet tinted card, not the run
+   panel's edged one, with the second signature as the one loud button. */
+.seal-card .run-verdict-panel {
+  --tone: var(--accent);
+  margin: 0;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--tone) 10%, transparent);
+  box-shadow: none;
+}
+.seal-card .run-verdict-panel.run-tone-ok { --tone: var(--ok); }
+.seal-card .run-verdict-panel.run-tone-warn { --tone: var(--warn); }
+.seal-card .run-verdict-panel.run-tone-block { --tone: var(--danger); }
+.seal-card .run-verdict-panel h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--tone);
+}
+.seal-card .run-verdict-panel h4::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tone);
+}
+.seal-card .run-tone-pending h4::before { animation: seal-pulse 1.4s ease-in-out infinite; }
+.seal-card .run-verdict-panel p { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--fg); }
+.seal-card .run-verdict-panel .lab-hint { margin-top: 8px; font-size: 12.5px; }
+.seal-card .run-verdict-panel .lab-hint a { color: var(--fg); text-decoration-color: color-mix(in srgb, var(--tone) 70%, transparent); }
+.seal-card .run-verdict-panel .lab-row-actions { margin-top: 12px; }
+.seal-card .run-verdict-panel .lab-primary {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 16px;
+  border: 1px solid var(--tone);
+  border-radius: 12px;
+  background: var(--tone);
+  box-shadow: none;
+  color: var(--bg);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.seal-card .run-verdict-panel .lab-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--tone) 86%, var(--fg));
+  border-color: color-mix(in srgb, var(--tone) 86%, var(--fg));
+  color: var(--bg);
+}
+.seal-card .run-verdict-panel .lab-primary::after { display: none; }
+
+/* The stub: the transaction, then the ways out. */
+.seal-tx {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  flex-wrap: wrap;
+  padding: 4px 0 12px;
+  text-align: left;
+}
+.seal-tx + .seal-tx { padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent); }
+.seal-tx-meta { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.seal-tx-label {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.seal-card .seal-tx-id {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.seal-tx-tools { display: flex; align-items: center; gap: 6px; }
+.seal-card .seal-copy,
+.seal-tx-link {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 11px;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 140ms, background 140ms;
+}
+.seal-card .seal-copy:hover,
+.seal-tx-link:hover {
+  border-color: color-mix(in srgb, var(--seal) 60%, transparent);
+  background: color-mix(in srgb, var(--seal) 9%, transparent);
+  color: var(--fg);
+  box-shadow: none;
+}
+.seal-tx-link span { color: var(--seal); }
+
+.seal-actions { display: flex; gap: 10px; margin-top: 8px; }
+.seal-card .seal-btn {
+  appearance: none;
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 12px 18px;
+  border-radius: 14px;
+  box-shadow: none;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-transform: none;
+  text-decoration: none;
+  text-align: center;
+  cursor: pointer;
+  transition: background 140ms, border-color 140ms, color 140ms, transform 80ms;
+}
+.seal-card .seal-btn::after { display: none; }
+.seal-card .seal-btn:active { transform: translateY(1px); }
+/* The way out: ink on paper, the page's own text colour turned around. */
+.seal-card .seal-btn-main {
+  border: 1px solid var(--fg);
+  background: var(--fg);
+  color: var(--bg);
+}
+.seal-card .seal-btn-main:hover {
+  border-color: color-mix(in srgb, var(--fg) 86%, var(--seal));
+  background: color-mix(in srgb, var(--fg) 86%, var(--seal));
+  color: var(--bg);
+  box-shadow: none;
+}
+.seal-card .seal-btn-alt {
+  border: 1px solid color-mix(in srgb, var(--fg) 16%, transparent);
+  background: transparent;
+  color: var(--fg);
+}
+.seal-card .seal-btn-alt:hover {
+  border-color: color-mix(in srgb, var(--fg) 34%, transparent);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  color: var(--fg);
+  box-shadow: none;
+}
+/* While the live part holds the next step (a second signature), that is the
+   loud button and closing steps back. */
+.seal-card:has(.signed-live button) .seal-btn-main {
+  border-color: color-mix(in srgb, var(--fg) 16%, transparent);
+  background: transparent;
+  color: var(--fg);
+}
+.seal-card:has(.signed-live button) .seal-btn-main:hover {
+  border-color: color-mix(in srgb, var(--fg) 34%, transparent);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+}
+.seal-card :focus-visible { outline: 2px solid var(--seal); outline-offset: 2px; }
+.seal-card [hidden] { display: none !important; }
+
+@keyframes seal-fade { from { opacity: 0; } }
+@keyframes seal-rise { from { opacity: 0; transform: translateY(18px) scale(0.975); } }
+@keyframes seal-sink { to { opacity: 0; transform: translateY(8px) scale(0.985); } }
+@keyframes seal-stamp {
+  0%   { opacity: 0; transform: scale(1.5) rotate(-14deg); }
+  60%  { opacity: 1; transform: scale(0.94) rotate(2deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+@keyframes seal-turn { from { transform: rotate(-70deg); } }
+@keyframes seal-draw { to { stroke-dashoffset: 0; } }
+@keyframes seal-pulse { 50% { opacity: 0.3; } }
+
+@media (max-width: 560px) {
+  .seal-body { padding: 62px 20px 20px; }
+  .seal-stub { padding: 16px 18px 20px; }
+  .seal-card .seal-title { font-size: 19px; }
+  .seal-actions { flex-direction: column-reverse; }
+  .seal-card .seal-btn { flex: none; width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .signed-backdrop,
+  .seal-card,
+  .seal-mark,
+  .seal-words { animation: none; }
+  .seal-glyph { animation: none; stroke-dashoffset: 0; }
+  .seal-card .run-tone-pending h4::before { animation: none; }
+}

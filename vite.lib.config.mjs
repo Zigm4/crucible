@@ -45,6 +45,8 @@ export default defineConfig({
         leftovers: 'src/nefty/leftovers.ts',
         waxdaoDrops: 'src/waxdao/drops.ts',
         neftyPackExecute: 'src/nefty/neftyPackExecute.ts',
+        signedPopup: 'src/ui/signedPopup.ts',
+        walletReturn: 'src/chain/walletReturn.ts',
       },
       formats: ['es'],
     },

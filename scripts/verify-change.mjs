@@ -91,7 +91,8 @@ console.log('=== blend 45833 (captainshelm): display data, dates, ingredients ==
     }
     reset();
 
-    e.startTime = localText(Math.floor(Date.now() / 1000) + 3600);
+    // Before the end: the blend ended on 31 October 2026, and a start after the end is refused for that alone.
+    e.startTime = localText(Math.min(Math.floor(Date.now() / 1000) + 3600, e.endRaw - 86400));
     const [time] = await saves('new start date', (a) => a.length === 1 && a[0].name === 'setblendtime');
     if (time) say(Number(time.data.end_time) === e.endRaw, `the untouched end date goes back to the second (${time.data.end_time})`);
     reset();

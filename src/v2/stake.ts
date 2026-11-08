@@ -27,6 +27,7 @@
 import type { BuiltAction } from '../chain/action';
 import { getCurrentSession } from '../chain/session';
 import { simulateActions } from '../chain/simulate';
+import { showSigned } from '../ui/signedPopup';
 import { SignedRecently } from './signedRecently';
 import {
   FINISHES_PER_TRANSACTION, LEFTOVER_NOTES, readNeftyLeftovers, type LeftoverGroup, type NeftyLeftover, type NoteId,
@@ -277,10 +278,14 @@ export function renderStake(repaint: () => void, walletLine: string, subject = '
   </section>`;
 }
 
+/** What is typed in the lookup: the page repaints as each read lands, and must not wipe it. */
+let lookupDraft = '';
+
 /** Look at another account's holdings, read only. */
 function lookup(): string {
   return `<form class="v2-explore-pick v2-stake-lookup" data-stake-lookup>
-    <input name="account" placeholder="Look at another account, e.g. somebody.wam" autocomplete="off" />
+    <input id="v2-stake-lookup" name="account" placeholder="Look at another account, e.g. somebody.wam" autocomplete="off"
+           value="${esc(lookupDraft)}" />
     <button type="submit">Look</button>
   </form>`;
 }
@@ -674,7 +679,10 @@ export function attachStakeHandlers(root: HTMLElement, repaint: () => void, go?:
   root.querySelector<HTMLFormElement>('[data-stake-lookup]')?.addEventListener('submit', (ev) => {
     ev.preventDefault();
     const v = String(new FormData(ev.target as HTMLFormElement).get('account') ?? '').trim().toLowerCase();
-    if (/^[a-z1-5.]{1,12}$/.test(v)) go?.(`#/stake/${v}`);
+    if (/^[a-z1-5.]{1,12}$/.test(v)) { lookupDraft = ''; go?.(`#/stake/${v}`); }
+  });
+  root.querySelector<HTMLInputElement>('#v2-stake-lookup')?.addEventListener('input', (ev) => {
+    lookupDraft = (ev.target as HTMLInputElement).value;
   });
   // A card's "See note n": the router owns the hash, so this scrolls instead of linking.
   root.querySelectorAll<HTMLElement>('[data-lf-note]').forEach((el) => el.addEventListener('click', () => {
@@ -694,6 +702,9 @@ export function attachStakeHandlers(root: HTMLElement, repaint: () => void, go?:
     if (st.actor !== actor) { st.loaded = false; repaint(); return; }
     const built = actionsFor(el.dataset.kind ?? '', el, actor);
     if (typeof built === 'string') { outcome = { key, kind: 'failed', text: built }; repaint(); return; }
+    // Said in the confirmation, read before the button turns into "Checking".
+    const label = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+    const about = (el.closest('.v2-stake-card')?.querySelector('strong')?.textContent ?? '').replace(/\s+/g, ' ').trim();
     doing = { key, phase: 'checking' };
     outcome = undefined;
     repaint();
@@ -706,6 +717,16 @@ export function attachStakeHandlers(root: HTMLElement, repaint: () => void, go?:
       const trx = (result.response as { transaction_id?: string } | undefined)?.transaction_id
         ?? String(result.resolved?.transaction.id ?? '');
       outcome = { key, kind: 'done', text: '', trx };
+      showSigned({
+        id: 'stake',
+        title: `Signed: ${label}`,
+        lines: [
+          about && !label.includes(about) ? `${about}.` : '',
+          'It went through. This page reads the chain again in a few seconds and shows what is left.',
+        ],
+        txs: [trx],
+        close: { label: 'Close' },
+      });
       // What is on screen is stale, and a read made at once may be too: the
       // node asked can lag the one the wallet sent through. The marks keep
       // these buttons from coming back until a read no longer shows them.

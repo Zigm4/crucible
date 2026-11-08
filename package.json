@@ -26,7 +26,9 @@
     "verify:drop-ram": "npm run build:verify && node scripts/verify-drop-ram.mjs",
     "verify:nefty-leftovers": "npm run build:verify && node scripts/verify-nefty-leftovers.mjs",
     "verify:ingredients": "npm run build:verify && node scripts/verify-ingredients.mjs",
-    "verify:waxdao-drops": "npm run build:verify && node scripts/verify-waxdao-drops.mjs"
+    "verify:waxdao-drops": "npm run build:verify && node scripts/verify-waxdao-drops.mjs",
+    "verify:after-create": "npm run build:verify && node scripts/verify-after-create.mjs",
+    "verify:signed-popup": "npm run build:verify && node scripts/verify-signed-popup.mjs"
   },
   "dependencies": {
     "@wharfkit/session": "^4.0.2",

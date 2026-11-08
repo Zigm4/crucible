@@ -144,7 +144,7 @@ classic drop panels still use a plain browser `confirm()`.
 
 - no backend, no server, no API key, no database
 - no analytics, no telemetry, no Sentry, no Google Tag, nothing
-- no cookies. localStorage holds display choices and the wallet session, nothing else: the theme (`crucible-theme`, `crucible-v2-theme`), how the v2 explorer lays out its cards (`crucible-v2-explore-view`), a few remembered tool settings such as the inventory's sort (`crucible.prefs.v1`), and WharfKit's wallet session (`wharf-*`), so you do not reconnect on every visit. None of it is ever sent anywhere. Log out to drop the session key
+- no cookies. localStorage holds display choices and the wallet session, nothing else: the theme (`crucible-theme`, `crucible-v2-theme`), how the v2 explorer lays out its cards (`crucible-v2-explore-view`), a few remembered tool settings such as the inventory's sort (`crucible.prefs.v1`), and WharfKit's wallet session (`wharf-*`), so you do not reconnect on every visit. None of it is ever sent anywhere. Log out to drop the session key. sessionStorage holds one more thing, for the tab's life only: the address of the screen it is on (`crucible:screen`), so a page the browser reloads while your wallet is open comes back to that screen
 - third-party requests are limited to public WAX RPC nodes (chain reads, with failover), WAX Hyperion history nodes (`wax.eosusa.io`, `api.waxsweden.org`, `wax.eosphere.io`: recent bids, unfinished packs, the contract monitor), the public AtomicAssets indexers (`wax.api.atomicassets.io`, failing over to `aa-wax-public1.neftyblocks.com`) for NFT names and owners, public image servers for NFT artwork (see below), and on the classic page Google Fonts (purely cosmetic, remove in 30s by editing backup/index.html; the site loads none). Clicking "connect wallet" adds that wallet's own hosts: `cb.anchor.link` for Anchor, `*.mycloudwallet.com` for WAX Cloud Wallet
 - your private key never leaves your wallet. WharfKit hands the unsigned transaction to Anchor / WAX Cloud Wallet, which signs locally and returns a signature. The page never sees a secret.
 
@@ -221,6 +221,29 @@ guidance, and the pages below.
   the contract's own words and the wallet never opens; a shortfall of
   the account's own CPU or NET is not treated as a refusal, since a
   paying wallet covers it.
+- **Confirmed after signing** (`src/ui/signedPopup.ts`): every
+  signature that goes through opens the same box in the middle of the
+  screen, a receipt under a wax seal: what was signed, its transaction
+  (to copy, or open on waxblock), and the way on. Closing it goes where it makes sense: the created screen
+  (Make another / Start from scratch) after Create, the collection's
+  list after Change, the page the player came from (Explore, their
+  NFTs) or that kind of recipe in the collection after Use a recipe.
+  Staking and WAX names stay on their page, which reads the chain
+  again. A random blend's draw and a pack's cards show in the box as
+  they land, with the second signature's button when one is needed,
+  and closing then stays on the recipe until it is done. A refusal is
+  not a success: it stays by the button, as before.
+- **The wallet's return keeps the screen** (`src/chain/walletReturn.ts`):
+  Anchor on an iPhone or an iPad comes back to the page at an address
+  of its own, `#` and eight random characters, and waits for it. The
+  router used to read that as an unknown address and show the home
+  page, with no word on what had been signed. Now the screen stays, and
+  the address goes back to it once the wallet has seen its own (the
+  classic page does the same). If the browser reloaded the page while
+  the wallet was open, the tab comes back to the screen it was on, and
+  the box says that what was signed then was most likely never sent:
+  the wallet only signs, the page sends, and the reload lost it. It
+  links the transaction id to look it up.
 - **Explore** (`#/explore/<collection>`): everything one collection
   offers, across every contract, as cards with the same verdicts;
   grouped by result or by contract, three sizes, grid or list.
@@ -760,10 +783,12 @@ first, so none of that is asked:
 - blends (blend.nefty), upgrades (up.nefty) and drops (neftyblocksd), one question per screen, five screens each. Drops can also still be created from the CLAIM tab
 - templates picked from a searchable grid with artwork, name, schema and supply, read live from the collection
 - weights drawn as a stacked bar, so "50 / 30 / 20" is a shape before it is arithmetic
-- one plain sentence on every step. If the sentence is wrong, the recipe is wrong, with no payload to decode
+- one plain sentence on every step. If the sentence is wrong, the recipe is wrong, with no payload to decode. It says the total and the per-wallet limit apart ("No total cap; each wallet can claim once"), then who can run it, and the review table has a Per wallet row
 - Simulate before signing (the transaction rehearsed on chain), then a confirmation you have to tick
 - one roll per blend and one spec per upgrade. The contract allows several of each (a second roll is a second, independent draw paid out on the same blend); that shape has to be built elsewhere
-- who can use it, written with the recipe in the same transaction (the new id is the contract counter's value, so a race can only cost a refusal): a `secure.nefty` list of accounts or a holder gate for blends and upgrades, a drop's own list and holder rule for drops. Pasted accounts are looked up on chain, a long list is split into transactions signed in turn, and a drop's list can give each account a claim limit, which can only lower the drop's own (`src/nefty/accessLists.ts`, `src/nefty/holderGates.ts`)
+- who can use it, written with the recipe in the same transaction (the new id is the contract counter's value, so a race can only cost a refusal): a `secure.nefty` whitelist or a holder gate for blends and upgrades, a drop's own whitelist and holder rule for drops. Pasted accounts are looked up on chain, a long whitelist is split into transactions signed in turn, and a drop's whitelist can give each account a claim limit, which can only lower the drop's own (`src/nefty/accessLists.ts`, `src/nefty/holderGates.ts`)
+- whether what it mints can be traded and burned, shown under each template and in the review. AtomicAssets fixes both on the template, for every NFT of it, so the form says it is the template's and not the drop's or the blend's
+- once signed, the creator shows what was created, as it was signed, and asks what comes next: **Make another like it** keeps every field, the whitelist too, and will not sign until something has changed (the same recipe from another wallet of the collection is still the same recipe), so a series of drops does not mean pasting the list each time and a second click cannot make a copy; **Start from scratch** empties every field, the collection too. A whitelist or holder gate made with a blend or an upgrade becomes the one the next one points at, rather than being made again (`npm run verify:after-create`)
 - ingredients of every shape real recipes use: NFTs of another collection than the recipe's (1,226 ingredients of 914 live blends; a switch above the add buttons loads that collection's templates and schemas), NFTs matched on several attributes at once (362), and, for blends, a time gate (`COOLDOWN_INGREDIENT`): the player shows an NFT of a template, keeps it, and blends again only once a number of seconds has passed since the time a uint64 attribute holds, which blend.nefty rewrites. uncutnefties' blend #37724 ran 1,081,706 times on one, a mining game paying RJUAN about once an hour. The contract refuses any other attribute type, and so does the form (`npm run verify:ingredients`)
 - a blend paying tokens needs a total number of uses: blend.nefty refuses token results on an unlimited blend ("Token results cannot be used with unlimited blends"), and the form says so
 - up.nefty's fee rule: below level.3 of NEFTY staking an upgrade must carry the fixed fee, 0.01 WAX to `fees.nefty`, and one more ingredient, or the contract refuses it; the creator offers the fee line in one click (`src/nefty/upgradeGate.ts`)
@@ -983,6 +1008,8 @@ signed. Each has its suite, run with `npm run <name>`:
 | `verify:signed-recently` | the staking page never asks for the same signature twice |
 | `verify:drop-ram` | a claim without RAM, a first deposit under 128 bytes and a deposit with a claim, each held to the chain's answer, and what Use a recipe says |
 | `verify:ingredients` | every live blend and upgrade through the editor's rows, written back exactly; NFTs of another collection, several attributes and time gates built by the form and held to the chain's answer, its refusals included |
+| `verify:signed-popup` | the wallet's return address (1000 made the way WharfKit makes them) told apart from every address both routers use; a reload while the wallet was open found only at that address; the confirmation after creating, running (each place to go back to, a draw landing, a second signature) and saving a change |
+| `verify:after-create` | the creator once a recipe is signed, on northshireup's "Hype! - 400" as it is on chain: what it reads, no second signature, Make another held until something changes (each kind of change tried), the kept form accepted by the chain, Start from scratch empty |
 | `verify:waxdao-drops` | real WaxDAO drop and pack transactions rebuilt field for field; live packs, drops and a drop without RAM held to the chain's answer as real holders; a time gate run as a player |
 | `verify:nefty-leftovers` | every Withdraw and Finish the Staking page offers real holders is accepted, a partly minted pack asks only for its open cards, and each refusal or unanswered draw points to the note that explains it, `retryrand` included |
 | `verify:access-lists` | lists of accounts made, filled and changed, on secure.nefty and neftyblocksd |
@@ -1240,7 +1267,8 @@ sections above.
 - re-renders preserve scroll position, focus, and caret offset, so a state change never feels like a page refresh
 - picker dropdowns float above every card. The panel is portaled to `<body>` so it escapes `backdrop-filter` stacking traps
 - every blocker is explained inline. A greyed row says WHY, and a "Color codes" legend shows every badge the picker can emit
-- action outcomes pop a floating toast that is visible wherever you have scrolled, so a transaction fired from a panel low on the page still confirms clearly
+- action outcomes pop a floating toast that is visible wherever you have scrolled, so a transaction fired from a panel low on the page still confirms clearly. On the site, a signature that went through opens a confirmation box over the page instead, and closing it leads somewhere useful
+- signing never moves the page: the address a wallet comes back to is not read as a place to go
 
 ---
 

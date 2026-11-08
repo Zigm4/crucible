@@ -132,7 +132,7 @@ console.log('\n=== PHASE B - creating on pearlhorizon ===');
   const drop = __createActions();
   say(drop.map((a) => a.name).join(' ') === 'createdrop addtowl setproofown', `drop: ${drop.map((a) => a.name).join(' + ')}`);
   await simulate('drop with a list and a holder rule', drop);
-  say(/on its own list, or whoever holds/.test(__whoCanUseIt()), `the review says: ${__whoCanUseIt()}`);
+  say(/whitelisted accounts?, or whoever holds/.test(__whoCanUseIt()), `the review says: ${__whoCanUseIt()}`);
 
   // Ticked, then the drop opened to everyone: the rule must not go, and must not block.
   fresh({ kind: 'drop', authRequired: true });

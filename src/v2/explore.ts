@@ -45,6 +45,8 @@ let shelf: Shelf | undefined;
 const filters = { show: 'open' as Show, kind: 'all' as RecipeAction | 'all', q: '', finished: false };
 /** The collections the connected wallet holds, for the picker; read once per account. */
 let mine: { actor: string; list: { name: string; count: number }[] } | undefined;
+/** What is typed in the picker: a repaint (the wallet's collections landing) must not wipe it. */
+let pickDraft = '';
 
 const esc = (s: string) =>
   String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -201,7 +203,7 @@ export function renderExplore(collection: string, repaint: () => void): string {
           ${chip('kind', 'all', filters.kind === 'all', 'All kinds')}
           ${RECIPE_ACTIONS.map((a) => chip('kind', a.key, filters.kind === a.key, `${KIND_WORD[a.key]}s`)).join('')}
         </div>
-        <input class="v2-explore-search" data-explore-q placeholder="Search a name or a category"
+        <input id="v2-explore-q" class="v2-explore-search" data-explore-q placeholder="Search a name or a category"
                value="${esc(filters.q)}" />
         <label class="v2-explore-finished">
           <input type="checkbox" data-explore-finished ${filters.finished ? 'checked' : ''} />
@@ -309,7 +311,8 @@ function renderPicker(repaint: () => void): string {
         </div>
       </div>
       <form class="v2-explore-pick" data-explore-pick>
-        <input name="collection" placeholder="Collection name, e.g. underpunks55" autocomplete="off" />
+        <input id="v2-explore-pick" name="collection" placeholder="Collection name, e.g. underpunks55" autocomplete="off"
+               value="${esc(pickDraft)}" />
         <button class="lab-primary" type="submit">Explore</button>
       </form>
       ${own.length ? `<p class="lab-hint">Collections in your wallet</p>
@@ -346,9 +349,13 @@ export function attachExploreHandlers(root: HTMLElement, repaint: () => void, go
     filters.finished = (ev.target as HTMLInputElement).checked;
     repaint();
   });
+  // Kept, not repainted: the page gives the focus back to a field by its id, and the text from here.
+  root.querySelector<HTMLInputElement>('#v2-explore-pick')?.addEventListener('input', (ev) => {
+    pickDraft = (ev.target as HTMLInputElement).value;
+  });
   root.querySelector<HTMLFormElement>('[data-explore-pick]')?.addEventListener('submit', (ev) => {
     ev.preventDefault();
     const v = String(new FormData(ev.target as HTMLFormElement).get('collection') ?? '').trim().toLowerCase();
-    if (v) go(`#/explore/${v}`);
+    if (v) { pickDraft = ''; go(`#/explore/${v}`); }
   });
 }
