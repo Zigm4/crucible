@@ -179,20 +179,15 @@
 @media (min-width: 861px) { .v2-cards:has(> :nth-child(3):last-child) { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 860px) { .v2-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 460px) { .v2-cards, .v2-cards:has(> :nth-child(2):last-child) { grid-template-columns: 1fr; } }
-.v2-home .run-kind { padding: 14px; gap: 4px; transition: border-color .12s, background .12s; }
-.v2-home .run-kind:hover {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
-}
+.v2-home .run-kinds .run-kind { padding: 16px; gap: 4px; }
 a.run-kind { text-decoration: none; }
 .v2-home .run-kind strong { font-size: 14.5px; }
 .v2-tag {
-  margin-left: 4px;
-  padding: 1px 6px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 500;
+  margin-left: 6px;
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--muted);
   vertical-align: 1px;
 }
@@ -220,25 +215,29 @@ a.run-kind { text-decoration: none; }
   gap: 10px 16px;
   flex-wrap: wrap;
   margin: 14px 0 22px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--panel);
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: var(--surface);
 }
 .v2-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.v2-chip {
-  padding: 5px 11px;
-  border: 1px solid var(--border);
+.v2 .v2-chip {
+  padding: 6px 13px;
+  border: 0;
   border-radius: 999px;
-  background: none;
+  background: var(--surface);
+  box-shadow: none;
   color: var(--fg-dim);
   font: inherit;
   font-size: 12.5px;
+  letter-spacing: 0;
+  text-transform: none;
   text-decoration: none;
   cursor: pointer;
+  transition: background 140ms, color 140ms;
 }
-.v2-chip:hover { color: var(--fg); border-color: var(--accent); }
-.v2-chip.on { color: var(--fg); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.v2 .v2-chip:hover { color: var(--fg); background: var(--surface-2); border: 0; box-shadow: none; }
+.v2 .v2-chip.on { color: var(--bg); background: var(--fg); }
+.v2 .v2-chip.on span { color: color-mix(in srgb, var(--bg) 65%, transparent); }
 .v2-chip span { color: var(--muted); font-size: 11px; }
 .v2-explore-search {
   flex: 1 1 200px;
@@ -281,22 +280,37 @@ a.run-kind { text-decoration: none; }
 .v2-shelf-grid.size-s { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 .v2-shelf-grid.size-l { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .v2-card {
+  --tone: var(--muted);
+  position: relative;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-top: 3px solid var(--border);
-  border-radius: 12px;
-  background: var(--panel);
+  border: 0;
+  border-radius: 18px;
+  background: var(--surface);
   color: var(--fg);
   text-decoration: none;
-  transition: border-color .12s, transform .12s;
+  transition: background 180ms, transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 180ms;
 }
-a.v2-card:hover { border-color: var(--accent); transform: translateY(-1px); }
-.v2-card.run-tone-ok { border-top-color: var(--ok); }
-.v2-card.run-tone-warn { border-top-color: var(--warn); }
-.v2-card.run-tone-block { border-top-color: var(--danger); opacity: .7; }
-.v2-card.run-tone-pending { border-top-style: dashed; border-top-color: var(--muted); }
+a.v2-card:hover { background: var(--surface-2); transform: translateY(-2px); box-shadow: 0 16px 34px rgb(0 0 0 / 0.24); }
+/* Can you run it: a light in the corner of the picture, the same colours
+   as everywhere else. A hollow ring is "not checked yet". */
+.v2-card::after {
+  content: '';
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 2;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--tone);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--tone) 24%, transparent), 0 1px 4px rgb(0 0 0 / 0.4);
+}
+.v2-card.run-tone-ok { --tone: var(--ok); }
+.v2-card.run-tone-warn { --tone: var(--warn); }
+.v2-card.run-tone-block { --tone: var(--danger); opacity: .7; }
+.v2-card.run-tone-pending::after { background: color-mix(in srgb, var(--bg) 60%, transparent); box-shadow: inset 0 0 0 1.5px var(--fg-dim), 0 1px 4px rgb(0 0 0 / 0.4); }
 .v2-card-frame {
   position: relative;
   flex: none;
@@ -304,8 +318,7 @@ a.v2-card:hover { border-color: var(--accent); transform: translateY(-1px); }
   align-items: center;
   justify-content: center;
   height: 150px;
-  border-bottom: 1px solid var(--border-soft);
-  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  background: color-mix(in srgb, var(--bg) 45%, transparent);
 }
 .v2-card-frame > span { font-size: 34px; font-weight: 700; color: color-mix(in srgb, var(--fg) 14%, transparent); }
 .v2-card .media-thumb.v2-card-art {
@@ -329,15 +342,17 @@ a.v2-card:hover { border-color: var(--accent); transform: translateY(-1px); }
    wrapped text, so it is a soft box, three lines at most, whole on hover. */
 .v2-card-verdict {
   align-self: stretch;
-  margin-top: 4px;
-  padding: 4px 8px;
-  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
-  border-radius: 7px;
-  background: color-mix(in srgb, currentColor 7%, transparent);
-  font-size: 11.5px;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 6px;
+  font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
+/* The light again, in front of the words, so the answer reads without the picture. */
+.v2-card-verdict::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; transform: translateY(-1px); }
+.v2-card-verdict.run-check-pending::before { background: none; box-shadow: inset 0 0 0 1.3px currentColor; }
 /* Clamped inside the padding, so no sliver of a fourth line shows below. */
 .v2-card-verdict > span {
   display: -webkit-box;
@@ -350,22 +365,20 @@ a.v2-card:hover { border-color: var(--accent); transform: translateY(-1px); }
 .size-s .v2-card-body strong { font-size: 13px; }
 
 /* List: one row per recipe, the same parts side by side. */
-.v2-shelf-list { display: flex; flex-direction: column; gap: 6px; }
+.v2-shelf-list { display: flex; flex-direction: column; gap: 8px; }
 .v2-shelf-list .v2-card {
   flex-direction: row;
   align-items: center;
-  border-top-width: 1px;
-  border-left: 3px solid var(--border);
+  border-radius: 16px;
 }
-.v2-shelf-list .v2-card.run-tone-ok { border-left-color: var(--ok); border-top-color: var(--border); }
-.v2-shelf-list .v2-card.run-tone-warn { border-left-color: var(--warn); border-top-color: var(--border); }
-.v2-shelf-list .v2-card.run-tone-block { border-left-color: var(--danger); border-top-color: var(--border); }
-.v2-shelf-list .v2-card.run-tone-pending { border-left-style: dashed; border-left-color: var(--muted); border-top-style: solid; border-top-color: var(--border); }
+.v2-shelf-list a.v2-card:hover { transform: translateX(2px); box-shadow: none; }
+.v2-shelf-list .v2-card::after { top: 8px; left: 8px; width: 8px; height: 8px; }
 .v2-shelf-list .v2-card-frame {
   width: 64px;
   height: 64px;
-  border-bottom: none;
-  border-right: 1px solid var(--border-soft);
+  margin: 6px;
+  border-radius: 12px;
+  overflow: hidden;
 }
 .v2-shelf-list .v2-card-frame > span { font-size: 20px; }
 .v2-shelf-list .v2-card-body {
@@ -400,22 +413,25 @@ a.v2-card:hover { border-color: var(--accent); transform: translateY(-1px); }
 
 /* Stats: one tile per kind, which also filters to it. */
 .v2-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 6px; }
-.v2-stat {
+.v2 .v2-stat {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 1px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel);
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: none;
   color: var(--fg);
   font: inherit;
+  letter-spacing: 0;
+  text-transform: none;
   text-align: left;
   cursor: pointer;
 }
-.v2-stat:hover:not(:disabled) { border-color: var(--accent); }
-.v2-stat.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+.v2 .v2-stat:hover:not(:disabled) { background: var(--surface-2); border: 0; box-shadow: none; color: var(--fg); }
+.v2 .v2-stat.on { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
 .v2-stat:disabled { opacity: .55; cursor: default; }
 .v2-stat-n { font-size: 24px; font-weight: 700; line-height: 1.1; }
 .v2-stat-label { font-size: 13px; font-weight: 600; }
@@ -427,14 +443,15 @@ a.v2-card:hover { border-color: var(--accent); transform: translateY(-1px); }
 .v2-stake { max-width: 860px; }
 .v2-steps { list-style: none; margin: 18px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
 .v2-step {
-  padding: 16px 18px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--border);
-  border-radius: 12px;
-  background: var(--panel);
+  padding: 18px 20px;
+  border-radius: 18px;
+  background: var(--surface);
 }
-.v2-step-now { border-left-color: var(--accent); }
-.v2-step-wait { border-left-color: var(--warn); }
+/* The step to do now is lit, the one that waits is warm; the number's
+   disc carries the colour, not an edge. */
+.v2-step-now { background: color-mix(in srgb, var(--accent) 9%, var(--surface)); }
+.v2-step-now .v2-step-n { background: var(--accent); color: var(--bg); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
+.v2-step-wait .v2-step-n { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
 .v2-step-done { opacity: .75; }
 .v2-step-head { display: flex; align-items: center; gap: 10px; }
 .v2-step-head h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 650; color: var(--fg); text-transform: none; letter-spacing: 0; }
@@ -495,17 +512,20 @@ a.v2-card:hover { border-color: var(--accent); transform: translateY(-1px); }
 /* NeftyBlocks leftovers: what cannot be signed is explained once, up top,
    and every card it concerns points to it. */
 .v2-lf-notes {
-  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
-  border-left: 4px solid var(--warn);
-  background: color-mix(in srgb, var(--warn) 9%, transparent);
-  border-radius: 10px;
-  padding: 12px 16px;
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface));
+  border-radius: 16px;
+  padding: 16px 18px;
   margin: 4px 0 18px;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
-.v2-lf-notes-head { margin: 0; font-weight: 600; color: var(--fg); }
+.v2-lf-notes-head { display: flex; align-items: center; gap: 10px; margin: 0; font-weight: 600; color: var(--fg); }
+.v2-lf-notes-head::before {
+  content: '!'; flex: none; width: 20px; height: 20px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--warn); color: var(--bg);
+  font-size: 11px; font-weight: 800; line-height: 1;
+}
 .v2-lf-note { scroll-margin: 80px; border-radius: 8px; padding: 2px 0; transition: background 0.6s; }
 .v2-lf-note strong { display: flex; align-items: baseline; gap: 8px; color: var(--fg); }
 .v2-lf-note p { margin: 4px 0 0; color: var(--fg-dim); font-size: 13px; line-height: 1.5; }
@@ -700,15 +720,24 @@ a.v2-card:hover { border-color: var(--accent); transform: translateY(-1px); }
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 .v2-guide-note {
+  --tone: var(--accent);
+  --sign: 'i';
+  position: relative;
   margin: 12px 0;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: 10px;
+  padding: 13px 16px 13px 48px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--tone) 9%, var(--surface));
   font-size: 13.5px;
 }
-.v2-guide-note.ok { border-left-color: var(--ok); background: color-mix(in srgb, var(--ok) 7%, transparent); }
-.v2-guide-note.warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.v2-guide-note::before {
+  content: var(--sign); position: absolute; left: 15px; top: 13px;
+  width: 20px; height: 20px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--tone); color: var(--bg);
+  font-size: 11px; font-weight: 800; font-style: normal; line-height: 1;
+}
+.v2-guide-note.ok { --tone: var(--ok); --sign: '\2713'; }
+.v2-guide-note.warn { --tone: var(--warn); --sign: '!'; }
 .v2-guide-faq { margin: 0; }
 .v2-guide-faq dt { margin: 14px 0 4px; color: var(--fg); font-weight: 650; }
 .v2-guide-faq dt:first-child { margin-top: 0; }
@@ -799,11 +828,11 @@ a.v2-card:hover { border-color: var(--accent); transform: translateY(-1px); }
 .v2-status-group { display: flex; flex-direction: column; gap: 12px; }
 .v2 .v2-status-group > h2, .v2 .v2-status-key > h2 { margin: 8px 0 0; font-size: 13px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); }
 .v2-status-card {
-  padding: 18px 20px 14px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--tone);
-  border-radius: 14px;
-  background: var(--panel);
+  padding: 20px 22px 16px;
+  border-radius: 18px;
+  background:
+    radial-gradient(90% 120% at 0% 0%, color-mix(in srgb, var(--tone) 11%, transparent), transparent 55%),
+    var(--surface);
   scroll-margin-top: 16px;
 }
 .v2-status-card > header { display: flex; align-items: center; gap: 12px; }

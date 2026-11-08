@@ -36,6 +36,11 @@
   --held: #c084fc;
   --border: rgba(56, 189, 248, 0.28);
   --border-soft: rgba(56, 189, 248, 0.12);
+  /* Raised surfaces: a card is a slightly lighter fill, not an outline.
+     Mixed from the theme's own text and panel colours, so every skin gets
+     its own without restating them. --surface-2 is the hover. */
+  --surface: color-mix(in srgb, var(--fg) 4.5%, var(--panel));
+  --surface-2: color-mix(in srgb, var(--fg) 8%, var(--panel));
   font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 

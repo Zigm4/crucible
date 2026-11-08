@@ -16,7 +16,8 @@ export interface AtomicAsset {
   owner: string;
   template?: { template_id: string; immutable_data?: Record<string, unknown> } | null;
   schema?: { schema_name: string };
-  collection?: { collection_name: string };
+  /** The indexer sends the collection's display name and picture with every NFT. */
+  collection?: { collection_name: string; name?: string; img?: string };
   name?: string;
   /**
    * The three places an attribute can live, merged. The template wins in

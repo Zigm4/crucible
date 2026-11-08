@@ -221,6 +221,10 @@ guidance, and the pages below.
   the contract's own words and the wallet never opens; a shortfall of
   the account's own CPU or NET is not treated as a refusal, since a
   paying wallet covers it.
+- **Collections with a face** (`src/ui/collectionTiles.ts`): where a
+  screen asks which collection (Use a recipe, Explore), each one is a
+  tile with its picture and full name from AtomicAssets, and, for the
+  ones in your wallet, how many of its NFTs you hold.
 - **Confirmed after signing** (`src/ui/signedPopup.ts`): every
   signature that goes through opens the same box in the middle of the
   screen, a receipt under a wax seal: what was signed, its transaction
@@ -1009,6 +1013,7 @@ signed. Each has its suite, run with `npm run <name>`:
 | `verify:drop-ram` | a claim without RAM, a first deposit under 128 bytes and a deposit with a claim, each held to the chain's answer, and what Use a recipe says |
 | `verify:ingredients` | every live blend and upgrade through the editor's rows, written back exactly; NFTs of another collection, several attributes and time gates built by the form and held to the chain's answer, its refusals included |
 | `verify:signed-popup` | the wallet's return address (1000 made the way WharfKit makes them) told apart from every address both routers use; a reload while the wallet was open found only at that address; the confirmation after creating, running (each place to go back to, a draw landing, a second signature) and saving a change |
+| `verify:collection-tiles` | "which collection?" as tiles: the collection's picture and full name once known, its initial until then, the count of NFTs held, a name with markup shown as text; in the run tool, the collections in the wallet first, then the suggestions not already among them |
 | `verify:after-create` | the creator once a recipe is signed, on northshireup's "Hype! - 400" as it is on chain: what it reads, no second signature, Make another held until something changes (each kind of change tried), the kept form accepted by the chain, Start from scratch empty |
 | `verify:waxdao-drops` | real WaxDAO drop and pack transactions rebuilt field for field; live packs, drops and a drop without RAM held to the chain's answer as real holders; a time gate run as a player |
 | `verify:nefty-leftovers` | every Withdraw and Finish the Staking page offers real holders is accepted, a partly minted pack asks only for its open cards, and each refusal or unanswered draw points to the note that explains it, `retryrand` included |

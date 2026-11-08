@@ -1585,24 +1585,29 @@ pre::before {
 .modal {
   width: 100%;
   max-width: 560px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--danger);
-  border-radius: 4px;
-  padding: 18px 20px 16px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+  /* A signature is about to happen: the warmth at the top says so, where
+     a red stripe down the side used to. */
+  background:
+    radial-gradient(130% 60% at 50% 0%, color-mix(in srgb, var(--danger) 13%, transparent), transparent 62%),
+    linear-gradient(var(--panel), var(--panel)),
+    var(--bg);
+  border: 0;
+  border-radius: 20px;
+  padding: 24px 26px 20px;
+  box-shadow: 0 30px 70px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 .modal-beta {
-  display: inline-block;
-  font-size: 10px;
-  letter-spacing: 1.6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--danger);
-  border: 1px solid var(--danger);
-  border-radius: 10px;
-  padding: 3px 10px;
   margin-bottom: 10px;
 }
+.modal-beta::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 20%, transparent); }
 .modal h2 {
   font-size: 15px;
   margin: 0 0 10px;
@@ -1668,40 +1673,57 @@ pre::before {
 .lab-rail-step {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 7px 12px 7px 8px;
+  gap: 8px;
+  padding: 7px 14px 7px 8px;
   cursor: pointer;
-  border: 1px solid var(--border-soft);
-  border-radius: 3px;
-  font-size: 11px;
-  letter-spacing: 0.6px;
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 12px;
+  letter-spacing: 0.2px;
   color: var(--muted);
-  background: rgba(10, 22, 38, 0.4);
+  transition: background 140ms, color 140ms;
 }
-.lab-rail-step:hover { border-color: var(--border); color: var(--fg-dim); }
-.lab-rail-step.current { border-color: var(--accent); color: var(--fg); background: rgba(56, 189, 248, 0.08); }
-.lab-rail-step.done { color: var(--ok); }
+.lab-rail-step:hover { background: var(--surface-2); color: var(--fg-dim); }
+.lab-rail-step.current { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); color: var(--fg); }
+.lab-rail-step.done { color: var(--fg-dim); }
 .lab-rail-dot {
   display: grid;
   place-items: center;
   width: 20px; height: 20px;
   border-radius: 50%;
-  border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 16%, transparent);
   font-size: 10px;
+  font-weight: 700;
   flex: none;
 }
+.lab-rail-step.current .lab-rail-dot { background: var(--accent); color: var(--bg); }
+.lab-rail-step.done .lab-rail-dot { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
 
-/* The sentence: the one thing that stays true on every step. */
+/* The sentence: the one thing that stays true on every step. Set as a
+   quotation, which is what it is: the recipe, said in plain words. */
 .lab-sentence {
-  padding: 12px 14px;
+  position: relative;
   margin-bottom: 14px;
-  border-left: 3px solid var(--accent);
-  background: rgba(56, 189, 248, 0.06);
-  font-size: 13px;
+  padding: 14px 18px 14px 48px;
+  border-radius: 16px;
+  background: linear-gradient(115deg, color-mix(in srgb, var(--accent) 14%, var(--surface)), var(--surface) 72%);
+  font-size: 13.5px;
   line-height: 1.6;
   color: var(--fg);
 }
-.lab-sentence.big { font-size: 15px; margin-bottom: 18px; }
+.lab-sentence::before {
+  content: '\201C';
+  position: absolute;
+  left: 15px;
+  top: 6px;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 44px;
+  line-height: 1;
+  color: var(--accent);
+  opacity: 0.6;
+}
+.lab-sentence.big { padding: 18px 22px 18px 56px; margin-bottom: 18px; font-size: 15.5px; }
+.lab-sentence.big::before { left: 17px; top: 8px; font-size: 54px; }
 
 .lab-panel { padding: 20px; border: 1px solid var(--border-soft); border-radius: 4px; background: var(--panel); }
 .lab-q { margin: 0 0 6px; font-size: 15px; color: var(--fg); }
@@ -1765,26 +1787,31 @@ p.lab-note { margin: 6px 0 0; }
 
 /* Segmented choice: every option visible, no dropdown to open. */
 .lab-seg { display: flex; gap: 6px; flex-wrap: wrap; }
-.lab-seg button {
+/* Choices: filled tiles, the chosen one lit. ".lab .lab-seg" outranks the themes' buttons. */
+.lab .lab-seg button {
   display: flex;
   flex-direction: column;
   gap: 3px;
   align-items: flex-start;
-  padding: 9px 14px;
+  padding: 10px 16px;
   cursor: pointer;
-  border: 1px solid var(--border-soft);
-  border-radius: 3px;
-  background: transparent;
+  border: 0;
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: none;
   color: var(--fg-dim);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+  transition: background 140ms, color 140ms;
 }
-.lab-seg button small { font-size: 10px; color: var(--muted); }
-.lab-seg button:hover:not(:disabled) { border-color: var(--border); }
-.lab-seg button.on { border-color: var(--accent); color: var(--fg); background: rgba(56, 189, 248, 0.1); }
-.lab-seg button.on.danger { border-color: var(--danger); color: var(--danger); background: rgba(255, 85, 119, 0.1); }
-.lab-seg button:disabled { opacity: 0.35; cursor: not-allowed; }
-.lab-seg.small button { padding: 5px 10px; font-size: 10.5px; }
+.lab .lab-seg button small { font-size: 10.5px; color: var(--muted); }
+.lab .lab-seg button:hover:not(:disabled) { background: var(--surface-2); color: var(--fg); border: 0; box-shadow: none; }
+.lab .lab-seg button.on { color: var(--fg); background: color-mix(in srgb, var(--accent) 18%, var(--surface)); }
+.lab .lab-seg button.on.danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, var(--surface)); }
+.lab .lab-seg button:disabled { opacity: 0.35; cursor: not-allowed; }
+.lab .lab-seg.small button { padding: 6px 12px; font-size: 11.5px; border-radius: 999px; }
 
 /* Rows. */
 .lab-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
@@ -1805,21 +1832,59 @@ p.lab-note { margin: 6px 0 0; }
 
 .lab-tag {
   flex: none;
-  padding: 3px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
   font-size: 10px;
-  letter-spacing: 0.8px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--accent);
-  border: 1px solid var(--border-soft);
-  border-radius: 3px;
+}
+/* A label, not a box: a small diamond leads it. The outlined badge it
+   replaces was the most generic piece on the page. */
+.lab-tag::before {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 1.5px;
+  background: currentColor;
+  opacity: 0.75;
+  transform: rotate(45deg);
 }
 .lab-tag.muted { color: var(--muted); }
 /* An ingredient that comes from another collection than the recipe's. */
-.lab-tag.lab-tag-from { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); text-transform: none; letter-spacing: 0; }
+.lab-tag.lab-tag-from { color: var(--accent); text-transform: none; letter-spacing: 0; font-size: 11.5px; font-weight: 550; }
+/* The ones you press (a filter that is on, a saved view) are soft pills you
+   can see are buttons: filled, never outlined. [data-lab] outranks the
+   themes' plain button rule. */
+button.lab-tag[data-lab],
+.lab-tag.inv-view-tag {
+  gap: 6px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  box-shadow: none;
+}
+button.lab-tag[data-lab]::before,
+.lab-tag.inv-view-tag::before { display: none; }
+button.lab-tag[data-lab]:hover { background: color-mix(in srgb, var(--fg) 12%, var(--panel)); color: var(--fg); }
+button.lab-tag[data-lab].lab-row-mine { background: color-mix(in srgb, var(--held) 18%, var(--surface)); }
+button.lab-tag[data-lab].lab-row-bad { background: color-mix(in srgb, var(--danger) 16%, var(--surface)); }
 /* Rows that hold several lines: an NFT matched on several attributes, a time gate. */
 .lab-row.lab-row-multi { flex-direction: column; align-items: stretch; gap: 8px; }
 .lab-row-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.lab-filters { display: flex; flex-direction: column; gap: 6px; padding-left: 12px; border-left: 2px solid var(--border); }
+.lab-filters { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 12px; background: var(--surface); }
 .lab-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .lab-filters > .lab-link { align-self: flex-start; font-size: 12px; }
 .lab-row input.lab-cool-wait { width: 104px; min-width: 0; flex: none; }
@@ -1944,17 +2009,39 @@ p.lab-note { margin: 6px 0 0; }
 .lab-bar-seg { transition: width 0.15s ease; }
 
 .lab-callout {
-  padding: 11px 13px;
+  --tone: var(--fg-dim);
+  --sign: 'i';
+  position: relative;
   margin-top: 14px;
-  border-radius: 3px;
-  border-left: 3px solid var(--fg-dim);
-  background: rgba(10, 22, 38, 0.6);
-  font-size: 11.5px;
+  padding: 13px 16px 13px 46px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--tone) 9%, var(--surface));
+  font-size: 12px;
   line-height: 1.6;
   color: var(--fg-dim);
 }
-.lab-callout.danger { border-left-color: var(--danger); background: rgba(255, 85, 119, 0.07); }
-.lab-callout.ok { border-left-color: var(--ok); background: rgba(46, 250, 166, 0.06); }
+/* The sign says what kind of note it is, in its colour, where a stripe
+   down the side used to. */
+.lab-callout::before {
+  content: var(--sign);
+  position: absolute;
+  left: 14px;
+  top: 13px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--tone);
+  color: var(--bg);
+  font-family: ui-sans-serif, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  font-style: normal;
+  line-height: 1;
+}
+.lab-callout.danger { --tone: var(--danger); --sign: '!'; }
+.lab-callout.ok { --tone: var(--ok); --sign: '\2713'; }
 .lab-callout strong { color: var(--fg); }
 
 /* It is a <label>, and the app uppercases those. This one is prose. */
@@ -2259,11 +2346,11 @@ input.lab-inline { max-width: 190px; }
   max-height: calc(100vh - 40px);
   display: flex;
   flex-direction: column;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: 4px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+  background: linear-gradient(var(--panel), var(--panel)), var(--bg);
+  border: 0;
+  border-radius: 20px;
+  box-shadow: 0 30px 70px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
 }
 .brief-head {
   display: flex;
@@ -2386,15 +2473,24 @@ input.lab-inline { max-width: 190px; }
 /* The mechanism, folded away. The verdict above answers the question that
    was asked; this answers the one a reader has next, and only if they do. */
 .lab-explain {
-  margin-top: 14px; padding: 0 13px;
-  border-left: 3px solid var(--border-soft); border-radius: 3px;
-  background: rgba(10, 22, 38, 0.4);
-  font-size: 11.5px; line-height: 1.65; color: var(--fg-dim);
+  margin-top: 14px; padding: 0 16px;
+  border-radius: 14px;
+  background: var(--surface);
+  font-size: 12px; line-height: 1.65; color: var(--fg-dim);
 }
 .lab-explain > summary {
-  padding: 11px 0; cursor: pointer; color: var(--fg-dim);
-  font-size: 12px; letter-spacing: 0.2px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 0; cursor: pointer; color: var(--fg-dim);
+  font-size: 12.5px; letter-spacing: 0.2px;
+  list-style: none;
 }
+.lab-explain > summary::-webkit-details-marker { display: none; }
+.lab-explain > summary::before {
+  content: ''; flex: none; width: 6px; height: 6px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg); transition: transform 160ms;
+}
+.lab-explain[open] > summary::before { transform: rotate(45deg); }
 .lab-explain > summary:hover { color: var(--fg); }
 .lab-explain[open] > summary { color: var(--fg); }
 .lab-explain h5 {
@@ -2410,10 +2506,7 @@ input.lab-inline { max-width: 190px; }
 
 /* Leading a name while hundreds of bigger bids queue ahead is not good
    news, and must not be painted like the green "you lead the chain" case. */
-.lab-callout.caution {
-  border-left-color: var(--warn);
-  background: rgba(255, 206, 92, 0.07);
-}
+.lab-callout.caution { --tone: var(--warn); --sign: '!'; }
 
 /* Several accounts can be attached at once, so the bar has to name them
    rather than assume there is only ever one. */
@@ -2467,16 +2560,17 @@ input.lab-inline { max-width: 190px; }
 }
 
 /* Colour in this list answers "what do I do?", not "what happened?".
-   The two rows that need a signature carry the strongest edge; the rest
-   grade from next-in-line down to finished. Only the left border and a
-   faint wash are tinted, so the text keeps its own contrast. */
-.lab-rows-aligned .lab-row { border-left-width: 3px; }
-.tone-claim  { border-left-color: var(--ok);     background: rgba(46, 250, 166, 0.06); }
-.tone-owed   { border-left-color: var(--danger); background: rgba(255, 85, 119, 0.07); }
-.tone-next   { border-left-color: var(--accent); background: rgba(56, 189, 248, 0.07); }
-.tone-queued { border-left-color: var(--warn);   background: rgba(255, 206, 92, 0.06); }
-.tone-held   { border-left-color: var(--held);   background: color-mix(in srgb, var(--held) 8%, transparent); }
-.tone-over   { border-left-color: var(--border); background: transparent; opacity: 0.72; }
+   The two rows that need a signature carry the strongest wash; the rest
+   grade from next-in-line down to finished. No edge: the row is a filled
+   surface in its colour, and the legend above names each one. The text
+   keeps its own contrast. */
+.lab-rows-aligned .lab-row { border: 0; border-radius: 12px; background: var(--surface); }
+.lab-rows-aligned .lab-row.tone-claim  { background: color-mix(in srgb, var(--ok) 13%, var(--surface)); }
+.lab-rows-aligned .lab-row.tone-owed   { background: color-mix(in srgb, var(--danger) 13%, var(--surface)); }
+.lab-rows-aligned .lab-row.tone-next   { background: color-mix(in srgb, var(--accent) 11%, var(--surface)); }
+.lab-rows-aligned .lab-row.tone-queued { background: color-mix(in srgb, var(--warn) 9%, var(--surface)); }
+.lab-rows-aligned .lab-row.tone-held   { background: color-mix(in srgb, var(--held) 10%, var(--surface)); }
+.lab-rows-aligned .lab-row.tone-over   { background: transparent; opacity: 0.72; }
 
 /* A colour code nobody can read is decoration, so name the colours. */
 .lab-legend {
@@ -2486,7 +2580,7 @@ input.lab-inline { max-width: 190px; }
 }
 .lab-legend span { display: inline-flex; align-items: center; gap: 5px; background: none; }
 .lab-legend span::before {
-  content: ''; width: 9px; height: 9px; border-radius: 2px;
+  content: ''; width: 9px; height: 9px; border-radius: 50%;
   background: currentColor; opacity: 0.9;
 }
 .lab-legend .tone-claim  { color: var(--ok); }
@@ -2696,7 +2790,7 @@ body.inv-locked { overflow: hidden; }
 .inv-bar #inv-q { flex: 1 1 320px; }
 
 .inv-views { margin: 8px 0 12px; }
-.inv-view-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; }
+.inv-view-tag { display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px 4px 12px; }
 .inv-view-tag > button {
   background: none; border: 0; padding: 0; cursor: pointer; color: inherit; font: inherit;
 }
@@ -2713,15 +2807,19 @@ body.inv-locked { overflow: hidden; }
   gap: 6px;
   margin: 14px 0;
 }
-.run-step {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px; border-radius: 8px; cursor: pointer; text-align: left;
-  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
-  background: none; color: inherit; font: inherit;
+/* The four questions: filled tabs, the current one lit, the answered ones
+   ticked off in green. ".run-rail" in front outranks the themes' buttons. */
+.run-rail .run-step {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 0; border-radius: 14px; cursor: pointer; text-align: left;
+  background: var(--surface); box-shadow: none; color: var(--fg-dim);
+  font: inherit; letter-spacing: 0; text-transform: none;
   min-width: 0;
+  transition: background 140ms, color 140ms;
 }
-.run-step.on   { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.run-step.done { opacity: .75; }
+.run-rail .run-step:hover:not(:disabled) { background: var(--surface-2); color: var(--fg); border: 0; box-shadow: none; }
+.run-rail .run-step.on { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); color: var(--fg); }
+.run-rail .run-step.done .run-dot { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
 .run-dot {
   flex: 0 0 auto;
   width: 22px; height: 22px; border-radius: 50%;
@@ -2741,14 +2839,27 @@ body.inv-locked { overflow: hidden; }
 /* One ingredient per row, with the count that decides whether this works
    sitting on the same line as the sentence that needs it. */
 .run-slot {
+  --tone: var(--muted);
+  position: relative;
   display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
-  padding: 8px 10px; margin-bottom: 4px; border-radius: 6px;
-  border-left: 3px solid transparent;
-  background: color-mix(in srgb, currentColor 5%, transparent);
+  padding: 12px 14px 12px 44px; margin-bottom: 6px; border-radius: 14px;
+  background: var(--surface);
+}
+/* Covered or short, said by a sign at the start of the line. */
+.run-slot::before {
+  content: ''; position: absolute; left: 15px; top: 14px;
+  width: 16px; height: 16px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--tone); color: var(--bg);
+  font-family: ui-sans-serif, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 10px; font-weight: 800; line-height: 1;
 }
 .run-slot-text { flex: 1 1 220px; min-width: 0; }
-.run-ok    { border-left-color: var(--ok); }
-.run-short { border-left-color: var(--err); }
+.run-ok    { --tone: var(--ok); }
+.run-ok::before { content: '\2713'; }
+.run-short { --tone: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
+.run-short::before { content: '!'; }
+.run-slot:not(.run-ok):not(.run-short)::before { width: 10px; height: 10px; left: 18px; top: 17px; background: none; box-shadow: inset 0 0 0 1.5px var(--muted); }
 
 /* Odds drawn rather than listed: a 0.5% chance should not look like a
    50% one just because both are a line of text. */
@@ -2777,68 +2888,107 @@ body.inv-locked { overflow: hidden; }
   display: grid; gap: 8px; margin: 10px 0;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
-.run-kind {
+.run-kinds .run-kind {
   display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
-  padding: 12px; border-radius: 10px; cursor: pointer; text-align: left;
-  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
-  background: none; color: inherit; font: inherit;
+  padding: 16px; border: 0; border-radius: 18px; cursor: pointer; text-align: left;
+  background: var(--surface); box-shadow: none; color: var(--fg);
+  font: inherit; letter-spacing: 0; text-transform: none;
+  transition: background 180ms, transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.run-kind.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.run-kinds .run-kind:hover { background: var(--surface-2); color: var(--fg); border: 0; box-shadow: none; transform: translateY(-2px); }
+.run-kinds .run-kind.on { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
 .run-kind small { opacity: .75; }
 
-.run-choices { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
-.run-choice {
-  display: grid; gap: 2px 10px; align-items: baseline;
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding: 9px 11px; border-radius: 8px; cursor: pointer; text-align: left;
-  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
-  background: none; color: inherit; font: inherit;
+.run-choices { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+/* One recipe: a filled surface, never an outline, its answer said by the
+   light at its start. ".run-choices" in front outranks the themes' rules
+   for every button. */
+.run-choices .run-choice {
+  --tone: var(--muted);
+  position: relative;
+  display: grid; column-gap: 14px; row-gap: 3px; align-items: baseline;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  padding: 14px 18px 14px 16px; border: 0; border-radius: 16px;
+  background: var(--surface); box-shadow: none;
+  color: var(--fg); font: inherit; font-size: 14px; letter-spacing: 0; text-transform: none; text-align: left;
+  cursor: pointer; overflow: visible;
+  transition: background 160ms, transform 160ms;
 }
-.run-choice.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.run-choice-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-choices .run-choice::before {
+  content: ''; grid-column: 1; grid-row: 1; align-self: center;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--tone);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--tone) 18%, transparent);
+}
+.run-choices .run-choice > .run-choice-name { grid-column: 2; grid-row: 1; }
+.run-choices .run-choice > .run-badge { grid-column: 3; grid-row: 1; justify-self: end; color: var(--muted); }
+.run-choices .run-choice > .run-verdict { grid-column: 2; grid-row: 2; }
+.run-choices .run-choice > .lab-hint { grid-column: 3; grid-row: 2; justify-self: end; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; }
+.run-choices .run-choice > .run-checks { grid-column: 2 / -1; }
+.run-choices .run-choice:hover:not(:disabled) { background: var(--surface-2); color: var(--fg); border: 0; box-shadow: none; transform: translateX(2px); }
+.run-choices .run-choice.on { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
+.run-choice-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-step[disabled] { opacity: .4; cursor: default; }
 
 /* Can you run it. One colour per answer, the same in the list, in the
    tally above it and on the check step: green you can, amber something
-   is missing, red closed to you, dashed grey not known yet. */
-.run-choice { border-left-width: 3px; }
-.run-choice.run-tone-ok { border-left-color: var(--ok); }
-.run-choice.run-tone-warn { border-left-color: var(--warn); }
-.run-choice.run-tone-block { border-left-color: var(--danger); }
-.run-choice.run-tone-pending { border-left-style: dashed; border-left-color: var(--muted); }
-.run-choice:disabled { cursor: not-allowed; opacity: .78; }
+   is missing, red closed to you, a hollow ring not known yet. */
+.run-choices .run-choice.run-tone-ok { --tone: var(--ok); }
+.run-choices .run-choice.run-tone-warn { --tone: var(--warn); }
+.run-choices .run-choice.run-tone-block { --tone: var(--danger); }
+.run-choices .run-choice.run-tone-pending::before { background: none; box-shadow: inset 0 0 0 1.5px var(--muted); }
+.run-choices .run-choice:disabled { cursor: not-allowed; opacity: .72; }
 .run-choice:disabled .run-choice-name { color: var(--fg-dim); }
 .run-verdict { font-size: 12.5px; }
 .run-tone-ok .run-verdict { color: var(--ok); }
 .run-tone-warn .run-verdict { color: var(--warn); }
 .run-tone-block .run-verdict { color: var(--danger); }
 .run-tone-pending .run-verdict { color: var(--fg-dim); }
-.run-checks { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.run-checks { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 7px; }
+/* A fact about the recipe: its colour's dot, then the words. No pill. */
 .run-check {
-  padding: 1px 8px; border-radius: 999px; font-size: 11px; line-height: 1.7;
-  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
-  background: color-mix(in srgb, currentColor 7%, transparent);
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; line-height: 1.5; color: var(--fg-dim);
 }
+.run-check::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .run-check-ok { color: var(--ok); }
 .run-check-info { color: var(--fg-dim); }
 .run-check-warn { color: var(--warn); }
 .run-check-block { color: var(--danger); }
-.run-check-pending { color: var(--muted); border-style: dashed; }
-.run-tally { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 10px; }
-.run-more {
-  margin-top: 10px; padding: 7px 12px; border-radius: 8px; cursor: pointer;
-  border: 1px dashed color-mix(in srgb, currentColor 25%, transparent);
-  background: none; color: var(--fg-dim); font: inherit; font-size: 12.5px;
+.run-check-pending { color: var(--muted); }
+.run-check-pending::before { background: none; box-shadow: inset 0 0 0 1.3px currentColor; }
+/* The count above the list reads as a line of totals. */
+.run-tally { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px; margin: 6px 0 14px; }
+.run-tally .run-check { font-size: 13px; font-weight: 600; }
+.run-tally .run-check::before { width: 8px; height: 8px; }
+.run-tally .run-check-pending::before { box-shadow: inset 0 0 0 1.5px currentColor; }
+.run-tally .lab-hint { margin: 0; }
+button.run-more {
+  margin-top: 12px; padding: 9px 16px; border: 0; border-radius: 999px; cursor: pointer;
+  background: var(--surface); box-shadow: none; color: var(--fg-dim);
+  font: inherit; font-size: 12.5px; letter-spacing: 0; text-transform: none;
 }
-.run-more:hover { color: var(--fg); border-color: var(--accent); }
+button.run-more:hover { color: var(--fg); background: var(--surface-2); border: 0; box-shadow: none; }
 .run-verdict-panel {
-  margin: 14px 0 18px; padding: 12px 14px; border-radius: 10px;
-  border: 1px solid var(--border); border-left: 3px solid var(--muted);
+  --tone: var(--accent);
+  margin: 14px 0 18px; padding: 16px 18px; border-radius: 16px;
+  background: color-mix(in srgb, var(--tone) 10%, var(--surface));
 }
-.run-verdict-panel.run-tone-ok { border-left-color: var(--ok); }
-.run-verdict-panel.run-tone-warn { border-left-color: var(--warn); }
-.run-verdict-panel.run-tone-block { border-left-color: var(--danger); }
-.run-verdict-panel h4 { margin: 0 0 8px; }
+.run-verdict-panel.run-tone-ok { --tone: var(--ok); }
+.run-verdict-panel.run-tone-warn { --tone: var(--warn); }
+.run-verdict-panel.run-tone-block { --tone: var(--danger); }
+.run-verdict-panel.run-tone-pending { --tone: var(--muted); }
+/* Its heading is the answer, in the answer's colour, behind its light. */
+.run-verdict-panel h4 {
+  display: flex; align-items: center; gap: 9px;
+  margin: 0 0 10px; font-size: 11px; font-weight: 650; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--tone);
+}
+.run-verdict-panel h4::before {
+  content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--tone); box-shadow: 0 0 0 4px color-mix(in srgb, var(--tone) 20%, transparent);
+}
+.run-verdict-panel.run-tone-pending h4::before { animation: seal-pulse 1.4s ease-in-out infinite; }
 .run-check-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; font-size: 13px; }
 .run-li { display: flex; gap: 9px; align-items: baseline; }
 .run-li::before {
@@ -2852,9 +3002,8 @@ body.inv-locked { overflow: hidden; }
 .run-li-pending::before { background: none; border: 1px dashed var(--muted); }
 /* What the wallet signed half of and never finished. */
 .run-pending {
-  margin: 0 0 16px; padding: 12px 14px; border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
-  background: color-mix(in srgb, var(--warn) 7%, transparent);
+  margin: 0 0 16px; padding: 14px 16px; border-radius: 16px;
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface));
 }
 .run-pending > p { margin: 4px 0 8px; }
 .run-pending-row {
@@ -2939,8 +3088,8 @@ button.inv-card { border: 0; cursor: pointer; font: inherit; color: inherit; tex
   background: color-mix(in srgb, currentColor 7%, transparent);
 }
 
-.run-keep { background: color-mix(in srgb, var(--ok) 22%, transparent); }
-.run-burn { background: color-mix(in srgb, var(--err) 20%, transparent); }
+.lab-tag.run-keep { color: var(--ok); }
+.lab-tag.run-burn { color: var(--danger); }
 .run-odd-name { cursor: default; }
 
 
@@ -3018,10 +3167,12 @@ button.inv-card { border: 0; cursor: pointer; font: inherit; color: inherit; tex
 button.inv-card.inv-usable { border: 1px solid var(--ok); }
 .inv-usable-btn.on { border-color: var(--ok); color: var(--ok); }
 .inv-uses-hit {
-  border-left: 3px solid var(--ok);
-  padding-left: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ok) 9%, var(--surface));
 }
 .inv-uses-hit h4 { display: flex; align-items: center; gap: 8px; }
+.inv-uses-hit h4::before { content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 20%, transparent); }
 .inv-warming { opacity: .7; }
 
 
@@ -3062,6 +3213,162 @@ button.inv-card.inv-usable { border: 1px solid var(--ok); }
 .lab-next button small { white-space: normal; line-height: 1.4; }
 /* Trade and burn, under a template: set on the template, so it reads as a fact, not a field. */
 .lab-tpl-rules { color: var(--fg-dim); }
+
+/* ─── collection tiles (collectionTiles.ts) ───────────────────────────────
+   "Which collection?" answered with faces: the collection's picture, its
+   name, its account, and how many of its NFTs you hold. The same picture,
+   blurred, colours the whole tile, so a wall of them reads like a shelf of
+   covers rather than a cloud of tags. No outline anywhere: a tile is a
+   filled surface that lifts when pointed at. */
+.ctiles-group { margin: 22px 0 0; }
+.ctiles-head {
+  display: flex; align-items: baseline; gap: 10px;
+  margin: 0 0 10px;
+  font-size: 10.5px; font-weight: 650; letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--muted);
+}
+.ctiles-head small { font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.ctiles-wait { margin: 18px 0 0; }
+.ctiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+.ctiles .ctile {
+  --hue: 220;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  min-height: 68px;
+  padding: 10px 16px 10px 11px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: none;
+  color: var(--fg);
+  font: inherit;
+  letter-spacing: 0;
+  text-transform: none;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1), background 200ms, box-shadow 200ms;
+}
+/* Its colour before (or without) its picture: a glow from the left, in the
+   hue its name gives it. */
+.ctiles .ctile::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background: radial-gradient(130% 150% at 0% 50%, hsl(var(--hue) 70% 55% / 0.16), transparent 62%);
+}
+.ctiles .ctile:hover {
+  transform: translateY(-2px);
+  background: var(--surface-2);
+  border: 0;
+  color: var(--fg);
+  box-shadow: 0 14px 30px rgb(0 0 0 / 0.22);
+}
+.ctiles .ctile:active { transform: translateY(0); }
+.ctiles .ctile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ctiles .ctile.on { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
+
+/* The picture, blurred behind everything. */
+.ctiles .media-thumb.ctile-wash {
+  position: absolute;
+  inset: -40% -10%;
+  z-index: -1;
+  width: auto;
+  height: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  filter: blur(26px) saturate(1.6);
+  opacity: 0.26;
+  transition: opacity 200ms;
+  pointer-events: none;
+}
+.ctiles .ctile:hover .media-thumb.ctile-wash { opacity: 0.42; }
+.ctiles .media-thumb.ctile-wash img,
+.ctiles .media-thumb.ctile-img img {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+}
+
+/* The face: the picture over the initial, which shows if no gateway serves it. */
+.ctile-art {
+  position: relative;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(140deg, hsl(var(--hue) 62% 58%), hsl(calc(var(--hue) + 48) 62% 38%));
+  box-shadow: 0 6px 16px rgb(0 0 0 / 0.28);
+}
+.ctile-initial { font-size: 19px; font-weight: 750; color: #fff; text-shadow: 0 1px 2px rgb(0 0 0 / 0.3); }
+.ctiles .media-thumb.ctile-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.ctile.on .ctile-art::after {
+  content: '\2713';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--accent) 72%, transparent);
+  color: #fff;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.ctile-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ctile-title {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctile-handle {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctile-count { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.1; }
+.ctile-count b { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ctile-count small { font-size: 9.5px; font-weight: 650; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.ctile-go { font-size: 16px; color: var(--fg-dim); transition: transform 200ms, color 200ms; }
+.ctiles .ctile:hover .ctile-go { transform: translateX(3px); color: var(--accent); }
+
+@media (max-width: 560px) {
+  .ctiles { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ctiles .ctile, .ctile-go { transition: none; }
+  .ctiles .ctile:hover { transform: none; }
+}
 
 /* ─── the confirmation after a signature (signedPopup.ts) ─────────────────
    A receipt with a seal on it. The seal sits across the top edge, the way a
@@ -3228,39 +3535,9 @@ button.inv-card.inv-usable { border: 1px solid var(--ok); }
 .seal-card .signed-live:empty { display: none; }
 .seal-card .signed-live { margin: 14px 0 0; text-align: left; }
 
-/* A draw that lands after the signature: a quiet tinted card, not the run
-   panel's edged one, with the second signature as the one loud button. */
-.seal-card .run-verdict-panel {
-  --tone: var(--accent);
-  margin: 0;
-  padding: 14px 16px;
-  border: 0;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--tone) 10%, transparent);
-  box-shadow: none;
-}
-.seal-card .run-verdict-panel.run-tone-ok { --tone: var(--ok); }
-.seal-card .run-verdict-panel.run-tone-warn { --tone: var(--warn); }
-.seal-card .run-verdict-panel.run-tone-block { --tone: var(--danger); }
-.seal-card .run-verdict-panel h4 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 0 6px;
-  font-size: 10.5px;
-  font-weight: 650;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--tone);
-}
-.seal-card .run-verdict-panel h4::before {
-  content: '';
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--tone);
-}
-.seal-card .run-tone-pending h4::before { animation: seal-pulse 1.4s ease-in-out infinite; }
+/* A draw that lands after the signature: the run panel, flush in the box,
+   with the second signature as the one loud button. */
+.seal-card .run-verdict-panel { margin: 0; padding: 14px 16px; border-radius: 14px; }
 .seal-card .run-verdict-panel p { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--fg); }
 .seal-card .run-verdict-panel .lab-hint { margin-top: 8px; font-size: 12.5px; }
 .seal-card .run-verdict-panel .lab-hint a { color: var(--fg); text-decoration-color: color-mix(in srgb, var(--tone) 70%, transparent); }
@@ -3431,5 +3708,5 @@ button.inv-card.inv-usable { border: 1px solid var(--ok); }
   .seal-mark,
   .seal-words { animation: none; }
   .seal-glyph { animation: none; stroke-dashoffset: 0; }
-  .seal-card .run-tone-pending h4::before { animation: none; }
+  .run-verdict-panel h4::before { animation: none; }
 }

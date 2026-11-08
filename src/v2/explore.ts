@@ -20,6 +20,7 @@ import { listAssetsForOwner, type AtomicAsset } from '../atomic/assets';
 import { getCurrentSession } from '../chain/session';
 import { resolveCategories, shelfEntry, UNCATEGORISED, type CatalogEntry } from '../ui/catalog';
 import { SUGGESTED_COLLECTIONS } from '../ui/collections';
+import { askFaces, learnFaces, renderTiles, tileGroup } from '../ui/collectionTiles';
 import {
   actionOf, collectionsOwned, listRecipes, RECIPE_ACTIONS, SOURCE_INFO, type RecipeAction, type RecipeChoice,
 } from '../ui/guidedRun';
@@ -105,7 +106,7 @@ function loadMine(repaint: () => void): void {
   if (!actor || mine?.actor === actor) return;
   mine = { actor, list: [] };
   void listAssetsForOwner({ owner: actor })
-    .then((assets) => { if (mine?.actor === actor) { mine.list = collectionsOwned(assets); repaint(); } })
+    .then((assets) => { if (mine?.actor === actor) { learnFaces(assets); mine.list = collectionsOwned(assets); repaint(); } })
     .catch(() => { /* the suggestions stay */ });
 }
 
@@ -298,8 +299,9 @@ function renderCard(s: Shelf, c: RecipeChoice, v: RecipeVerdict): string {
 function renderPicker(repaint: () => void): string {
   loadMine(repaint);
   const own = (mine?.list ?? []).slice(0, 12);
-  const pick = (name: string, extra = '') =>
-    `<a class="v2-chip" href="#/explore/${esc(name)}">${esc(name)}${extra}</a>`;
+  askFaces([...own.map((c) => c.name), ...SUGGESTED_COLLECTIONS], repaint);
+  const href = (name: string) => `#/explore/${name}`;
+  const others = SUGGESTED_COLLECTIONS.filter((c) => !own.some((o) => o.name === c));
   return `
     <section class="v2-explore">
       <div class="v2-explore-head">
@@ -315,10 +317,10 @@ function renderPicker(repaint: () => void): string {
                value="${esc(pickDraft)}" />
         <button class="lab-primary" type="submit">Explore</button>
       </form>
-      ${own.length ? `<p class="lab-hint">Collections in your wallet</p>
-        <div class="v2-chips">${own.map((c) => pick(c.name, ` <span>${c.count}</span>`)).join('')}</div>` : ''}
-      <p class="lab-hint">Or one of these</p>
-      <div class="v2-chips">${SUGGESTED_COLLECTIONS.map((c) => pick(c)).join('')}</div>
+      ${own.length ? tileGroup('In your wallet', own.length === 12 ? 'the 12 you hold most of' : `${own.length} collection${own.length === 1 ? '' : 's'}`,
+        renderTiles(own.map((c) => ({ name: c.name, count: c.count })), { href })) : ''}
+      ${others.length ? tileGroup(own.length ? 'Or start with one of these' : 'Start with one of these', '',
+        renderTiles(others.map((c) => ({ name: c })), { href })) : ''}
     </section>`;
 }
 

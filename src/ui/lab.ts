@@ -125,6 +125,7 @@ import {
 } from './runFinish';
 import { renderMediaThumb } from './media';
 import { refreshSigned, showSigned, signedNotice, type SignedNotice } from './signedPopup';
+import { askFaces, learnFaces, renderTiles, tileGroup } from './collectionTiles';
 import type { MarketRef } from '../atomic/atomichub';
 import { hubLinks, renderVerdictPanel } from './verdictView';
 import { pickImageRef } from '../atomic/image';
@@ -6210,6 +6211,14 @@ function renderRunTool(): string {
       </div>`;
   } else if (run.step === 2) {
     const owned = collectionsOwned(run.assets).slice(0, 24);
+    learnFaces(run.assets);
+    askFaces([...owned.map((c) => c.name), ...SUGGESTED_COLLECTIONS], rerender);
+    const pick = (name: string) => ({ lab: 'run-collection-pick', value: name });
+    const yours = owned.length
+      ? tileGroup('In your wallet', `${owned.length === 24 ? 'the 24 you hold most of' : `${owned.length} collection${owned.length === 1 ? '' : 's'}`}`,
+          renderTiles(owned.map((c) => ({ name: c.name, count: c.count, on: run.collection === c.name })), { data: pick }))
+      : '';
+    const others = SUGGESTED_COLLECTIONS.filter((c) => !owned.some((o) => o.name === c));
     body = `
       <h4>Which collection?</h4>
       <p class="lab-hint">The collection that made the recipe. Not your wallet.</p>
@@ -6220,23 +6229,12 @@ function renderRunTool(): string {
           ${run.listing ? 'Looking' : 'Find recipes'}
         </button>
       </div>
-      <div class="collection-chips">
-        <span class="collection-chips-label">try one of these:</span>
-        ${SUGGESTED_COLLECTIONS.map((c) => `
-          <button type="button" class="collection-chip${run.collection === c ? ' active' : ''}"
-                  data-lab="run-collection-pick" data-value="${esc(c)}">${esc(c)}</button>`).join('')}
-      </div>
-      ${owned.length ? `
-        <p class="lab-hint">Or one you already hold NFTs in:</p>
-        <div class="lab-tools inv-chips">
-          ${owned.map((c) => `
-            <button class="lab-tag" data-lab="run-collection-pick" data-value="${esc(c.name)}">
-              ${esc(c.name)} <span class="lab-hint">${c.count}</span>
-            </button>`).join('')}
-        </div>`
-        : state.actor
-          ? '<p class="lab-hint">Reading your NFTs to suggest more.</p>'
-          : '<p class="lab-hint">Connect a wallet and this will also suggest the collections you hold.</p>'}`;
+      ${yours}
+      ${!owned.length ? `<p class="lab-hint ctiles-wait">${state.actor
+        ? 'Reading your NFTs to suggest the collections you hold.'
+        : 'Connect a wallet and the collections you hold show here too.'}</p>` : ''}
+      ${others.length ? tileGroup(owned.length ? 'Or start with one of these' : 'Start with one of these', '',
+        renderTiles(others.map((c) => ({ name: c, on: run.collection === c })), { data: pick })) : ''}`;
   } else if (run.step === 3) {
     body = `
       <h4>Which one?</h4>

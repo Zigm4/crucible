@@ -46,6 +46,7 @@ export default defineConfig({
         waxdaoDrops: 'src/waxdao/drops.ts',
         neftyPackExecute: 'src/nefty/neftyPackExecute.ts',
         signedPopup: 'src/ui/signedPopup.ts',
+        collectionTiles: 'src/ui/collectionTiles.ts',
         walletReturn: 'src/chain/walletReturn.ts',
       },
       formats: ['es'],
