@@ -253,7 +253,13 @@ guidance, and the pages below.
   grouped by result or by contract, three sizes, grid or list.
 - **My NFTs** (`#/nfts/<account>`): any wallet's NFTs, searched and
   filtered, each with what it is good for (the pack it opens, the blends
-  and upgrades that take it), and its token balances.
+  and upgrades that take it), and its token balances. On somebody
+  else's wallet, "Templates I don't own" (at the top of the filters)
+  keeps only the NFTs whose template the connected wallet does not hold,
+  on top of every other filter; it asks AtomicAssets about the
+  collections on screen only. "Pick" selects NFTs and copies a link that
+  opens on those NFTs alone (asset ids in base 36, at most 500, with a
+  warning past Discord's 2,000 characters).
 - **Create and Change** (`#/create`): the guided creator described
   [below](#guided-creator), with who can use a recipe (everyone, a list
   of accounts, or holders of NFTs or tokens), up.nefty's fee rule, and a
@@ -1014,6 +1020,7 @@ signed. Each has its suite, run with `npm run <name>`:
 | `verify:ingredients` | every live blend and upgrade through the editor's rows, written back exactly; NFTs of another collection, several attributes and time gates built by the form and held to the chain's answer, its refusals included |
 | `verify:signed-popup` | the wallet's return address (1000 made the way WharfKit makes them) told apart from every address both routers use; a reload while the wallet was open found only at that address; the confirmation after creating, running (each place to go back to, a draw landing, a second signature) and saving a change |
 | `verify:collection-tiles` | "which collection?" as tiles: the collection's picture and full name once known, its initial until then, the count of NFTs held, a name with markup shown as text; in the run tool, the collections in the wallet first, then the suggestions not already among them |
+| `verify:missing-templates` | "templates I don't own": what it keeps, that it waits for your templates and does nothing on your own wallet or after a disconnect, that the other filters and facet counts follow it; your templates read for the collections on screen only, once, and not at all when your wallet was already read; picks, pick all and the 500 cap; the comparison and the picks surviving the link, a selection showing its picks whatever the filters say; the switch, the discs, the dock and the selection screen |
 | `verify:after-create` | the creator once a recipe is signed, on northshireup's "Hype! - 400" as it is on chain: what it reads, no second signature, Make another held until something changes (each kind of change tried), the kept form accepted by the chain, Start from scratch empty |
 | `verify:waxdao-drops` | real WaxDAO drop and pack transactions rebuilt field for field; live packs, drops and a drop without RAM held to the chain's answer as real holders; a time gate run as a player |
 | `verify:nefty-leftovers` | every Withdraw and Finish the Staking page offers real holders is accepted, a partly minted pack asks only for its open cards, and each refusal or unanswered draw points to the note that explains it, `retryrand` included |

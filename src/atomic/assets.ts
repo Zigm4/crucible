@@ -41,6 +41,9 @@ export interface AtomicAsset {
 
 const cache = new Map<string, AtomicAsset[]>();
 
+/** The most NFTs one read pulls: twenty pages of a thousand. A read this long may be cut short. */
+export const ASSET_SCAN_CAP = 20_000;
+
 export async function listAssetsForOwner(args: {
   owner: string;
   collection_name?: string;
@@ -66,10 +69,15 @@ export async function listAssetsForOwner(args: {
     all.push(...batch);
     if (batch.length < pageSize) break;
     page += 1;
-    if (page > 20) break; // safety stop: 20k assets max
+    if (page > ASSET_SCAN_CAP / pageSize) break; // safety stop
   }
   cache.set(key, all);
   return all;
+}
+
+/** A full read of this wallet this page already made, if any. Asks nothing. */
+export function peekAssets(owner: string): AtomicAsset[] | undefined {
+  return cache.get(`${owner}::`);
 }
 
 export function clearAssetsCache() {

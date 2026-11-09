@@ -29,7 +29,8 @@
     "verify:waxdao-drops": "npm run build:verify && node scripts/verify-waxdao-drops.mjs",
     "verify:after-create": "npm run build:verify && node scripts/verify-after-create.mjs",
     "verify:signed-popup": "npm run build:verify && node scripts/verify-signed-popup.mjs",
-    "verify:collection-tiles": "npm run build:verify && node scripts/verify-collection-tiles.mjs"
+    "verify:collection-tiles": "npm run build:verify && node scripts/verify-collection-tiles.mjs",
+    "verify:missing-templates": "npm run build:verify && node scripts/verify-missing-templates.mjs"
   },
   "dependencies": {
     "@wharfkit/session": "^4.0.2",

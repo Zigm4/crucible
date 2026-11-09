@@ -29,10 +29,32 @@
  * how you sort, and any filter sets you named. Nothing about your wallet
  * or your NFTs is ever written, and a button clears the lot.
  */
-import { listAssetsForOwner, clearAssetsCache, type AtomicAsset } from '../atomic/assets';
+import { listAssetsForOwner, clearAssetsCache, peekAssets, ASSET_SCAN_CAP, type AtomicAsset } from '../atomic/assets';
 import { atomicFetch } from '../chain/rpc';
 
 export type InventoryView = 'grid' | 'list';
+
+/**
+ * The templates the connected wallet holds, read to compare another
+ * wallet against it.
+ *
+ * Tied to two names, not one: whose templates these are, and which wallet
+ * they were read for. Only the collections on screen are asked about, so
+ * an answer read for one wallet says nothing about the next one's
+ * collections.
+ */
+export interface OwnedTemplates {
+  /** The connected wallet these belong to. */
+  for: string;
+  /** The wallet on screen when they were read. */
+  wallet: string;
+  templates: ReadonlySet<string>;
+  state: 'idle' | 'loading' | 'done' | 'error';
+  error: string;
+}
+
+/** The most NFTs a selection holds. A link carrying more would be too long to paste anywhere. */
+export const MAX_PICKS = 500;
 
 /** A facet is one column of the data people can slice on. */
 export interface Facet {
@@ -139,6 +161,36 @@ export interface InventoryState {
   assetsUnread: number;
   /** Empty balances are hidden by default; this shows them. */
   tokensShowEmpty: boolean;
+  /**
+   * Show only NFTs whose template the connected wallet does not hold.
+   *
+   * Means something only on somebody else's wallet, and only once the
+   * connected wallet's templates are read. Until then it hides nothing,
+   * for the same reason the usable filter waits: an empty screen with no
+   * reason given is worse than a full one for a second.
+   *
+   * In the link, like every filter. A recipient compares against their
+   * own wallet, which is what "templates I don't own" means for them.
+   */
+  missingOnly: boolean;
+  mine: OwnedTemplates;
+  /** NFTs picked, by asset id, in the order they were picked. */
+  picked: string[];
+  /**
+   * Show the picked NFTs and nothing else, whatever the filters say.
+   *
+   * Picks are made under different filters as somebody narrows, widens and
+   * narrows again; applying today's filters to them would hide the ones
+   * picked under yesterday's. So this sets the filters aside rather than
+   * adding to them, and turning it off brings them back unchanged.
+   */
+  pickedOnly: boolean;
+  /** A click on a card picks it instead of opening it. Not in the link. */
+  selecting: boolean;
+}
+
+export function noOwnedTemplates(): OwnedTemplates {
+  return { for: '', wallet: '', templates: new Set(), state: 'idle', error: '' };
 }
 
 export function emptyInventoryState(): InventoryState {
@@ -152,6 +204,8 @@ export function emptyInventoryState(): InventoryState {
     tokensQ: '', tokensShowEmpty: false,
     matchers: {}, matchersFor: '', usableOnly: false,
     collectionsHeld: 0, assetsUnread: 0,
+    missingOnly: false, mine: noOwnedTemplates(),
+    picked: [], pickedOnly: false, selecting: false,
   };
 }
 
@@ -287,11 +341,55 @@ export function isUsable(a: AtomicAsset, st: InventoryState): boolean {
   return typeof m === 'object' && m.takes(a);
 }
 
+/**
+ * True when "only templates I don't own" is on AND can be answered: a
+ * connected wallet that is not the one on screen, whose templates were
+ * read for the wallet on screen.
+ */
+export function comparing(st: InventoryState): boolean {
+  const m = st.mine;
+  return st.missingOnly && m.state === 'done' && !!m.for
+    && m.for !== st.owner && m.wallet === st.loadedFor;
+}
+
+/** True when the connected wallet holds no NFT of this one's template. */
+export function isMissing(a: AtomicAsset, mine: ReadonlySet<string>): boolean {
+  const t = a.template?.template_id;
+  // An NFT without a template has nothing to compare: nobody else can
+  // hold "the same one", so it is not something you are missing either.
+  return !!t && !mine.has(t);
+}
+
+/**
+ * What the comparison finds over a whole wallet: the NFTs and templates
+ * you lack, and the NFTs without a template that it cannot judge.
+ */
+export function missingCounts(
+  assets: readonly AtomicAsset[], mine: ReadonlySet<string>,
+): { nfts: number; templates: number; untemplated: number } {
+  const templates = new Set<string>();
+  let nfts = 0; let untemplated = 0;
+  for (const a of assets) {
+    const t = a.template?.template_id;
+    if (!t) { untemplated += 1; continue; }
+    if (mine.has(t)) continue;
+    nfts += 1;
+    templates.add(t);
+  }
+  return { nfts, templates: templates.size, untemplated };
+}
+
 export function applyFilter(
   assets: AtomicAsset[], st: InventoryState, skipKey?: string,
 ): AtomicAsset[] {
+  if (st.pickedOnly) {
+    const picked = new Set(st.picked);
+    return assets.filter((a) => picked.has(a.asset_id));
+  }
+  const compare = comparing(st);
   const terms = st.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
   return assets.filter((a) => {
+    if (compare && !isMissing(a, st.mine.templates)) return false;
     // Applied first because it is the cheapest and the most selective,
     // and only once something is actually known. Somebody opening a
     // shared link with this on arrives before any collection has been
@@ -447,6 +545,7 @@ export function clearFilters(st: InventoryState): void {
   // not undo. With the toggle hidden while nothing was read yet, that was
   // an empty inventory with no way out of it.
   st.usableOnly = false;
+  st.missingOnly = false;
   st.q = '';
   st.include = {};
   st.exclude = {};
@@ -459,7 +558,58 @@ export function activeFilterCount(st: InventoryState): number {
     Object.values(r).reduce((s, v) => s + v.length, 0);
   // The usable toggle counts too, so "clear N filters" appears for it and
   // an inventory narrowed by it never looks unfiltered.
-  return (st.q.trim() ? 1 : 0) + n(st.include) + n(st.exclude) + (st.usableOnly ? 1 : 0);
+  return (st.q.trim() ? 1 : 0) + n(st.include) + n(st.exclude) + (st.usableOnly ? 1 : 0)
+    + (st.missingOnly ? 1 : 0);
+}
+
+/** Adds or removes one NFT from the selection. */
+export function togglePick(st: InventoryState, id: string): void {
+  st.picked = st.picked.includes(id)
+    ? st.picked.filter((x) => x !== id)
+    : [...st.picked, id].slice(0, MAX_PICKS);
+  if (!st.picked.length) st.pickedOnly = false;
+}
+
+/**
+ * Picks every one of these, or, when they are all picked already, lets
+ * them all go. One button that does the obvious thing both ways.
+ */
+export function togglePickAll(st: InventoryState, ids: readonly string[]): void {
+  const have = new Set(st.picked);
+  if (ids.length && ids.every((id) => have.has(id))) {
+    const drop = new Set(ids);
+    st.picked = st.picked.filter((x) => !drop.has(x));
+  } else {
+    st.picked = [...st.picked, ...ids.filter((id) => !have.has(id))].slice(0, MAX_PICKS);
+  }
+  if (!st.picked.length) st.pickedOnly = false;
+}
+
+/**
+ * Asset ids in base 36, for the link.
+ *
+ * A selection is a list of thirteen-digit numbers, and a link is pasted
+ * into chat, where Discord cuts a message at 2,000 characters. Base 36
+ * writes the same id in eight, so a selection fits half as many again
+ * before it hits that wall. The dot between them is a character a URL
+ * leaves alone; a comma is written as three.
+ */
+export function packIds(ids: readonly string[]): string {
+  return ids.map((id) => { try { return BigInt(id).toString(36); } catch { return ''; } })
+    .filter(Boolean).join('.');
+}
+
+export function unpackIds(text: string): string[] {
+  const out: string[] = [];
+  for (const part of text.split('.')) {
+    if (!/^[0-9a-z]{1,13}$/.test(part)) continue;
+    let n = 0n;
+    for (const ch of part) n = n * 36n + BigInt(parseInt(ch, 36));
+    const id = n.toString();
+    if (!out.includes(id)) out.push(id);
+    if (out.length >= MAX_PICKS) break;
+  }
+  return out;
 }
 
 /**
@@ -482,7 +632,7 @@ function enc(v: string): string {
   return encodeURIComponent(v).replace(/~/g, '%7E');
 }
 
-export function encodeInventoryView(st: InventoryState): string {
+export function encodeInventoryView(st: InventoryState, opts: { picks?: boolean } = {}): string {
   const parts: string[] = [];
   if (st.q.trim()) parts.push(`q=${enc(st.q.trim())}`);
   const pack = (r: Record<string, string[]>, bang: string) => {
@@ -504,6 +654,13 @@ export function encodeInventoryView(st: InventoryState): string {
   // a filtered inventory is something you can send somebody, and this is
   // a filter.
   if (st.usableOnly) parts.push('usable=1');
+  if (st.missingOnly) parts.push('missing=1');
+  // A selection is NFTs of one wallet, not a filter. A saved view leaves
+  // it out: applied to another wallet it would select nothing.
+  if (opts.picks !== false && st.picked.length) {
+    parts.push(`pick=${packIds(st.picked)}`);
+    if (st.pickedOnly) parts.push('only=1');
+  }
   // What is being looked at travels too: "look at this one" is the most
   // obvious reason to send somebody an inventory link.
   if (st.openAsset) parts.push(`asset=${enc(st.openAsset)}`);
@@ -513,6 +670,12 @@ export function encodeInventoryView(st: InventoryState): string {
 
 export function decodeInventoryView(text: string, st: InventoryState): void {
   if (!text) return;
+  decodeChunks(text, st);
+  // "Only the picked ones" with nothing picked is an empty screen.
+  if (!st.picked.length) st.pickedOnly = false;
+}
+
+function decodeChunks(text: string, st: InventoryState): void {
   for (const chunk of text.split('~')) {
     const eq = chunk.indexOf('=');
     if (eq < 0) continue;
@@ -524,6 +687,9 @@ export function decodeInventoryView(text: string, st: InventoryState): void {
     if (key === 'asc') { st.sortDesc = raw !== '1'; continue; }
     if (key === 'size') { st.cardSize = clampCardSize(raw); continue; }
     if (key === 'usable') { st.usableOnly = raw === '1'; continue; }
+    if (key === 'missing') { st.missingOnly = raw === '1'; continue; }
+    if (key === 'pick') { st.picked = unpackIds(decodeURIComponent(raw)); continue; }
+    if (key === 'only') { st.pickedOnly = raw === '1'; continue; }
     if (key === 'asset') { st.openAsset = decodeURIComponent(raw); continue; }
     if (key === 'tpl') { st.openTemplate = decodeURIComponent(raw); continue; }
     for (const v of raw.split(',')) {
@@ -556,10 +722,80 @@ export async function loadTemplateOwners(
     .sort((a, b) => b.count - a.count || a.owner.localeCompare(b.owner));
 }
 
+/**
+ * The templates each connected wallet is known to hold, per page load.
+ *
+ * `all` is set when the page already read that wallet in full, and then
+ * every collection is answered. Otherwise `asked` lists the collections
+ * the indexer was asked about, so browsing a second wallet asks only
+ * about the collections the first did not have.
+ */
+const owned = new Map<string, { all: boolean; asked: Set<string>; templates: Set<string> }>();
+
+/** Collections per request: a whitelist of a hundred names is about 1,300 characters of URL. */
+const OWNED_CHUNK = 100;
+
+/**
+ * Every template `account` holds at least one NFT of, among `collections`.
+ *
+ * One request per hundred collections: the AtomicAssets account summary
+ * lists a wallet's templates and takes a collection whitelist. Asked for
+ * every collection at once it is a third of a megabyte for a wallet of
+ * five thousand NFTs; asked for the dozen on screen it is a few kilobytes.
+ * When the page has already read that wallet's NFTs in full (its own
+ * inventory, the run tool), the answer is in hand and nothing is asked.
+ */
+export async function loadOwnedTemplates(
+  account: string, collections: readonly string[],
+): Promise<ReadonlySet<string>> {
+  let known = owned.get(account);
+  if (!known) {
+    known = { all: false, asked: new Set(), templates: new Set() };
+    owned.set(account, known);
+  }
+  if (!known.all) {
+    const read = peekAssets(account);
+    // A read that stopped at the cap may have missed some, so it does not
+    // count as the whole wallet.
+    if (read && read.length < ASSET_SCAN_CAP) {
+      for (const a of read) if (a.template?.template_id) known.templates.add(a.template.template_id);
+      known.all = true;
+    }
+  }
+  if (!known.all) {
+    const ask = [...new Set(collections)].filter((c) => c && !known!.asked.has(c));
+    for (let i = 0; i < ask.length; i += OWNED_CHUNK) {
+      const chunk = ask.slice(i, i + OWNED_CHUNK);
+      const qs = new URLSearchParams({ collection_whitelist: chunk.join(',') });
+      const d = await atomicFetch<{ templates?: { template_id: string | number }[] }>(
+        `/atomicassets/v1/accounts/${encodeURIComponent(account)}?${qs}`,
+      );
+      // No list at all is not "holds nothing": it is no answer, and
+      // reading it as an empty wallet would show every NFT as missing.
+      if (!d || !Array.isArray(d.templates)) throw new Error(`The indexer did not list ${account}'s templates.`);
+      for (const t of d.templates) known.templates.add(String(t.template_id));
+      chunk.forEach((c) => known!.asked.add(c));
+    }
+  }
+  return new Set(known.templates);
+}
+
+/** Drops what is known about every wallet's templates. Refresh asks again. */
+export function forgetOwnedTemplates(): void {
+  owned.clear();
+}
+
 /** Pulls the wallet's NFTs. One call, then everything else is local. */
 export async function loadInventory(st: InventoryState, owner: string, force = false): Promise<void> {
   st.loading = true;
   st.error = '';
+  // A selection is NFTs of one wallet. Reading another one lets it go;
+  // refreshing the same one keeps it, and so does arriving by a link,
+  // where nothing was loaded before and the picks came with the address.
+  if (st.loadedFor && st.loadedFor !== owner) {
+    st.picked = [];
+    st.pickedOnly = false;
+  }
   st.owner = owner;
   // Cleared rather than left standing: showing one wallet's NFTs under
   // another wallet's name for the length of a round trip is the kind of

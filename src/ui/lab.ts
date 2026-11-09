@@ -49,7 +49,8 @@ import {
   toggleFacet, clearFilters, activeFilterCount, facetValue, stringify,
   encodeInventoryView, decodeInventoryView, SORT_KEYS, ATTR_PREFIX,
   CARD_SIZES, clampCardSize, loadTemplateOwners, artworkOf, isUsable,
-  type InventoryState,
+  comparing, missingCounts, togglePick, togglePickAll, loadOwnedTemplates, forgetOwnedTemplates,
+  MAX_PICKS, noOwnedTemplates, type InventoryState,
 } from './inventory';
 import {
   readPrefs, patchPrefs, forgetPrefs, storageAvailable, type SavedView,
@@ -213,8 +214,8 @@ type LabMode = 'create' | 'edit';
  * the wallet, so each keeps its own state.
  */
 type LabTool = 'recipes' | 'names' | 'crucible' | 'inventory' | 'run';
-/** Which of the two share buttons a copy came from. */
-type ShareScope = 'tool' | 'auction';
+/** Which share button a copy came from. */
+type ShareScope = 'tool' | 'auction' | 'selection';
 
 /** One existing recipe, flattened to what the editor can change. */
 interface LabExisting {
@@ -3279,10 +3280,11 @@ function shareButton(scope: ShareScope, label: string): string {
  * that has not been written yet.
  */
 function labHref(scope: ShareScope): string {
-  const base = location.href.split('#')[0];
+  const base = typeof location !== 'undefined' ? location.href.split('#')[0] : '';
   if (scope === 'auction' && state.nameStatusFor) {
     return `${base}${toolPath('names')}/${encodeSubject(state.nameStatusFor)}`;
   }
+  if (scope === 'selection') return `${base}${selectionPath(state.inv)}`;
   const live = typeof location !== 'undefined' ? location.hash : '';
   return onLabAddress(live) ? `${base}${live}` : `${base}${toolPath(state.tool)}`;
 }
@@ -3322,6 +3324,60 @@ async function onCopyLabLink(scope: ShareScope) {
     state.lastError = 'Could not reach the clipboard. The link is in the address bar.';
     rerender();
   }
+}
+
+/**
+ * Where a selection lives: the wallet, the picked NFTs and how they were
+ * being looked at, and nothing else.
+ *
+ * Not the page's own address. That one carries the filters as well, and
+ * a recipient has no use for them: "only templates I don't own" would be
+ * worked out against THEIR wallet and could hide the very NFTs they were
+ * sent. A selection is the same NFTs for whoever opens it.
+ */
+function selectionPath(inv: InventoryState): string {
+  const sel: InventoryState = {
+    ...emptyInventoryState(),
+    owner: inv.owner, picked: inv.picked, pickedOnly: true,
+    view: inv.view, cardSize: inv.cardSize, sortKey: inv.sortKey, sortDesc: inv.sortDesc,
+  };
+  return `${toolPath('inventory')}/${encodeSubject(`${inv.owner}~${encodeInventoryView(sel)}`)}`;
+}
+
+/** Discord cuts a message at 2,000 characters, and that is where these links get pasted. */
+const PASTE_LIMIT = 2000;
+
+/**
+ * Starts reading the connected wallet's templates when the comparison
+ * needs them and nothing current is in hand. Safe to call on every render:
+ * it does nothing while a read is out, after one failed (Try again resets
+ * it), or once the answer covers this wallet.
+ */
+function ensureMineTemplates(inv: InventoryState): void {
+  const actor = state.actor;
+  // Somebody else's templates, after a disconnect or a switch of account,
+  // must not go on filtering this screen as if they were yours.
+  if (inv.mine.for && inv.mine.for !== actor) inv.mine = noOwnedTemplates();
+  if (!inv.missingOnly || !actor || !inv.loadedFor || inv.loadedFor === actor) return;
+  if (inv.mine.for === actor && inv.mine.wallet === inv.loadedFor && inv.mine.state !== 'idle') return;
+  const mine: InventoryState['mine'] = {
+    for: actor, wallet: inv.loadedFor, templates: new Set(), state: 'loading', error: '',
+  };
+  inv.mine = mine;
+  const collections = [...new Set(inv.assets.map((a) => a.collection?.collection_name ?? ''))];
+  void loadOwnedTemplates(actor, collections).then((set) => {
+    // Written only into the read it belongs to. A wallet switched or a
+    // different account connected meanwhile has its own.
+    if (inv.mine !== mine) return;
+    mine.templates = set;
+    mine.state = 'done';
+    rerender();
+  }, (e) => {
+    if (inv.mine !== mine) return;
+    mine.state = 'error';
+    mine.error = e instanceof Error ? e.message : String(e);
+    rerender();
+  });
 }
 
 /**
@@ -5546,11 +5602,53 @@ function renderInventoryScreen(inv: InventoryState): string {
     </div>`;
   }
 
+  ensureMineTemplates(inv);
   const filtered = applyFilter(inv.assets, inv);
   const sorted = sortAssets(filtered, inv.sortKey, inv.sortDesc);
   const shown = sorted.slice(0, inv.limit);
   const facets = facetsOf(inv.assets, inv);
   const active = activeFilterCount(inv);
+  const picks = new Set(inv.picked);
+
+  // "Templates I don't own" sits at the top of the filters: the one
+  // filter about you rather than about these NFTs.
+  const actor = state.actor;
+  const ownWallet = !!actor && actor === inv.owner;
+  const compare = comparing(inv);
+  const mineHere = inv.mine.state === 'done' && inv.mine.for === actor && inv.mine.wallet === inv.loadedFor;
+  const counts = mineHere ? missingCounts(inv.assets, inv.mine.templates) : undefined;
+  const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
+  const compareNote = !actor
+    ? 'Connect your wallet and this keeps only the templates you do not hold.'
+    : inv.mine.state === 'loading' && inv.mine.for === actor
+      ? `Reading which of these templates ${actor} holds.`
+      : inv.mine.state === 'error' && inv.mine.for === actor
+        ? `Could not read the templates ${actor} holds. ${inv.mine.error}`
+        : counts
+          ? `${plural(counts.templates, 'template')} here that ${actor} does not hold, on ${plural(counts.nfts, 'NFT')}.`
+            + (counts.untemplated ? ` ${plural(counts.untemplated, 'NFT')} without a template ${counts.untemplated === 1 ? 'is' : 'are'} left out.` : '')
+          : `Compared with ${actor}, the wallet you are connected with.`;
+  const compareTitle = '<strong>Templates I don\'t own</strong>';
+  const comparePanel = ownWallet ? '' : actor ? `
+    <div class="inv-compare ${inv.missingOnly ? 'on' : ''}">
+      <button type="button" class="inv-compare-toggle" data-lab="inv-missing" aria-pressed="${inv.missingOnly}">
+        <span class="inv-switch" aria-hidden="true"></span>
+        <span class="inv-compare-text">${compareTitle}<small>${esc(compareNote)}</small></span>
+      </button>
+      ${inv.mine.state === 'error' && inv.mine.for === actor && inv.missingOnly
+        ? '<button class="inv-compare-retry" data-lab="inv-missing-retry">Try again</button>' : ''}
+    </div>` : `
+    <div class="inv-compare off">
+      <span class="inv-compare-text">${compareTitle}<small>${esc(compareNote)}</small></span>
+      <button class="inv-compare-retry" data-lab="login">Connect</button>
+    </div>`;
+  // Why the comparison is on and still hiding nothing, said where the
+  // count is rather than left for somebody to wonder about.
+  const compareWait = !inv.missingOnly || compare ? ''
+    : ownWallet ? 'This is your own wallet, so "templates I don\'t own" has nothing to compare and is set aside.'
+      : !actor ? 'Connect your wallet to keep only the templates you don\'t own. Until then everything shows.'
+        : inv.mine.state === 'error' ? 'Your templates could not be read, so everything shows. Try again in Filters.'
+          : 'Reading your templates. Everything shows until they are in.';
   // Counted over everything owned rather than over what is on screen, so
   // the number does not move as filters change and the button reads as a
   // fact about the wallet.
@@ -5572,14 +5670,28 @@ function renderInventoryScreen(inv: InventoryState): string {
 
   // The chips for what is currently on, so undoing never means hunting
   // through the rail for the value you picked.
-  const chip = (key: string, value: string, mode: 'include' | 'exclude') => `
-    <button class="lab-tag ${mode === 'exclude' ? 'lab-row-bad' : 'lab-row-mine'}"
-            data-lab="inv-chip" data-key="${esc(key)}" data-value="${esc(value)}" data-mode="${mode}">
-      ${mode === 'exclude' ? 'not ' : ''}${esc(key.startsWith(ATTR_PREFIX) ? key.slice(ATTR_PREFIX.length) : key)}:
-      ${esc(value)} <span class="lab-x">x</span>
+  // One pill per filter: what it is about, small, then the value, then a
+  // disc that takes it off. A filter that hides is marked red, by its
+  // light and by the word "not".
+  const chip = (key: string, value: string, mode: 'include' | 'exclude') => {
+    const label = key.startsWith(ATTR_PREFIX) ? key.slice(ATTR_PREFIX.length) : key;
+    return `
+    <button type="button" class="inv-on ${mode === 'exclude' ? 'not' : ''}"
+            data-lab="inv-chip" data-key="${esc(key)}" data-value="${esc(value)}" data-mode="${mode}"
+            title="${mode === 'exclude' ? 'Show these again' : 'Take this filter off'}">
+      <span class="inv-on-k">${mode === 'exclude' ? 'not ' : ''}${esc(label)}</span>
+      <span class="inv-on-v">${esc(value || '(empty)')}</span>
+      <span class="inv-on-x" aria-label="remove"></span>
     </button>`;
+  };
 
   const activeChips = [
+    inv.missingOnly ? `
+      <button type="button" class="inv-on mine ${compare ? '' : 'wait'}" data-lab="inv-missing" title="Take this filter off">
+        <span class="inv-on-k">${compare ? 'yours' : 'reading'}</span>
+        <span class="inv-on-v">templates I don't own</span>
+        <span class="inv-on-x" aria-label="remove"></span>
+      </button>` : '',
     ...Object.entries(inv.include).flatMap(([k, vs]) => vs.map((v) => chip(k, v, 'include'))),
     ...Object.entries(inv.exclude).flatMap(([k, vs]) => vs.map((v) => chip(k, v, 'exclude'))),
   ].join('');
@@ -5635,27 +5747,35 @@ function renderInventoryScreen(inv: InventoryState): string {
   const listMin = 380 + attrCols.length * 90;
 
   const body = inv.view === 'list'
-    ? `<div class="inv-list ${inv.usableOnly ? 'inv-all-usable' : ''}" style="--inv-tpl:${listTpl};--inv-min:${listMin}px">
+    ? `<div class="inv-list ${inv.usableOnly ? 'inv-all-usable' : ''} ${inv.selecting ? 'selecting' : ''}" style="--inv-tpl:${listTpl};--inv-min:${listMin}px">
         <div class="inv-list-head">
           <span>Name</span><span>Collection</span><span>Template</span><span>Mint</span>
           ${attrCols.map((c) => `<span>${esc(c.label)}</span>`).join('')}
         </div>
-        ${shown.map((a) => `
-          <div class="inv-list-row" data-lab="inv-open" data-value="${esc(a.asset_id)}" role="button" tabindex="0">
-            <span class="inv-name">${isUsable(a, inv) ? '<span class="inv-spark" title="A recipe in this collection takes this NFT">USE</span> ' : ''}${esc(a.name || a.asset_id)}</span>
+        ${shown.map((a) => {
+          const on = picks.has(a.asset_id);
+          return `
+          <div class="inv-list-row ${on ? 'picked' : ''}" data-lab="${inv.selecting ? 'inv-pick' : 'inv-open'}" data-value="${esc(a.asset_id)}"
+               role="button" tabindex="0" ${inv.selecting ? `aria-pressed="${on}"` : ''}>
+            <span class="inv-name">${inv.selecting || on ? '<span class="inv-check" aria-hidden="true"></span>' : ''}${isUsable(a, inv) ? '<span class="inv-spark" title="A recipe in this collection takes this NFT">USE</span> ' : ''}${esc(a.name || a.asset_id)}</span>
             <span>${esc(a.collection?.collection_name ?? '')}</span>
             <span>${esc(a.template?.template_id ?? '')}</span>
             <span>${esc(a.template_mint ?? '')}</span>
             ${attrCols.map((c) => `<span>${esc(facetValue(a, c.key))}</span>`).join('')}
-          </div>`).join('')}
+          </div>`;
+        }).join('')}
       </div>`
-    : `<div class="inv-grid ${inv.usableOnly ? 'inv-all-usable' : ''}" style="--inv-card:${inv.cardSize}px">
+    : `<div class="inv-grid ${inv.usableOnly ? 'inv-all-usable' : ''} ${inv.selecting ? 'selecting' : ''}" style="--inv-card:${inv.cardSize}px">
         ${shown.map((a) => {
           const img = artworkOf(a);
           const usable = isUsable(a, inv);
+          const on = picks.has(a.asset_id);
           return `
-          <button class="inv-card ${usable ? 'inv-usable' : ''}" data-lab="inv-open" data-value="${esc(a.asset_id)}"
+          <button class="inv-card ${usable ? 'inv-usable' : ''} ${on ? 'picked' : ''}"
+                  data-lab="${inv.selecting ? 'inv-pick' : 'inv-open'}" data-value="${esc(a.asset_id)}"
+                  ${inv.selecting ? `aria-pressed="${on}"` : ''}
                   title="${esc(a.asset_id)}${usable ? ' · a recipe takes this' : ''}">
+            ${inv.selecting || on ? '<span class="inv-check" aria-hidden="true"></span>' : ''}
             ${img ? renderMediaThumb({ ref: img, alt: a.name ?? a.asset_id, className: 'media-thumb-sm' })
                   : '<span class="lab-noart"></span>'}
             ${usable ? '<span class="inv-spark" title="A recipe in this collection takes this NFT">USE</span>' : ''}
@@ -5665,14 +5785,10 @@ function renderInventoryScreen(inv: InventoryState): string {
         }).join('')}
       </div>`;
 
-  return `<div class="lab-panel">
-    <h3>Inventory</h3>
-    ${bar}
-    ${inv.error ? `<p class="lab-warn">${esc(inv.error)}</p>` : ''}
-
-    <div class="lab-field inv-bar">
-      <input id="inv-q" type="text" spellcheck="false" placeholder="search name, collection, schema, template, id, any attribute"
-             value="${esc(inv.q)}" />
+  const more = shown.length < filtered.length
+    ? `<button data-lab="inv-more">Show ${Math.min(240, filtered.length - shown.length).toLocaleString('en-US')} more</button>`
+    : '';
+  const viewSeg = `
       <div class="lab-seg">
         <button class="${inv.view === 'grid' ? 'on' : ''}" data-lab="inv-view" data-value="grid">Grid</button>
         <button class="${inv.view === 'list' ? 'on' : ''}" data-lab="inv-view" data-value="list">List</button>
@@ -5682,7 +5798,68 @@ function renderInventoryScreen(inv: InventoryState): string {
           ${CARD_SIZES.map((sz) => `
             <button class="${inv.cardSize === sz.px ? 'on' : ''}"
                     data-lab="inv-size" data-value="${sz.px}">${sz.label}</button>`).join('')}
-        </div>` : ''}
+        </div>` : ''}`;
+
+  // The selection, pinned to the bottom of the screen while there is one,
+  // so what has been picked and what to do with it is never a scroll away.
+  const n = inv.picked.length;
+  const allPicked = filtered.length > 0 && filtered.every((a) => picks.has(a.asset_id));
+  const unpicked = filtered.filter((a) => !picks.has(a.asset_id)).length;
+  const room = MAX_PICKS - n;
+  const selLength = n ? labHref('selection').length : 0;
+  const dock = inv.selecting || n ? `
+    <div class="inv-dock" role="region" aria-label="Selection">
+      <span class="inv-dock-count"><b>${n.toLocaleString('en-US')}</b> picked${n >= MAX_PICKS ? ', the most one link can carry' : ''}</span>
+      <span class="inv-dock-actions">
+        ${inv.selecting && !inv.pickedOnly && filtered.length && (allPicked || room > 0)
+          ? `<button data-lab="inv-pick-all">${allPicked ? `Unpick these ${filtered.length.toLocaleString('en-US')}`
+            : unpicked > room ? `Pick the first ${room.toLocaleString('en-US')}` : `Pick all ${filtered.length.toLocaleString('en-US')}`}</button>` : ''}
+        ${n ? `<button data-lab="inv-picked-only">${inv.pickedOnly ? 'Show the whole wallet' : 'Show only these'}</button>` : ''}
+        ${n ? '<button data-lab="inv-pick-clear">Clear</button>' : ''}
+        ${n ? shareButton('selection', 'Copy link to these') : '<span class="inv-dock-hint">Tap an NFT to pick it.</span>'}
+      </span>
+      ${selLength > PASTE_LIMIT
+        ? `<span class="inv-dock-warn">This link is ${selLength.toLocaleString('en-US')} characters long, and Discord cuts a message at ${PASTE_LIMIT.toLocaleString('en-US')}. Pick fewer, or send it somewhere else.</span>`
+        : ''}
+    </div>` : '';
+
+  // Only the picked NFTs: what a selection link opens on. The filters are
+  // set aside, not shown and not applied, so the screen is the picks.
+  if (inv.pickedOnly) {
+    const gone = inv.picked.length - filtered.length;
+    return `<div class="lab-panel">
+      <h3>Inventory</h3>
+      ${bar}
+      ${inv.error ? `<p class="lab-warn">${esc(inv.error)}</p>` : ''}
+      <div class="inv-sel-head">
+        <p class="inv-sel-kicker">A selection from ${esc(inv.owner)}</p>
+        <p class="inv-sel-title"><b>${filtered.length.toLocaleString('en-US')}</b> ${filtered.length === 1 ? 'NFT' : 'NFTs'} picked</p>
+        ${gone > 0 ? `<p class="lab-hint">${plural(gone, 'picked NFT')} ${gone === 1 ? 'is' : 'are'} no longer in this wallet.</p>` : ''}
+        <div class="lab-field inv-bar inv-sel-bar">
+          <button data-lab="inv-picked-only">See the whole wallet</button>
+          <button class="inv-filter-btn inv-select-btn ${inv.selecting ? 'on' : ''}" data-lab="inv-selecting" aria-pressed="${inv.selecting}">
+            ${inv.selecting ? 'Done picking' : 'Change the picks'}
+          </button>
+          ${viewSeg}
+        </div>
+      </div>
+      <div class="inv-body">
+        ${filtered.length ? body : '<p class="lab-empty">None of these NFTs is in this wallet any more.</p>'}
+        ${more}
+      </div>
+      ${dock}
+    </div>`;
+  }
+
+  return `<div class="lab-panel">
+    <h3>Inventory</h3>
+    ${bar}
+    ${inv.error ? `<p class="lab-warn">${esc(inv.error)}</p>` : ''}
+
+    <div class="lab-field inv-bar">
+      <input id="inv-q" type="text" spellcheck="false" placeholder="search name, collection, schema, template, id, any attribute"
+             value="${esc(inv.q)}" />
+      ${viewSeg}
       <select id="inv-sort">
         ${[...SORT_KEYS, ...facets.filter((f) => f.key.startsWith(ATTR_PREFIX)).map((f) => ({ key: f.key, label: f.label }))]
           .map((k) => `<option value="${esc(k.key)}" ${inv.sortKey === k.key ? 'selected' : ''}>sort by ${esc(k.label)}</option>`).join('')}
@@ -5698,11 +5875,17 @@ function renderInventoryScreen(inv: InventoryState): string {
             ? (usableKnown ? 'Showing only usable' : 'Only usable, once the recipes are read')
             : `Usable in a recipe (${usableCount.toLocaleString('en-US')}+)`}
         </button>` : ''}
-      ${active ? `<button data-lab="inv-clear">clear ${active} filter${active === 1 ? '' : 's'}</button>` : ''}
+      <button class="inv-filter-btn inv-select-btn ${inv.selecting ? 'on' : ''}" data-lab="inv-selecting" aria-pressed="${inv.selecting}"
+              title="Pick NFTs, then send a link that shows only those">
+        ${inv.selecting ? 'Done picking' : 'Pick'}
+      </button>
+      ${/* The pills below carry their own "Clear all" once there are two. */''}
+      ${active && !(activeChips.trim() && active > 1) ? `<button data-lab="inv-clear">clear ${active} filter${active === 1 ? '' : 's'}</button>` : ''}
       ${shareButton('tool', 'link to this view')}
     </div>
 
-    ${activeChips ? `<div class="lab-tools inv-chips">${activeChips}</div>` : ''}
+    ${activeChips.trim() ? `<div class="inv-chips">${activeChips}
+      ${active > 1 ? `<button type="button" class="inv-chips-clear" data-lab="inv-clear">Clear all</button>` : ''}</div>` : ''}
 
     ${renderSavedViews(active)}
 
@@ -5717,6 +5900,7 @@ function renderInventoryScreen(inv: InventoryState): string {
         ? '<span class="inv-warming">A contract did not answer for one of them, so there may be more.</span>' : ''}
       ${usableKnown && !stillReading
         ? '<span class="inv-warming">Only NeftyBlocks recipes in an NFT\'s own collection are searched, so this is a floor.</span>' : ''}
+      ${compareWait ? `<span class="inv-warming">${esc(compareWait)}</span>` : ''}
     </p>
 
     <div class="inv-split">
@@ -5727,6 +5911,7 @@ function renderInventoryScreen(inv: InventoryState): string {
           <button class="lab-x" data-lab="inv-filters-close" aria-label="Close">x</button>
         </div>
         <div class="inv-rail-body">
+          ${comparePanel}
           ${rail || '<p class="lab-hint">Nothing left to narrow by.</p>'}
         </div>
         <div class="inv-rail-foot">
@@ -5736,12 +5921,12 @@ function renderInventoryScreen(inv: InventoryState): string {
         </div>
       </aside>
       <div class="inv-body">
-        ${filtered.length ? body : '<p class="lab-empty">Nothing matches. Loosen a filter.</p>'}
-        ${shown.length < filtered.length
-          ? `<button data-lab="inv-more">Show ${Math.min(240, filtered.length - shown.length).toLocaleString('en-US')} more</button>`
-          : ''}
+        ${filtered.length ? body : `<p class="lab-empty">${compare && !activeFilterCount({ ...inv, missingOnly: false })
+          ? `${esc(actor)} already holds every template in this wallet.` : 'Nothing matches. Loosen a filter.'}</p>`}
+        ${more}
       </div>
     </div>
+    ${dock}
   </div>`;
 }
 
@@ -8670,6 +8855,11 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           // the wallet as already done and a newly acquired NFT from a
           // collection nobody had read stayed unmarked for good.
           if (kind === 'inv-reload') state.inv.matchersFor = '';
+          // Your own wallet may have changed too: ask again what it holds.
+          if (kind === 'inv-reload') {
+            forgetOwnedTemplates();
+            state.inv.mine = { ...state.inv.mine, state: 'idle' };
+          }
           void loadInventory(state.inv, who, kind === 'inv-reload')
             .then(() => { warmInventoryRecipes(); writeLabHash(); render(); });
           render();
@@ -8740,7 +8930,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           // lit but silently inert when the name box was empty.
           if (!name) { state.lastError = 'Name the view first, then press Save view.'; break; }
           const views = (readPrefs().savedViews ?? []).filter((v) => v.name !== name);
-          patchPrefs({ savedViews: [...views, { name, view: encodeInventoryView(state.inv) }] });
+          patchPrefs({ savedViews: [...views, { name, view: encodeInventoryView(state.inv, { picks: false }) }] });
           break;
         }
         case 'inv-load-view': {
@@ -8760,6 +8950,8 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           const matchersFor = state.inv.matchersFor;
           const collectionsHeld = state.inv.collectionsHeld;
           const assetsUnread = state.inv.assetsUnread;
+          // The selection and your templates belong to this wallet too.
+          const { mine, picked, selecting } = state.inv;
           state.inv = emptyInventoryState();
           decodeInventoryView(found.view, state.inv);
           // A saved view is a set of filters, not a wallet. Whoever is on
@@ -8772,6 +8964,9 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
           state.inv.matchersFor = matchersFor;
           state.inv.collectionsHeld = collectionsHeld;
           state.inv.assetsUnread = assetsUnread;
+          state.inv.mine = mine;
+          state.inv.picked = picked;
+          state.inv.selecting = selecting;
           // And if nothing had been read yet, this is the moment to start:
           // the view may have arrived with the usable toggle on.
           warmInventoryRecipes();
@@ -8825,6 +9020,44 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
         }
         case 'inv-usable':
           state.inv.usableOnly = !state.inv.usableOnly;
+          state.inv.limit = 120;
+          writeLabHash();
+          break;
+        case 'inv-missing':
+          state.inv.missingOnly = !state.inv.missingOnly;
+          // Turning it back on after a failed read is a retry.
+          if (state.inv.missingOnly && state.inv.mine.state === 'error') {
+            state.inv.mine = { ...state.inv.mine, state: 'idle' };
+          }
+          state.inv.limit = 120;
+          writeLabHash();
+          break;
+        case 'inv-missing-retry':
+          state.inv.mine = { ...state.inv.mine, state: 'idle' };
+          break;
+        case 'inv-selecting':
+          state.inv.selecting = !state.inv.selecting;
+          break;
+        case 'inv-pick':
+          togglePick(state.inv, el.dataset.value ?? '');
+          writeLabHash();
+          break;
+        case 'inv-pick-all':
+          // Everything the filters leave, not only the cards painted so
+          // far: "all" that silently means "the first 120" is a trap.
+          // In the order on screen, so when the cap cuts it short the ones
+          // picked are the ones you were looking at.
+          togglePickAll(state.inv, sortAssets(applyFilter(state.inv.assets, state.inv), state.inv.sortKey, state.inv.sortDesc)
+            .map((a) => a.asset_id));
+          writeLabHash();
+          break;
+        case 'inv-pick-clear':
+          state.inv.picked = [];
+          state.inv.pickedOnly = false;
+          writeLabHash();
+          break;
+        case 'inv-picked-only':
+          state.inv.pickedOnly = !state.inv.pickedOnly && state.inv.picked.length > 0;
           state.inv.limit = 120;
           writeLabHash();
           break;
@@ -8917,6 +9150,7 @@ export function attachLabHandlers(root: HTMLElement, render: () => void): void {
 
         case 'share-tool':    void onCopyLabLink('tool'); return;
         case 'share-auction': void onCopyLabLink('auction'); return;
+        case 'share-selection': void onCopyLabLink('selection'); return;
         case 'name-check':  void onCheckName(); return;
         case 'name-bid':    void onPlaceBid(); return;
         case 'top-bids-more':
